@@ -1,0 +1,54 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "J-Link Debug STM32F427",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "jlink",
+      "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+      "device": "STM32F427II",
+      "interface": "swd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/2026OmniChassis_A_board.elf",
+      "armToolchainPath": "/opt/homebrew/bin",
+      "gdbPath": "/opt/homebrew/bin/arm-none-eabi-gdb",
+      "serverArgs": [
+        "-speed",
+        "4000"
+      ],
+      "runToEntryPoint": "main",
+      "preLaunchTask": "CMake: build Debug",
+      "showDevDebugOutput": "none",
+      "postLaunchCommands": [
+        "monitor reset halt"
+      ],
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      }
+    },
+    {
+      "name": "J-Link Attach STM32F427",
+      "type": "cortex-debug",
+      "request": "attach",
+      "servertype": "jlink",
+      "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+      "device": "STM32F427II",
+      "interface": "swd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/2026OmniChassis_A_board.elf",
+      "armToolchainPath": "/opt/homebrew/bin",
+      "gdbPath": "/opt/homebrew/bin/arm-none-eabi-gdb",
+      "serverArgs": [
+        "-speed",
+        "4000"
+      ],
+      "showDevDebugOutput": "none",
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      }
+    }
+  ]
+}
