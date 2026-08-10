@@ -46,6 +46,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/vmc_math.c
     App/Src/vmc_probe.c
+    App/Src/remote_control.c
+    App/Src/hi12_imu.c
 )
 
 # Add include paths
