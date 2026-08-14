@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/vmc_probe.c
     App/Src/remote_control.c
     App/Src/hi12_imu.c
+    App/Src/vmc_lqr.c
 )
 
 # Add include paths
