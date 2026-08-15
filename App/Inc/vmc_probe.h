@@ -124,15 +124,23 @@ extern "C" {
 #define VMC_BALANCE_PITCH_OFFSET_DEFAULT 0.0f
 #define VMC_BALANCE_PHI_OFFSET_DEFAULT -0.04f
 #define VMC_BALANCE_DX_FEEDBACK_ENABLE_DEFAULT 1U
-#define VMC_BALANCE_THETA_DEADBAND_DEFAULT 0.010f
-#define VMC_BALANCE_PHI_DEADBAND_DEFAULT 0.010f
+#define VMC_BALANCE_THETA_DEADBAND_DEFAULT 0.0f // 死区
+#define VMC_BALANCE_PHI_DEADBAND_DEFAULT 0.0f // 死区 0.010f
 #define VMC_BALANCE_X_FEEDBACK_ENABLE_DEFAULT 1U
-#define VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT -20.0f
-#define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.5f
+#define VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT -1.0f
+#define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.0f
+#define VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT 0.5f
+#define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 1.5f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_RC_CH_DEADBAND 20
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1200
+#define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
+#define VMC_YAW_HOLD_KP_DEFAULT 500.0f
+#define VMC_YAW_HOLD_KD_DEFAULT 60.0f
+#define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
+#define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 800
+#define VMC_YAW_HOLD_DIRECTION 1.0f
 
 typedef struct {
   int16_t ecd;
@@ -206,6 +214,9 @@ typedef struct {
   int16_t max_current;
   int16_t manual_left_current;
   int16_t manual_right_current;
+  int16_t manual_forward_current;
+  int16_t manual_turn_current;
+  int16_t yaw_hold_current;
   int16_t left_current_output;
   int16_t right_current_output;
 } vmc_wheel_control_t;
@@ -217,6 +228,8 @@ typedef struct {
   uint8_t dx_feedback_enable;
   uint8_t x_feedback_enable;
   uint8_t safety_allows_output;
+  uint8_t yaw_hold_enable;
+  uint8_t yaw_hold_active;
   float pitch_offset;
   float phi_offset;
   float theta_deadband;
@@ -225,7 +238,14 @@ typedef struct {
   float x_limit;
   float x_feedback_gain;
   float dx_feedback_gain;
+  float x_feedback_limit;
+  float dx_feedback_limit;
   float dtheta_lpf_alpha;
+  float yaw_target;
+  float yaw_hold_kp;
+  float yaw_hold_kd;
+  float yaw_hold_deadband;
+  int16_t yaw_hold_current_limit;
   int16_t wheel_current_limit;
   float wheel_torque_limit;
   float wheel_torque_to_current;
@@ -240,6 +260,9 @@ typedef struct {
   double phi_error;
   double x_error;
   double dx_error;
+  double yaw_error_raw;
+  double yaw_error;
+  double yaw_rate_error;
   double left_wheel_theta_term;
   double left_wheel_dtheta_term;
   double left_wheel_x_term;

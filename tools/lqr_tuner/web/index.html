@@ -32,8 +32,12 @@
           <input id="legLength" type="number" step="0.001" value="0.28" />
         </label>
         <label>
-          RTT Client
-          <input id="rttClient" value="/Applications/SEGGER/JLink/JLinkRTTClient" />
+          RTT TCP Host
+          <input id="rttHost" value="127.0.0.1" />
+        </label>
+        <label>
+          RTT TCP Port
+          <input id="rttPort" type="number" step="1" value="19021" />
         </label>
       </section>
 
@@ -47,12 +51,119 @@
         <div class="weights two" id="rWeights"></div>
       </section>
 
+      <section class="panel">
+        <h2>实时平衡参数</h2>
+        <h3>平衡反馈</h3>
+        <div class="params">
+          <label>
+            Theta 目标 / theta_target (rad)
+            <input id="thetaTarget" type="number" step="0.001" value="0.0" />
+          </label>
+          <label>
+            Pitch 目标 / pitch_target (rad)
+            <input id="pitchTarget" type="number" step="0.001" value="-0.04" />
+          </label>
+          <label>
+            Pitch 死区 / phi_deadband (rad)
+            <input id="pitchDeadband" type="number" step="0.001" value="0.0" />
+          </label>
+          <label>
+            Theta 死区 / theta_deadband (rad)
+            <input id="thetaDeadband" type="number" step="0.001" value="0.0" />
+          </label>
+          <label>
+            X 增益 / x_feedback_gain
+            <input id="xGain" type="number" step="0.1" value="-1" />
+          </label>
+          <label>
+            dX 增益 / dx_feedback_gain
+            <input id="dxGain" type="number" step="0.1" value="-1" />
+          </label>
+          <label>
+            X 反馈限幅 / x_feedback_limit
+            <input id="xLimit" type="number" step="0.1" value="0.5" />
+          </label>
+          <label>
+            dX 反馈限幅 / dx_feedback_limit
+            <input id="dxLimit" type="number" step="0.1" value="1.5" />
+          </label>
+        </div>
+        <h3>腿长 PID</h3>
+        <div class="params">
+          <label>
+            腿长 KP / kp_length
+            <input id="kpLength" type="number" step="1" value="1000" />
+          </label>
+          <label>
+            腿长 KD / kd_length
+            <input id="kdLength" type="number" step="1" value="100" />
+          </label>
+          <label>
+            最大支撑力 / max_force
+            <input id="maxForce" type="number" step="1" value="120" />
+          </label>
+          <label>
+            静态支撑力 / support_force
+            <input id="supportForce" type="number" step="1" value="0" />
+          </label>
+          <label>
+            腿长斜坡 / length_ramp_rate
+            <input id="lengthRampRate" type="number" step="0.01" value="0.2" />
+          </label>
+        </div>
+        <h3>摆角 PID</h3>
+        <div class="params">
+          <label>
+            摆角 KP / kp_phi0
+            <input id="kpPhi0" type="number" step="0.1" value="50" />
+          </label>
+          <label>
+            摆角 KD / kd_phi0
+            <input id="kdPhi0" type="number" step="0.01" value="0.5" />
+          </label>
+          <label>
+            摆角力矩限幅 / max_phi0_torque
+            <input id="maxPhi0Torque" type="number" step="1" value="54" />
+          </label>
+        </div>
+        <h3>Yaw IMU 闭环</h3>
+        <div class="params">
+          <label>
+            Yaw 使能 / yaw_hold_enable
+            <input id="yawHoldEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            Yaw KP / yaw_hold_kp
+            <input id="yawHoldKp" type="number" step="1" value="500" />
+          </label>
+          <label>
+            Yaw KD / yaw_hold_kd
+            <input id="yawHoldKd" type="number" step="1" value="60" />
+          </label>
+          <label>
+            Yaw 死区 / yaw_hold_deadband
+            <input id="yawHoldDeadband" type="number" step="0.001" value="0.01" />
+          </label>
+          <label>
+            Yaw 电流限幅 / yaw_hold_current_limit
+            <input id="yawHoldCurrentLimit" type="number" step="10" value="800" />
+          </label>
+        </div>
+      </section>
+
       <section class="actions">
         <button id="calcBtn">计算 K</button>
-        <button id="sendBtn">计算并 RTT 下发</button>
+        <button id="sendBtn">下发固定 K</button>
+        <button id="clearKBtn">恢复固件 K 调度</button>
+        <button id="sendParamsBtn">下发平衡参数</button>
+        <button id="saveParamsBtn">保存全部参数</button>
         <label class="check">
           <input id="dryRun" type="checkbox" checked />
           Dry run RTT
+        </label>
+        <label class="check">
+          <input id="liveParams" type="checkbox" />
+          实时下发参数
         </label>
       </section>
 

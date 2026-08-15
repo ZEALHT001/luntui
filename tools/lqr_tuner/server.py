@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
+import socket
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,7 +39,48 @@ from derive_vmc_lqr_abk import (  # noqa: E402
 
 STATE_NAMES = ["theta", "dtheta", "x", "dx", "phi", "dphi"]
 INPUT_NAMES = ["T", "Tp"]
-DEFAULT_RTT_CLIENT = "/Applications/SEGGER/JLink/JLinkRTTClient"
+DEFAULT_RTT_HOST = "127.0.0.1"
+DEFAULT_RTT_PORT = 19021
+DEFAULT_BALANCE_PARAMS = {
+    "theta_target": 0.0,
+    "pitch_target": -0.04,
+    "pitch_deadband": 0.0,
+    "theta_deadband": 0.0,
+    "x_feedback_gain": -1.0,
+    "dx_feedback_gain": -1.0,
+    "x_feedback_limit": 0.5,
+    "dx_feedback_limit": 1.5,
+    "kp_length": 1000.0,
+    "kd_length": 100.0,
+    "max_force": 120.0,
+    "support_force": 0.0,
+    "length_ramp_rate": 0.2,
+    "kp_phi0": 50.0,
+    "kd_phi0": 0.5,
+    "max_phi0_torque": 54.0,
+    "yaw_hold_enable": 1.0,
+    "yaw_hold_kp": 500.0,
+    "yaw_hold_kd": 60.0,
+    "yaw_hold_deadband": 0.01,
+    "yaw_hold_current_limit": 800.0,
+}
+
+
+def _rtt_host(data: dict[str, Any]) -> str:
+    host = str(data.get("rtt_host") or "").strip()
+    if not host or host.lower() in {"undefined", "null", "none"}:
+        return DEFAULT_RTT_HOST
+    return host
+
+
+def _rtt_port(data: dict[str, Any]) -> int:
+    try:
+        port = int(data.get("rtt_port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if port <= 0 or port > 65535:
+        return DEFAULT_RTT_PORT
+    return port
 
 
 def _diag(values: list[float], expected: int, name: str) -> np.ndarray:
@@ -104,57 +150,177 @@ def _calc_response(data: dict[str, Any]) -> dict[str, Any]:
     if bool(data.get("send_rtt", False)):
         result["rtt"] = send_rtt_line(
             result["rtt_payload"],
-            client_path=str(data.get("rtt_client_path", DEFAULT_RTT_CLIENT)),
-            timeout_s=float(data.get("rtt_timeout_s", 3.0)),
+            host=_rtt_host(data),
+            port=_rtt_port(data),
+            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
             dry_run=bool(data.get("dry_run", False)),
         )
     return result
 
 
+def _balance_params_payload(data: dict[str, Any]) -> str:
+    params = dict(DEFAULT_BALANCE_PARAMS)
+    params.update(data.get("params", {}))
+    payload = {"type": "vmc_balance_params"}
+    for key in DEFAULT_BALANCE_PARAMS:
+        payload[key] = float(params[key])
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _send_balance_params_response(data: dict[str, Any]) -> dict[str, Any]:
+    payload = _balance_params_payload(data)
+    return {
+        "payload": payload,
+        "rtt": send_rtt_line(
+            payload,
+            host=_rtt_host(data),
+            port=_rtt_port(data),
+            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
+            dry_run=bool(data.get("dry_run", False)),
+        ),
+    }
+
+
+def _safe_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+class PersistentRttConnection:
+    def __init__(self) -> None:
+        self._sock: socket.socket | None = None
+        self._target: tuple[str, int] | None = None
+        self._banner = ""
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        self._target = None
+        self._banner = ""
+
+    def _drain_banner(self, sock: socket.socket) -> str:
+        return self._read_available(sock, quiet_window_s=0.30, max_wait_s=1.20)
+
+    def _read_available(
+        self,
+        sock: socket.socket,
+        *,
+        quiet_window_s: float,
+        max_wait_s: float,
+        stop_tokens: tuple[str, ...] = (),
+    ) -> str:
+        deadline = time.monotonic() + max_wait_s
+        quiet_deadline = time.monotonic() + quiet_window_s
+        banner = ""
+        sock.settimeout(min(quiet_window_s, 0.10))
+        while time.monotonic() < deadline and time.monotonic() < quiet_deadline:
+            try:
+                chunk = sock.recv(512)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            banner += chunk.decode("utf-8", errors="replace")
+            if stop_tokens and any(token in banner for token in stop_tokens):
+                break
+            quiet_deadline = time.monotonic() + quiet_window_s
+        return banner
+
+    def _connect(self, host: str, port: int, timeout_s: float) -> str:
+        self.close()
+        sock = socket.create_connection((host, port), timeout=timeout_s)
+        banner = self._drain_banner(sock)
+        self._sock = sock
+        self._target = (host, port)
+        self._banner = banner
+        return banner
+
+    def _ensure_connected(self, host: str, port: int, timeout_s: float) -> tuple[socket.socket, str, bool]:
+        if self._sock is None or self._target != (host, port):
+            banner = self._connect(host, port, timeout_s)
+            return self._sock, banner, True  # type: ignore[return-value]
+        return self._sock, "", False
+
+    def send(self, frame: str, host: str, port: int, timeout_s: float) -> dict[str, Any]:
+        with self._lock:
+            reconnect_count = 0
+            last_error = ""
+            banner = ""
+
+            for attempt in range(2):
+                try:
+                    sock, connect_banner, connected_now = self._ensure_connected(host, port, timeout_s)
+                    if connected_now:
+                        reconnect_count += 1
+                        banner += connect_banner
+
+                    sock.settimeout(timeout_s)
+                    stale_output = self._read_available(
+                        sock,
+                        quiet_window_s=0.05,
+                        max_wait_s=0.15,
+                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS"),
+                    )
+                    sock.sendall(frame.encode("utf-8"))
+
+                    ack = self._read_available(
+                        sock,
+                        quiet_window_s=0.08,
+                        max_wait_s=max(timeout_s, 1.0),
+                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS"),
+                    )
+
+                    return {
+                        "ok": True,
+                        "persistent": True,
+                        "reconnect_count": reconnect_count,
+                        "server_banner": banner.strip(),
+                        "stale_output": stale_output.strip(),
+                        "target_ack": ack.strip(),
+                        "target_applied": "VMC_LQR_RTT OK" in ack or "VMC_BALANCE_PARAMS OK" in ack,
+                        "host": host,
+                        "port": port,
+                        "frame": frame,
+                    }
+                except OSError as exc:
+                    last_error = str(exc)
+                    self.close()
+                    if attempt == 0:
+                        continue
+
+            return {
+                "ok": False,
+                "persistent": True,
+                "error": f"RTT TCP send failed to {host}:{port}: {last_error}",
+                "host": host,
+                "port": port,
+                "frame": frame,
+            }
+
+
+_RTT_CONNECTION = PersistentRttConnection()
+
+
 def send_rtt_line(
     line: str,
     *,
-    client_path: str = DEFAULT_RTT_CLIENT,
-    timeout_s: float = 3.0,
+    host: str = DEFAULT_RTT_HOST,
+    port: int = DEFAULT_RTT_PORT,
+    timeout_s: float = 1.0,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     frame = line.rstrip("\n") + "\n"
     if dry_run:
         return {"ok": True, "dry_run": True, "frame": frame}
-
-    client = Path(client_path)
-    if not client.exists():
-        return {
-            "ok": False,
-            "error": f"RTT client not found: {client_path}",
-            "frame": frame,
-        }
-
-    try:
-        proc = subprocess.run(
-            [str(client)],
-            input=frame,
-            text=True,
-            capture_output=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "ok": False,
-            "error": f"RTT client timed out after {timeout_s}s",
-            "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "",
-            "frame": frame,
-        }
-
-    return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
-        "frame": frame,
-    }
+    return _RTT_CONNECTION.send(frame, host, port, timeout_s)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -193,7 +359,9 @@ class Handler(BaseHTTPRequestHandler):
                     "q": [float(v) for v in np.diag(preset.q)],
                     "r": [float(v) for v in np.diag(preset.r)],
                     "leg_length": 0.28,
-                    "rtt_client_path": DEFAULT_RTT_CLIENT,
+                    "rtt_host": DEFAULT_RTT_HOST,
+                    "rtt_port": DEFAULT_RTT_PORT,
+                    "balance_params": DEFAULT_BALANCE_PARAMS,
                 },
             )
             return
@@ -215,12 +383,16 @@ class Handler(BaseHTTPRequestHandler):
                         "ok": True,
                         "rtt": send_rtt_line(
                             line,
-                            client_path=str(data.get("rtt_client_path", DEFAULT_RTT_CLIENT)),
-                            timeout_s=float(data.get("rtt_timeout_s", 3.0)),
+                            host=_rtt_host(data),
+                            port=_rtt_port(data),
+                            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
                             dry_run=bool(data.get("dry_run", False)),
                         ),
                     },
                 )
+                return
+            if self.path == "/api/send-params":
+                self._send_json(200, {"ok": True, **_send_balance_params_response(data)})
                 return
             self._send_json(404, {"ok": False, "error": "not found"})
         except Exception as exc:  # noqa: BLE001
@@ -230,12 +402,77 @@ class Handler(BaseHTTPRequestHandler):
         print(f"{self.address_string()} - {fmt % args}")
 
 
+def _is_same_backend_process(pid: int) -> bool:
+    if pid == os.getpid():
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    command = result.stdout.strip()
+    return str(Path(__file__).resolve()) in command or "tools/lqr_tuner/server.py" in command
+
+
+def _list_listening_pids(port: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids = []
+    for line in result.stdout.splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            pass
+    return pids
+
+
+def _stop_stale_backend_on_port(port: int) -> bool:
+    stopped = False
+    for pid in _list_listening_pids(port):
+        if not _is_same_backend_process(pid):
+            continue
+        print(f"Stopping stale LQR tuner backend pid={pid} on port {port}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                stopped = True
+                break
+            time.sleep(0.05)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                stopped = True
+            except OSError:
+                pass
+    return stopped
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
+    _stop_stale_backend_on_port(args.port)
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"LQR tuner API listening on http://{args.host}:{args.port}")
     httpd.serve_forever()

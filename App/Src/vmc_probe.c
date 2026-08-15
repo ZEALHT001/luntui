@@ -24,6 +24,7 @@ static void vmc_update_body_state(void);
 static void vmc_update_motion_state(void);
 static void vmc_update_lqr_gain(void);
 static uint8_t vmc_safety_allows_output(void);
+static int16_t vmc_update_yaw_hold_current(void);
 static void vmc_balance_apply_wheel_output(void);
 static void vmc_body_motion_kf_reset(void);
 static void vmc_body_motion_kf_update(double measured_dx, double measured_acc);
@@ -554,11 +555,14 @@ static void vmc_update_remote_mode(void)
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
+  vmc_wheel_control.manual_forward_current = 0;
+  vmc_wheel_control.manual_turn_current = 0;
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.yaw_hold_active = 0U;
     return;
   }
 
@@ -571,6 +575,7 @@ static void vmc_update_remote_mode(void)
   } else {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.yaw_hold_active = 0U;
     return;
   }
 
@@ -578,6 +583,8 @@ static void vmc_update_remote_mode(void)
                                           VMC_RC_WHEEL_FWD_CURRENT_MAX);
   turn_current = rc_channel_to_current((int16_t)-remote_control.ch[2],
                                        VMC_RC_WHEEL_TURN_CURRENT_MAX);
+  vmc_wheel_control.manual_forward_current = forward_current;
+  vmc_wheel_control.manual_turn_current = turn_current;
 
   vmc_wheel_control.manual_left_current =
       clamp_i16((int16_t)(forward_current - turn_current),
@@ -711,7 +718,16 @@ void vmc_balance_init(void)
   vmc_balance.x_limit = VMC_BODY_MOTION_X_LIMIT_DEFAULT;
   vmc_balance.x_feedback_gain = VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.dx_feedback_gain = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
+  vmc_balance.x_feedback_limit = VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT;
+  vmc_balance.dx_feedback_limit = VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT;
   vmc_balance.dtheta_lpf_alpha = VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT;
+  vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
+  vmc_balance.yaw_hold_active = 0U;
+  vmc_balance.yaw_target = 0.0f;
+  vmc_balance.yaw_hold_kp = VMC_YAW_HOLD_KP_DEFAULT;
+  vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
+  vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
+  vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
   vmc_lqr_d_theta_lpf = 0.0;
   vmc_balance.wheel_current_limit = VMC_BALANCE_WHEEL_CURRENT_LIMIT_DEFAULT;
   vmc_balance.wheel_torque_limit = VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT;
@@ -747,12 +763,20 @@ void vmc_balance_update(void)
       (vmc_balance.dx_feedback_enable != 0U && vmc_balance.x_feedback_enable != 0U)
           ? (motion->kf_x - vmc_balance.x_offset)
           : 0.0;
+  const double x_feedback_raw =
+      x_error * clamp_double(vmc_balance.x_feedback_gain, -200.0, 200.0);
+  const double x_feedback_limit =
+      clamp_double(vmc_balance.x_feedback_limit, 0.0, VMC_BODY_MOTION_X_LIMIT_DEFAULT);
   const double x_feedback_error =
-      x_error * clamp_double(vmc_balance.x_feedback_gain, 0.0, 50.0);
-  const double dx_error = (vmc_balance.dx_feedback_enable != 0U)
-                              ? motion->kf_dx *
-                                    clamp_double(vmc_balance.dx_feedback_gain, -20.0, 20.0)
-                              : 0.0;
+      clamp_double(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
+  const double dx_raw = (vmc_balance.dx_feedback_enable != 0U)
+                            ? motion->kf_dx *
+                                  clamp_double(vmc_balance.dx_feedback_gain, -200.0, 200.0)
+                            : 0.0;
+  const double dx_feedback_limit =
+      clamp_double(vmc_balance.dx_feedback_limit, 0.0, 20.0);
+  const double dx_error =
+      clamp_double(dx_raw, -dx_feedback_limit, dx_feedback_limit);
   const double left_wheel_theta_term = 0.0;
   const double left_wheel_dtheta_term = vmc_probe_state.lqr.left_k[2] * lqr_d_theta;
   const double left_wheel_x_term = vmc_probe_state.lqr.left_k[4] * x_feedback_error;
@@ -858,29 +882,93 @@ void vmc_balance_update(void)
   vmc_probe_state.balance = vmc_balance;
 }
 
+static int16_t vmc_update_yaw_hold_current(void)
+{
+  const int16_t turn_current = vmc_wheel_control.manual_turn_current;
+  double yaw_error_raw;
+  double yaw_error;
+  double yaw_rate_error;
+  double yaw_current;
+  int16_t yaw_limit = vmc_balance.yaw_hold_current_limit;
+
+  if (yaw_limit < 0) {
+    yaw_limit = (int16_t)-yaw_limit;
+  }
+  if (yaw_limit > vmc_wheel_control.max_current) {
+    yaw_limit = vmc_wheel_control.max_current;
+  }
+
+  if (vmc_balance.yaw_hold_enable == 0U ||
+      vmc_balance.wheel_output_enable == 0U ||
+      vmc_probe_state.body.imu_valid == 0U ||
+      vmc_probe_state.body.imu_connected == 0U ||
+      turn_current != 0) {
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    vmc_balance.yaw_error_raw = 0.0;
+    vmc_balance.yaw_error = 0.0;
+    vmc_balance.yaw_rate_error = 0.0;
+    vmc_wheel_control.yaw_hold_current = 0;
+    return 0;
+  }
+
+  if (vmc_balance.yaw_hold_active == 0U) {
+    vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    vmc_balance.yaw_hold_active = 1U;
+  }
+
+  yaw_error_raw = vmc_rad_format((float)(vmc_balance.yaw_target -
+                                         vmc_probe_state.body.yaw));
+  yaw_error = apply_soft_deadband(yaw_error_raw, vmc_balance.yaw_hold_deadband);
+  yaw_rate_error = -vmc_probe_state.body.wz;
+  yaw_current =
+      (double)VMC_YAW_HOLD_DIRECTION *
+      ((double)vmc_balance.yaw_hold_kp * yaw_error +
+       (double)vmc_balance.yaw_hold_kd * yaw_rate_error);
+
+  yaw_current = clamp_double(yaw_current, (double)-yaw_limit, (double)yaw_limit);
+  vmc_balance.yaw_error_raw = yaw_error_raw;
+  vmc_balance.yaw_error = yaw_error;
+  vmc_balance.yaw_rate_error = yaw_rate_error;
+  vmc_wheel_control.yaw_hold_current = (int16_t)yaw_current;
+  return vmc_wheel_control.yaw_hold_current;
+}
+
 static void vmc_balance_apply_wheel_output(void)
 {
+  int16_t yaw_current;
+
   vmc_wheel_control.max_current = vmc_balance.wheel_current_limit;
 
   if (vmc_balance.enabled != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_safety_allows_output() != 0U) {
+    yaw_current = vmc_update_yaw_hold_current();
     vmc_wheel_control.enabled = 1U;
     vmc_wheel_control.left_current =
         clamp_i16((int16_t)(vmc_balance.left_wheel_current_cmd +
-                            vmc_wheel_control.manual_left_current),
+                            vmc_wheel_control.manual_left_current -
+                            yaw_current),
                   -vmc_wheel_control.max_current,
                   vmc_wheel_control.max_current);
     vmc_wheel_control.right_current =
         clamp_i16((int16_t)(vmc_balance.right_wheel_current_cmd +
-                            vmc_wheel_control.manual_right_current),
+                            vmc_wheel_control.manual_right_current +
+                            yaw_current),
                   -vmc_wheel_control.max_current,
                   vmc_wheel_control.max_current);
   } else {
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    vmc_balance.yaw_error_raw = 0.0;
+    vmc_balance.yaw_error = 0.0;
+    vmc_balance.yaw_rate_error = 0.0;
+    vmc_wheel_control.yaw_hold_current = 0;
     vmc_wheel_control.enabled = 0U;
     vmc_wheel_control.left_current = 0;
     vmc_wheel_control.right_current = 0;
   }
+  vmc_probe_state.balance = vmc_balance;
 }
 
 static void vmc_dm_send_init_phase(uint8_t phase)

@@ -24,16 +24,12 @@ Open the Vite URL and keep the backend running.
 
 ## RTT Downlink
 
-The server sends one JSON line through SEGGER RTT:
+Start the VS Code Cortex-Debug `J-Link Debug STM32F427` or `J-Link Attach STM32F427` configuration first. The launch config starts the J-Link GDB server with RTT Telnet on `127.0.0.1:19021`. The Python backend opens one persistent TCP connection to that port and reuses it for K and balance-parameter updates; it does not launch `JLinkRTTClient`. If the debug session restarts, the backend will reconnect on the next send.
+
+The server sends this payload shape through RTT channel 0:
 
 ```json
 {"type":"vmc_lqr_k","preset":"abk","leg_length":0.28,"state_order":["theta","dtheta","x","dx","phi","dphi"],"input_order":["T","Tp"],"k_flat_col_major":[...]}
-```
-
-Default RTT client path:
-
-```text
-/Applications/SEGGER/JLink/JLinkRTTClient
 ```
 
 Firmware parsing is implemented in `aboard/App/Src/vmc_lqr_rtt.c`. A valid

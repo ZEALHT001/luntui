@@ -15,7 +15,9 @@
       "gdbPath": "/opt/homebrew/bin/arm-none-eabi-gdb",
       "serverArgs": [
         "-speed",
-        "4000"
+        "4000",
+        "-RTTTelnetPort",
+        "19021"
       ],
       "runToEntryPoint": "main",
       "preLaunchTask": "CMake: build Debug",
@@ -42,7 +44,9 @@
       "gdbPath": "/opt/homebrew/bin/arm-none-eabi-gdb",
       "serverArgs": [
         "-speed",
-        "4000"
+        "4000",
+        "-RTTTelnetPort",
+        "19021"
       ],
       "showDevDebugOutput": "none",
       "liveWatch": {
