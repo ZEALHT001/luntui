@@ -552,6 +552,7 @@ static void vmc_update_remote_mode(void)
 {
   int16_t forward_current;
   int16_t turn_current;
+  double speed_target_max;
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
@@ -562,6 +563,7 @@ static void vmc_update_remote_mode(void)
       (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
     return;
   }
@@ -575,6 +577,7 @@ static void vmc_update_remote_mode(void)
   } else {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
     return;
   }
@@ -586,14 +589,34 @@ static void vmc_update_remote_mode(void)
   vmc_wheel_control.manual_forward_current = forward_current;
   vmc_wheel_control.manual_turn_current = turn_current;
 
-  vmc_wheel_control.manual_left_current =
-      clamp_i16((int16_t)(forward_current - turn_current),
-                -VMC_WHEEL_CURRENT_MAX_DEFAULT,
-                VMC_WHEEL_CURRENT_MAX_DEFAULT);
-  vmc_wheel_control.manual_right_current =
-      clamp_i16((int16_t)(forward_current + turn_current),
-                -VMC_WHEEL_CURRENT_MAX_DEFAULT,
-                VMC_WHEEL_CURRENT_MAX_DEFAULT);
+  if (vmc_balance.speed_control_enable != 0U) {
+    speed_target_max = clamp_double(vmc_balance.speed_target_max, 0.0, 3.0);
+    vmc_balance.speed_target =
+        (float)(((double)forward_current * speed_target_max) /
+                (double)VMC_RC_WHEEL_FWD_CURRENT_MAX);
+
+    vmc_wheel_control.manual_left_current =
+        clamp_i16((int16_t)(-turn_current),
+                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
+                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    vmc_wheel_control.manual_right_current =
+        clamp_i16(turn_current,
+                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
+                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
+  } else {
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.speed_target_ramped = 0.0f;
+    vmc_balance.speed_stop_hold_active = 0U;
+
+    vmc_wheel_control.manual_left_current =
+        clamp_i16((int16_t)(forward_current - turn_current),
+                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
+                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    vmc_wheel_control.manual_right_current =
+        clamp_i16((int16_t)(forward_current + turn_current),
+                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
+                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
+  }
 }
 
 static void vmc_update_body_state(void)
@@ -720,6 +743,18 @@ void vmc_balance_init(void)
   vmc_balance.dx_feedback_gain = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.x_feedback_limit = VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT;
   vmc_balance.dx_feedback_limit = VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT;
+  vmc_balance.speed_control_enable = VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT;
+  vmc_balance.speed_target = 0.0f;
+  vmc_balance.speed_target_ramped = 0.0f;
+  vmc_balance.speed_target_max = VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT;
+  vmc_balance.speed_ramp_rate = VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT;
+  vmc_balance.speed_deadband = VMC_BALANCE_SPEED_DEADBAND_DEFAULT;
+  vmc_balance.stop_speed_threshold = VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT;
+  vmc_balance.speed_pitch_gain = VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT;
+  vmc_balance.speed_pitch_limit = VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT;
+  vmc_balance.speed_pitch_ramp_rate = VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT;
+  vmc_balance.speed_pitch_offset = 0.0f;
+  vmc_balance.speed_stop_hold_active = 0U;
   vmc_balance.dtheta_lpf_alpha = VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT;
   vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
   vmc_balance.yaw_hold_active = 0U;
@@ -756,11 +791,61 @@ void vmc_balance_update(void)
   const double theta_error_raw = lqr_theta - vmc_balance.pitch_offset;
   const double theta_error =
       apply_soft_deadband(theta_error_raw, vmc_balance.theta_deadband);
-  const double phi_error_raw = motion->phi - vmc_balance.phi_offset;
+  const double speed_deadband =
+      clamp_double(vmc_balance.speed_deadband, 0.0, 0.5);
+  const double speed_target =
+      (vmc_balance.speed_control_enable != 0U)
+          ? clamp_double(vmc_balance.speed_target,
+                         -clamp_double(vmc_balance.speed_target_max, 0.0, 3.0),
+                         clamp_double(vmc_balance.speed_target_max, 0.0, 3.0))
+          : 0.0;
+  const double speed_ramp_step =
+      clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0) * VMC_CONTROL_DT;
+  const double dx_target =
+      vmc_step_towards(vmc_balance.speed_target_ramped, speed_target, speed_ramp_step);
+  const uint8_t stick_speed_active =
+      (vmc_balance.speed_control_enable != 0U && fabs(speed_target) > speed_deadband) ? 1U : 0U;
+  const double stop_speed_threshold =
+      clamp_double(vmc_balance.stop_speed_threshold, 0.0, 1.0);
+  uint8_t speed_active =
+      (vmc_balance.speed_control_enable != 0U && fabs(dx_target) > speed_deadband) ? 1U : 0U;
+
+  const double speed_pitch_limit =
+      clamp_double(vmc_balance.speed_pitch_limit, 0.0, 0.5);
+  const double speed_pitch_target =
+      clamp_double(dx_target * clamp_double(vmc_balance.speed_pitch_gain, -1.0, 1.0),
+                   -speed_pitch_limit,
+                   speed_pitch_limit);
+  const double speed_pitch_step =
+      clamp_double(vmc_balance.speed_pitch_ramp_rate, 0.0, 5.0) * VMC_CONTROL_DT;
+  const double speed_pitch_offset =
+      vmc_step_towards(vmc_balance.speed_pitch_offset,
+                       speed_pitch_target,
+                       speed_pitch_step);
+  const double pitch_target = vmc_balance.phi_offset + speed_pitch_offset;
+  const double phi_error_raw = motion->phi - pitch_target;
   const double phi_error =
       apply_soft_deadband(phi_error_raw, vmc_balance.phi_deadband);
+
+  vmc_balance.speed_target_ramped = (float)dx_target;
+  vmc_balance.speed_pitch_offset = (float)speed_pitch_offset;
+  if (stick_speed_active != 0U) {
+    vmc_balance.speed_stop_hold_active = 1U;
+    vmc_balance.x_offset = (float)motion->kf_x;
+  } else if (vmc_balance.speed_stop_hold_active != 0U) {
+    speed_active = 1U;
+    vmc_balance.x_offset = (float)motion->kf_x;
+    if (fabs(motion->kf_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {
+      vmc_balance.speed_stop_hold_active = 0U;
+      speed_active = 0U;
+      vmc_balance.x_offset = (float)motion->kf_x;
+    }
+  }
+
   const double x_error =
-      (vmc_balance.dx_feedback_enable != 0U && vmc_balance.x_feedback_enable != 0U)
+      (vmc_balance.dx_feedback_enable != 0U &&
+       vmc_balance.x_feedback_enable != 0U &&
+       speed_active == 0U)
           ? (motion->kf_x - vmc_balance.x_offset)
           : 0.0;
   const double x_feedback_raw =
@@ -770,7 +855,7 @@ void vmc_balance_update(void)
   const double x_feedback_error =
       clamp_double(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
   const double dx_raw = (vmc_balance.dx_feedback_enable != 0U)
-                            ? motion->kf_dx *
+                            ? (motion->kf_dx - dx_target) *
                                   clamp_double(vmc_balance.dx_feedback_gain, -200.0, 200.0)
                             : 0.0;
   const double dx_feedback_limit =
@@ -845,6 +930,8 @@ void vmc_balance_update(void)
   vmc_balance.phi_error = phi_error;
   vmc_balance.x_error = x_error;
   vmc_balance.dx_error = dx_error;
+  vmc_balance.dx_target = dx_target;
+  vmc_balance.dx_raw = dx_raw;
   vmc_balance.left_wheel_theta_term = left_wheel_theta_term;
   vmc_balance.left_wheel_dtheta_term = left_wheel_dtheta_term;
   vmc_balance.left_wheel_x_term = left_wheel_x_term;

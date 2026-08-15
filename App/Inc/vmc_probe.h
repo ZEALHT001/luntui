@@ -131,6 +131,14 @@ extern "C" {
 #define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.0f
 #define VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT 0.5f
 #define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 1.5f
+#define VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT 1U
+#define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 0.8f
+#define VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT 1.5f
+#define VMC_BALANCE_SPEED_DEADBAND_DEFAULT 0.02f
+#define VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT 0.08f
+#define VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT 0.0f
+#define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.12f
+#define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.5f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_RC_CH_DEADBAND 20
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
@@ -240,6 +248,18 @@ typedef struct {
   float dx_feedback_gain;
   float x_feedback_limit;
   float dx_feedback_limit;
+  uint8_t speed_control_enable;
+  float speed_target;
+  float speed_target_ramped;
+  float speed_target_max;
+  float speed_ramp_rate;
+  float speed_deadband;
+  float stop_speed_threshold;
+  float speed_pitch_gain;
+  float speed_pitch_limit;
+  float speed_pitch_ramp_rate;
+  float speed_pitch_offset;
+  uint8_t speed_stop_hold_active;
   float dtheta_lpf_alpha;
   float yaw_target;
   float yaw_hold_kp;
@@ -260,6 +280,8 @@ typedef struct {
   double phi_error;
   double x_error;
   double dx_error;
+  double dx_target;
+  double dx_raw;
   double yaw_error_raw;
   double yaw_error;
   double yaw_rate_error;
