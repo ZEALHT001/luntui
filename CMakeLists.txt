@@ -49,11 +49,14 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/remote_control.c
     App/Src/hi12_imu.c
     App/Src/vmc_lqr.c
+    App/Src/vmc_lqr_rtt.c
+    Drivers/RTT/SEGGER_RTT.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     App/Inc
+    Drivers/RTT
 )
 
 # Add project symbols (macros)

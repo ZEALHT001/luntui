@@ -1,1 +1,62 @@
-build
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# CMake / Ninja build output
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.ninja
+.ninja_*
+
+# STM32 firmware build artifacts
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.o
+*.obj
+*.d
+*.su
+*.gcno
+*.gcda
+
+# Keil / ARM tool output
+Listings/
+Objects/
+RTE/
+*.axf
+*.htm
+*.lnp
+*.crf
+*.dep
+*.iex
+*.uvguix.*
+*.uvoptx
+*.uvprojx.user
+
+# Python cache / virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / Vite frontend output
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak

@@ -3,6 +3,7 @@
 #include "hi12_imu.h"
 #include "remote_control.h"
 #include "vmc_lqr.h"
+#include "vmc_lqr_rtt.h"
 #include "vmc_math.h"
 
 #include <math.h>
@@ -670,8 +671,17 @@ static void vmc_update_lqr_gain(void)
 {
   const double leg_length_avg =
       (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5;
+  uint8_t i;
 
   vmc_probe_state.motion.leg_length_avg = leg_length_avg;
+  if (vmc_probe_state.lqr.rtt_override_active != 0U) {
+    for (i = 0U; i < 12U; i++) {
+      vmc_probe_state.lqr.left_k[i] = vmc_probe_state.lqr.rtt_k[i];
+      vmc_probe_state.lqr.right_k[i] = vmc_probe_state.lqr.rtt_k[i];
+    }
+    return;
+  }
+
   vmc_lqr_update_gain(leg_length_avg, (double *)vmc_probe_state.lqr.left_k);
   vmc_lqr_update_gain(leg_length_avg, (double *)vmc_probe_state.lqr.right_k);
 }
@@ -1291,6 +1301,7 @@ void vmc_probe_task(void const *argument)
   memset((void *)&vmc_probe_state, 0, sizeof(vmc_probe_state));
   remote_control_init();
   hi12_imu_init();
+  vmc_lqr_rtt_init();
   vmc_can_init();
   vmc_control_init();
   vmc_wheel_control_init();
@@ -1302,6 +1313,7 @@ void vmc_probe_task(void const *argument)
     vmc_update_body_state();
     vmc_update_leg_state();
     vmc_update_motion_state();
+    vmc_lqr_rtt_update();
     vmc_update_lqr_gain();
     vmc_balance_update();
     vmc_control_update();

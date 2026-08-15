@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VMC LQR Tuner</title>
+  </head>
+  <body>
+    <main id="app">
+      <header class="toolbar">
+        <div>
+          <h1>VMC LQR Tuner</h1>
+          <p>输入 Q/R 权重，计算 K 矩阵，并通过 RTT 下发。</p>
+        </div>
+        <div class="status" id="status">未连接</div>
+      </header>
+
+      <section class="panel grid">
+        <label>
+          API 地址
+          <input id="apiBase" value="http://127.0.0.1:8765" />
+        </label>
+        <label>
+          Preset
+          <select id="preset">
+            <option value="abk">abk</option>
+            <option value="abk2">abk2</option>
+          </select>
+        </label>
+        <label>
+          当前腿长 L0 (m)
+          <input id="legLength" type="number" step="0.001" value="0.28" />
+        </label>
+        <label>
+          RTT Client
+          <input id="rttClient" value="/Applications/SEGGER/JLink/JLinkRTTClient" />
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>Q 权重</h2>
+        <div class="weights" id="qWeights"></div>
+      </section>
+
+      <section class="panel">
+        <h2>R 权重</h2>
+        <div class="weights two" id="rWeights"></div>
+      </section>
+
+      <section class="actions">
+        <button id="calcBtn">计算 K</button>
+        <button id="sendBtn">计算并 RTT 下发</button>
+        <label class="check">
+          <input id="dryRun" type="checkbox" checked />
+          Dry run RTT
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>K 矩阵</h2>
+        <table id="kTable"></table>
+      </section>
+
+      <section class="panel split">
+        <div>
+          <h2>RTT Payload</h2>
+          <textarea id="payload" readonly></textarea>
+        </div>
+        <div>
+          <h2>日志</h2>
+          <pre id="log"></pre>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

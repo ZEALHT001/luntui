@@ -308,6 +308,13 @@ typedef struct {
 typedef struct {
   double left_k[12];
   double right_k[12];
+  double rtt_k[12];
+  uint8_t rtt_override_active;
+  uint8_t rtt_last_error;
+  uint32_t rtt_update_count;
+  uint32_t rtt_error_count;
+  uint32_t rtt_last_update_ms;
+  uint32_t rtt_rx_count;
 } vmc_lqr_state_t;
 
 typedef struct {
