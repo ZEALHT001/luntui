@@ -154,8 +154,29 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.phi_deadband = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.20f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "tp_output_enable", &value) != 0U) {
+    vmc_balance.tp_output_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "wheel_output_user_enable", &value) != 0U ||
+      vmc_lqr_rtt_parse_named_float(line, "wheel_output_enable", &value) != 0U) {
+    vmc_balance.wheel_output_user_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "theta_deadband", &value) != 0U) {
     vmc_balance.theta_deadband = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.20f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "lqr_dtheta_gain", &value) != 0U) {
+    vmc_balance.lqr_dtheta_gain = vmc_lqr_rtt_clamp_float(value, -10.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "lqr_dtheta_deadband", &value) != 0U) {
+    vmc_balance.lqr_dtheta_deadband = vmc_lqr_rtt_clamp_float(value, 0.0f, 5.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "lqr_dtheta_limit", &value) != 0U) {
+    vmc_balance.lqr_dtheta_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 50.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
@@ -259,6 +280,11 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_current_limit", &value) != 0U) {
     vmc_balance.yaw_hold_current_limit =
+        (int16_t)vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "turn_current_max", &value) != 0U) {
+    vmc_balance.turn_current_max =
         (int16_t)vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_WHEEL_CURRENT_MAX_DEFAULT);
     applied = 1U;
   }

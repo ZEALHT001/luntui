@@ -53,7 +53,7 @@
 
       <section class="panel">
         <h2>实时平衡参数</h2>
-        <h3>平衡反馈</h3>
+        <h3>姿态目标</h3>
         <div class="params">
           <label>
             Theta 目标 / theta_target (rad)
@@ -64,13 +64,41 @@
             <input id="pitchTarget" type="number" step="0.001" value="-0.04" />
           </label>
           <label>
-            Pitch 死区 / phi_deadband (rad)
-            <input id="pitchDeadband" type="number" step="0.001" value="0.0" />
-          </label>
-          <label>
             Theta 死区 / theta_deadband (rad)
             <input id="thetaDeadband" type="number" step="0.001" value="0.0" />
           </label>
+          <label>
+            Pitch 死区 / phi_deadband (rad)
+            <input id="pitchDeadband" type="number" step="0.001" value="0.0" />
+          </label>
+        </div>
+
+        <h3>LQR 关节力矩</h3>
+        <div class="params">
+          <label>
+            关节 Tp 输出 / tp_output_enable
+            <input id="tpOutputEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            用户轮子输出 / wheel_output_user_enable
+            <input id="wheelOutputUserEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            dTheta 输出增益 / lqr_dtheta_gain
+            <input id="lqrDthetaGain" type="number" step="0.1" value="1.0" />
+          </label>
+          <label>
+            dTheta 死区 / lqr_dtheta_deadband (rad/s)
+            <input id="lqrDthetaDeadband" type="number" step="0.01" value="0.0" />
+          </label>
+          <label>
+            dTheta 限幅 / lqr_dtheta_limit (rad/s)
+            <input id="lqrDthetaLimit" type="number" step="0.1" value="20.0" />
+          </label>
+        </div>
+
+        <h3>位置 / 速度反馈</h3>
+        <div class="params">
           <label>
             X 增益 / x_feedback_gain
             <input id="xGain" type="number" step="0.1" value="-1" />
@@ -87,6 +115,10 @@
             dX 反馈限幅 / dx_feedback_limit
             <input id="dxLimit" type="number" step="0.1" value="1.5" />
           </label>
+        </div>
+
+        <h3>速度控制</h3>
+        <div class="params">
           <label>
             速控使能 / speed_control_enable
             <input id="speedControlEnable" type="number" step="1" min="0" max="1" value="1" />
@@ -107,6 +139,10 @@
             停稳速度阈值 / stop_speed_threshold
             <input id="stopSpeedThreshold" type="number" step="0.01" value="0.08" />
           </label>
+        </div>
+
+        <h3>速度 Pitch 前馈</h3>
+        <div class="params">
           <label>
             速度 Pitch 前馈 / speed_pitch_gain
             <input id="speedPitchGain" type="number" step="0.01" value="0.0" />
@@ -120,7 +156,8 @@
             <input id="speedPitchRampRate" type="number" step="0.1" value="0.5" />
           </label>
         </div>
-        <h3>腿长 PID</h3>
+
+        <h3>腿长控制</h3>
         <div class="params">
           <label>
             腿长 KP / kp_length
@@ -143,7 +180,8 @@
             <input id="lengthRampRate" type="number" step="0.01" value="0.2" />
           </label>
         </div>
-        <h3>摆角 PID</h3>
+
+        <h3>摆角 PD</h3>
         <div class="params">
           <label>
             摆角 KP / kp_phi0
@@ -158,7 +196,8 @@
             <input id="maxPhi0Torque" type="number" step="1" value="54" />
           </label>
         </div>
-        <h3>Yaw IMU 闭环</h3>
+
+        <h3>Yaw 闭环</h3>
         <div class="params">
           <label>
             Yaw 使能 / yaw_hold_enable
@@ -179,6 +218,14 @@
           <label>
             Yaw 电流限幅 / yaw_hold_current_limit
             <input id="yawHoldCurrentLimit" type="number" step="10" value="800" />
+          </label>
+        </div>
+
+        <h3>遥控转向</h3>
+        <div class="params">
+          <label>
+            遥控转向电流 / turn_current_max
+            <input id="turnCurrentMax" type="number" step="10" value="600" />
           </label>
         </div>
       </section>

@@ -121,6 +121,7 @@ extern "C" {
     VMC_BALANCE_C620_MAX_CURRENT_A))
 #define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 10.0f
 #define VMC_BALANCE_TP_LIMIT_DEFAULT 5.0f
+#define VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_PITCH_OFFSET_DEFAULT 0.0f
 #define VMC_BALANCE_PHI_OFFSET_DEFAULT -0.04f
 #define VMC_BALANCE_DX_FEEDBACK_ENABLE_DEFAULT 1U
@@ -140,9 +141,12 @@ extern "C" {
 #define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.12f
 #define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.5f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
+#define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
+#define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
+#define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 20.0f
 #define VMC_RC_CH_DEADBAND 20
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
-#define VMC_RC_WHEEL_TURN_CURRENT_MAX 1200
+#define VMC_RC_WHEEL_TURN_CURRENT_MAX 600
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 500.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 60.0f
@@ -232,6 +236,7 @@ typedef struct {
 typedef struct {
   uint8_t enabled;
   uint8_t wheel_output_enable;
+  uint8_t wheel_output_user_enable;
   uint8_t tp_output_enable;
   uint8_t dx_feedback_enable;
   uint8_t x_feedback_enable;
@@ -261,11 +266,15 @@ typedef struct {
   float speed_pitch_offset;
   uint8_t speed_stop_hold_active;
   float dtheta_lpf_alpha;
+  float lqr_dtheta_gain;
+  float lqr_dtheta_deadband;
+  float lqr_dtheta_limit;
   float yaw_target;
   float yaw_hold_kp;
   float yaw_hold_kd;
   float yaw_hold_deadband;
   int16_t yaw_hold_current_limit;
+  int16_t turn_current_max;
   int16_t wheel_current_limit;
   float wheel_torque_limit;
   float wheel_torque_to_current;
@@ -276,6 +285,16 @@ typedef struct {
   double lqr_d_theta_raw;
   double theta_error_raw;
   double theta_error;
+  double left_lqr_theta_error_raw;
+  double right_lqr_theta_error_raw;
+  double left_lqr_theta_error;
+  double right_lqr_theta_error;
+  double left_lqr_d_theta_raw;
+  double right_lqr_d_theta_raw;
+  double left_lqr_d_theta;
+  double right_lqr_d_theta;
+  double left_lqr_d_theta_limited;
+  double right_lqr_d_theta_limited;
   double phi_error_raw;
   double phi_error;
   double x_error;
@@ -291,12 +310,16 @@ typedef struct {
   double left_wheel_dx_term;
   double left_wheel_phi_term;
   double left_wheel_dphi_term;
+  double left_tp_theta_term;
+  double left_tp_dtheta_term;
   double right_wheel_theta_term;
   double right_wheel_dtheta_term;
   double right_wheel_x_term;
   double right_wheel_dx_term;
   double right_wheel_phi_term;
   double right_wheel_dphi_term;
+  double right_tp_theta_term;
+  double right_tp_dtheta_term;
   double wheel_torque_raw;
   double left_wheel_torque_raw;
   double right_wheel_torque_raw;

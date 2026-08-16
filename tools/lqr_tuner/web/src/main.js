@@ -8,7 +8,12 @@ const balanceParamIds = [
   ["thetaTarget", "theta_target"],
   ["pitchTarget", "pitch_target"],
   ["pitchDeadband", "pitch_deadband"],
+  ["tpOutputEnable", "tp_output_enable"],
+  ["wheelOutputUserEnable", "wheel_output_user_enable"],
   ["thetaDeadband", "theta_deadband"],
+  ["lqrDthetaGain", "lqr_dtheta_gain"],
+  ["lqrDthetaDeadband", "lqr_dtheta_deadband"],
+  ["lqrDthetaLimit", "lqr_dtheta_limit"],
   ["xGain", "x_feedback_gain"],
   ["dxGain", "dx_feedback_gain"],
   ["xLimit", "x_feedback_limit"],
@@ -33,7 +38,8 @@ const balanceParamIds = [
   ["yawHoldKp", "yaw_hold_kp"],
   ["yawHoldKd", "yaw_hold_kd"],
   ["yawHoldDeadband", "yaw_hold_deadband"],
-  ["yawHoldCurrentLimit", "yaw_hold_current_limit"]
+  ["yawHoldCurrentLimit", "yaw_hold_current_limit"],
+  ["turnCurrentMax", "turn_current_max"]
 ];
 const savedParamsKey = "vmc-lqr-tuner-saved-params-v1";
 let liveParamsTimer = 0;

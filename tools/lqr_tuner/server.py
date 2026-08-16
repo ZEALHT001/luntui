@@ -45,7 +45,12 @@ DEFAULT_BALANCE_PARAMS = {
     "theta_target": 0.0,
     "pitch_target": -0.04,
     "pitch_deadband": 0.0,
+    "tp_output_enable": 1.0,
+    "wheel_output_user_enable": 1.0,
     "theta_deadband": 0.0,
+    "lqr_dtheta_gain": 1.0,
+    "lqr_dtheta_deadband": 0.0,
+    "lqr_dtheta_limit": 20.0,
     "x_feedback_gain": -1.0,
     "dx_feedback_gain": -1.0,
     "x_feedback_limit": 0.5,
@@ -71,6 +76,7 @@ DEFAULT_BALANCE_PARAMS = {
     "yaw_hold_kd": 60.0,
     "yaw_hold_deadband": 0.01,
     "yaw_hold_current_limit": 800.0,
+    "turn_current_max": 600.0,
 }
 
 
