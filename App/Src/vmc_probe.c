@@ -907,14 +907,16 @@ void vmc_balance_update(void)
                        lqr_dtheta_gain,
                    -lqr_dtheta_limit,
                    lqr_dtheta_limit);
-  const double left_wheel_theta_term = 0.0;
+  const double left_wheel_theta_term =
+      vmc_probe_state.lqr.left_k[0] * left_lqr_theta_error;
   const double left_wheel_dtheta_term =
       vmc_probe_state.lqr.left_k[2] * left_lqr_d_theta_limited;
   const double left_wheel_x_term = vmc_probe_state.lqr.left_k[4] * x_feedback_error;
   const double left_wheel_dx_term = vmc_probe_state.lqr.left_k[6] * dx_error;
   const double left_wheel_phi_term = vmc_probe_state.lqr.left_k[8] * phi_error;
   const double left_wheel_dphi_term = vmc_probe_state.lqr.left_k[10] * motion->d_phi;
-  const double right_wheel_theta_term = 0.0;
+  const double right_wheel_theta_term =
+      vmc_probe_state.lqr.right_k[0] * right_lqr_theta_error;
   const double right_wheel_dtheta_term =
       vmc_probe_state.lqr.right_k[2] * right_lqr_d_theta_limited;
   const double right_wheel_x_term = vmc_probe_state.lqr.right_k[4] * x_feedback_error;
