@@ -41,6 +41,8 @@ STATE_NAMES = ["theta", "dtheta", "x", "dx", "phi", "dphi"]
 INPUT_NAMES = ["T", "Tp"]
 DEFAULT_RTT_HOST = "127.0.0.1"
 DEFAULT_RTT_PORT = 19021
+DEFAULT_VOFA_HOST = "127.0.0.1"
+DEFAULT_VOFA_PORT = 1347
 DEFAULT_BALANCE_PARAMS = {
     "theta_target": 0.0,
     "pitch_target": -0.04,
@@ -263,6 +265,19 @@ class PersistentRttConnection:
             return self._sock, banner, True  # type: ignore[return-value]
         return self._sock, "", False
 
+    def read_available(self, host: str, port: int, timeout_s: float = 0.2) -> str:
+        with self._lock:
+            try:
+                sock, _, _ = self._ensure_connected(host, port, timeout_s)
+                return self._read_available(
+                    sock,
+                    quiet_window_s=0.02,
+                    max_wait_s=0.05,
+                )
+            except OSError:
+                self.close()
+                return ""
+
     def send(self, frame: str, host: str, port: int, timeout_s: float) -> dict[str, Any]:
         with self._lock:
             reconnect_count = 0
@@ -321,6 +336,81 @@ class PersistentRttConnection:
 
 
 _RTT_CONNECTION = PersistentRttConnection()
+
+
+class VofaTcpBridge:
+    def __init__(
+        self,
+        *,
+        vofa_host: str,
+        vofa_port: int,
+        rtt_host: str,
+        rtt_port: int,
+    ) -> None:
+        self.vofa_host = vofa_host
+        self.vofa_port = vofa_port
+        self.rtt_host = rtt_host
+        self.rtt_port = rtt_port
+        self._clients: list[socket.socket] = []
+        self._clients_lock = threading.Lock()
+        self._line_buffer = ""
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._serve_clients, daemon=True).start()
+        threading.Thread(target=self._poll_rtt, daemon=True).start()
+        print(f"VOFA TCP bridge listening on tcp://{self.vofa_host}:{self.vofa_port}")
+
+    def _serve_clients(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((self.vofa_host, self.vofa_port))
+            server.listen(4)
+            server.settimeout(0.5)
+            while not self._stop.is_set():
+                try:
+                    client, addr = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    print(f"VOFA TCP accept stopped: {exc}")
+                    return
+                client.setblocking(False)
+                with self._clients_lock:
+                    self._clients.append(client)
+                print(f"VOFA client connected from {addr[0]}:{addr[1]}")
+
+    def _broadcast(self, line: str) -> None:
+        data = line.encode("utf-8", errors="replace")
+        with self._clients_lock:
+            alive: list[socket.socket] = []
+            for client in self._clients:
+                try:
+                    client.sendall(data)
+                    alive.append(client)
+                except OSError:
+                    try:
+                        client.close()
+                    except OSError:
+                        pass
+            self._clients = alive
+
+    def _handle_rtt_text(self, text: str) -> None:
+        self._line_buffer += text
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            line = line.strip()
+            if not line.startswith("VMCVOFA,"):
+                continue
+            self._broadcast(line[len("VMCVOFA,"):] + "\n")
+
+    def _poll_rtt(self) -> None:
+        while not self._stop.is_set():
+            text = _RTT_CONNECTION.read_available(self.rtt_host, self.rtt_port, timeout_s=0.2)
+            if text:
+                self._handle_rtt_text(text)
+            else:
+                time.sleep(0.01)
 
 
 def send_rtt_line(
@@ -484,9 +574,22 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--rtt-host", default=DEFAULT_RTT_HOST)
+    parser.add_argument("--rtt-port", type=int, default=DEFAULT_RTT_PORT)
+    parser.add_argument("--vofa-host", default=DEFAULT_VOFA_HOST)
+    parser.add_argument("--vofa-port", type=int, default=DEFAULT_VOFA_PORT)
+    parser.add_argument("--no-vofa", action="store_true")
     args = parser.parse_args()
 
     _stop_stale_backend_on_port(args.port)
+    if not args.no_vofa:
+        _stop_stale_backend_on_port(args.vofa_port)
+        VofaTcpBridge(
+            vofa_host=args.vofa_host,
+            vofa_port=args.vofa_port,
+            rtt_host=args.rtt_host,
+            rtt_port=args.rtt_port,
+        ).start()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"LQR tuner API listening on http://{args.host}:{args.port}")
     httpd.serve_forever()

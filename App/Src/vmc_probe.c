@@ -1575,6 +1575,7 @@ void vmc_probe_task(void const *argument)
     vmc_lqr_rtt_update();
     vmc_update_lqr_gain();
     vmc_balance_update();
+    vmc_lqr_rtt_telemetry_update();
     vmc_control_update();
     vmc_dm_state_machine_update();
     vmc_balance_apply_wheel_output();

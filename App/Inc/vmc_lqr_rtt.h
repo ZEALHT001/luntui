@@ -7,6 +7,7 @@ extern "C" {
 
 void vmc_lqr_rtt_init(void);
 void vmc_lqr_rtt_update(void);
+void vmc_lqr_rtt_telemetry_update(void);
 
 #ifdef __cplusplus
 }

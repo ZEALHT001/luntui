@@ -4,12 +4,15 @@
 #include "stm32f4xx_hal.h"
 #include "vmc_probe.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
 #define VMC_LQR_RTT_LINE_MAX     1024U
 #define VMC_LQR_RTT_READ_CHUNK   64U
+#define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
+#define VMC_LQR_RTT_TELEM_SCALE 1000L
 
 #define VMC_LQR_RTT_ERR_NONE      0U
 #define VMC_LQR_RTT_ERR_OVERFLOW  1U
@@ -19,6 +22,7 @@
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
+static uint32_t lqr_rtt_last_telem_ms;
 
 static void vmc_lqr_rtt_ack(const char *text)
 {
@@ -379,4 +383,96 @@ void vmc_lqr_rtt_update(void)
       lqr_rtt_line[lqr_rtt_line_len++] = c;
     }
   } while (read_len == sizeof(data));
+}
+
+static int vmc_lqr_rtt_append_scaled(char *line, int offset, int max_len, double value)
+{
+  long scaled = (long)(value * (double)VMC_LQR_RTT_TELEM_SCALE);
+  const int negative = (scaled < 0L || (value < 0.0 && scaled == 0L)) ? 1 : 0;
+  long whole;
+  long frac;
+
+  if (scaled < 0L) {
+    scaled = -scaled;
+  } else if (negative != 0) {
+    scaled = 1L;
+  }
+
+  whole = scaled / VMC_LQR_RTT_TELEM_SCALE;
+  frac = scaled % VMC_LQR_RTT_TELEM_SCALE;
+
+  return offset + snprintf(&line[offset],
+                           (size_t)(max_len - offset),
+                           negative != 0 ? ",-%ld.%03ld" : ",%ld.%03ld",
+                           whole,
+                           frac);
+}
+
+void vmc_lqr_rtt_telemetry_update(void)
+{
+  const uint32_t now = HAL_GetTick();
+  const volatile vmc_balance_t *b = &vmc_balance;
+  const volatile vmc_motion_state_t *m = &vmc_probe_state.motion;
+  const volatile vmc_body_state_t *body = &vmc_probe_state.body;
+  char line[512];
+  int offset;
+  const double left_tp_phi_term = vmc_probe_state.lqr.left_k[9] * b->phi_error;
+  const double left_tp_dphi_term = vmc_probe_state.lqr.left_k[11] * m->d_phi;
+  const double right_tp_phi_term = vmc_probe_state.lqr.right_k[9] * b->phi_error;
+  const double right_tp_dphi_term = vmc_probe_state.lqr.right_k[11] * m->d_phi;
+
+  if ((uint32_t)(now - lqr_rtt_last_telem_ms) < VMC_LQR_RTT_TELEM_PERIOD_MS) {
+    return;
+  }
+  lqr_rtt_last_telem_ms = now;
+
+  offset = snprintf(line, sizeof(line), "VMCVOFA");
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), body->pitch);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), body->pitch_rate);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->lqr_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->lqr_d_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), m->kf_x);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), m->kf_dx);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), m->left_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_lqr_d_theta_limited);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), m->right_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_lqr_d_theta_limited);
+
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_theta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_x_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_dx_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_phi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_dphi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_torque_raw);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_current_send);
+
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_theta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_x_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_dx_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_phi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_dphi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_torque_raw);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_wheel_current_send);
+
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_theta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), left_tp_phi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), left_tp_dphi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_raw);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_cmd);
+
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_theta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), right_tp_phi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), right_tp_dphi_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_raw);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_cmd);
+
+  if (offset < ((int)sizeof(line) - 2)) {
+    line[offset++] = '\n';
+    line[offset] = '\0';
+    (void)SEGGER_RTT_WriteString(VMC_LQR_RTT_BUFFER_INDEX, line);
+  }
 }
