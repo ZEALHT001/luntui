@@ -183,6 +183,18 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.lqr_dtheta_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 50.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "tp_phi_gain", &value) != 0U) {
+    vmc_balance.tp_phi_gain = vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "tp_x_gain", &value) != 0U) {
+    vmc_balance.tp_x_gain = vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "dpitch_lpf_alpha", &value) != 0U) {
+    vmc_balance.dpitch_lpf_alpha = vmc_lqr_rtt_clamp_float(value, 0.001f, 1.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
     vmc_balance.x_feedback_gain = vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
     applied = 1U;
@@ -416,10 +428,11 @@ void vmc_lqr_rtt_telemetry_update(void)
   const volatile vmc_body_state_t *body = &vmc_probe_state.body;
   char line[512];
   int offset;
-  const double left_tp_phi_term = vmc_probe_state.lqr.left_k[9] * b->phi_error;
-  const double left_tp_dphi_term = vmc_probe_state.lqr.left_k[11] * m->d_phi;
-  const double right_tp_phi_term = vmc_probe_state.lqr.right_k[9] * b->phi_error;
-  const double right_tp_dphi_term = vmc_probe_state.lqr.right_k[11] * m->d_phi;
+  const double tp_phi_gain = b->tp_phi_gain;
+  const double left_tp_phi_term = tp_phi_gain * vmc_probe_state.lqr.left_k[9] * b->phi_error;
+  const double left_tp_dphi_term = tp_phi_gain * vmc_probe_state.lqr.left_k[11] * b->dpitch_lpf;
+  const double right_tp_phi_term = tp_phi_gain * vmc_probe_state.lqr.right_k[9] * b->phi_error;
+  const double right_tp_dphi_term = tp_phi_gain * vmc_probe_state.lqr.right_k[11] * b->dpitch_lpf;
 
   if ((uint32_t)(now - lqr_rtt_last_telem_ms) < VMC_LQR_RTT_TELEM_PERIOD_MS) {
     return;
@@ -458,6 +471,8 @@ void vmc_lqr_rtt_telemetry_update(void)
 
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_theta_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_x_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_dx_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), left_tp_phi_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), left_tp_dphi_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_tp_raw);
@@ -465,10 +480,17 @@ void vmc_lqr_rtt_telemetry_update(void)
 
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_theta_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_dtheta_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_x_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_dx_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), right_tp_phi_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), right_tp_dphi_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_raw);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->right_tp_cmd);
+
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->x_offset);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->x_error);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_x_term);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->dpitch_lpf);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

@@ -121,6 +121,8 @@ extern "C" {
     VMC_BALANCE_C620_MAX_CURRENT_A))
 #define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 10.0f
 #define VMC_BALANCE_TP_LIMIT_DEFAULT 5.0f
+#define VMC_BALANCE_TP_PHI_GAIN_DEFAULT 1.0f
+#define VMC_BALANCE_TP_X_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_PITCH_OFFSET_DEFAULT 0.0f
 #define VMC_BALANCE_PHI_OFFSET_DEFAULT -0.04f
@@ -144,6 +146,7 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 20.0f
+#define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
 #define VMC_RC_CH_DEADBAND 20
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 600
@@ -269,6 +272,7 @@ typedef struct {
   float lqr_dtheta_gain;
   float lqr_dtheta_deadband;
   float lqr_dtheta_limit;
+  float dpitch_lpf_alpha;
   float yaw_target;
   float yaw_hold_kp;
   float yaw_hold_kd;
@@ -280,6 +284,8 @@ typedef struct {
   float wheel_torque_to_current;
   float wheel_current_gain;
   float tp_limit;
+  float tp_phi_gain;
+  float tp_x_gain;
   double lqr_theta;
   double lqr_d_theta;
   double lqr_d_theta_raw;
@@ -297,6 +303,8 @@ typedef struct {
   double right_lqr_d_theta_limited;
   double phi_error_raw;
   double phi_error;
+  double dpitch_raw;
+  double dpitch_lpf;
   double x_error;
   double dx_error;
   double dx_target;
@@ -312,6 +320,8 @@ typedef struct {
   double left_wheel_dphi_term;
   double left_tp_theta_term;
   double left_tp_dtheta_term;
+  double left_tp_x_term;
+  double left_tp_dx_term;
   double right_wheel_theta_term;
   double right_wheel_dtheta_term;
   double right_wheel_x_term;
@@ -320,6 +330,8 @@ typedef struct {
   double right_wheel_dphi_term;
   double right_tp_theta_term;
   double right_tp_dtheta_term;
+  double right_tp_x_term;
+  double right_tp_dx_term;
   double wheel_torque_raw;
   double left_wheel_torque_raw;
   double right_wheel_torque_raw;
