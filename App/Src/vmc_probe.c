@@ -1,5 +1,6 @@
 #include "vmc_probe.h"
 
+#include "board_comm.h"
 #include "hi12_imu.h"
 #include "remote_control.h"
 #include "vmc_lqr.h"
@@ -1587,7 +1588,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) == HAL_OK &&
         header.IDE == CAN_ID_STD && header.DLC == 8U) {
-      parse_can_frame(hcan, header.StdId, data);
+      if (board_comm_on_can_rx(hcan, header.StdId, data) == 0U) {
+        parse_can_frame(hcan, header.StdId, data);
+      }
     }
   }
 }
@@ -1601,6 +1604,7 @@ void vmc_probe_task(void const *argument)
   hi12_imu_init();
   vmc_lqr_rtt_init();
   vmc_can_init();
+  board_comm_init();
   vmc_control_init();
   vmc_wheel_control_init();
   vmc_balance_init();
@@ -1619,6 +1623,7 @@ void vmc_probe_task(void const *argument)
     vmc_dm_state_machine_update();
     vmc_balance_apply_wheel_output();
     vmc_wheel_control_update();
+    board_comm_update();
     osDelay(1);
   }
 }
