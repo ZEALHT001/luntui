@@ -763,6 +763,7 @@ void vmc_balance_init(void)
   vmc_balance.speed_pitch_ramp_rate = VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT;
   vmc_balance.speed_pitch_offset = 0.0f;
   vmc_balance.speed_stop_hold_active = 0U;
+  vmc_balance.x_hold_max_stretch = VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT;
   vmc_balance.dtheta_lpf_alpha = VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT;
   vmc_balance.lqr_dtheta_gain = VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT;
   vmc_balance.lqr_dtheta_deadband = VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT;
@@ -825,8 +826,6 @@ void vmc_balance_update(void)
       (vmc_balance.speed_control_enable != 0U && fabs(speed_target) > speed_deadband) ? 1U : 0U;
   const double stop_speed_threshold =
       clamp_double(vmc_balance.stop_speed_threshold, 0.0, 1.0);
-  uint8_t speed_active =
-      (vmc_balance.speed_control_enable != 0U && fabs(dx_target) > speed_deadband) ? 1U : 0U;
 
   const double speed_pitch_limit =
       clamp_double(vmc_balance.speed_pitch_limit, 0.0, 0.5);
@@ -852,25 +851,36 @@ void vmc_balance_update(void)
 
   vmc_balance.speed_target_ramped = (float)dx_target;
   vmc_balance.speed_pitch_offset = (float)speed_pitch_offset;
+  double x_error = 0.0;
+  double dx_feedback_target = dx_target;
   if (stick_speed_active != 0U) {
+    /* Cruise mode: keep the parking anchor at the current position and only
+       feed velocity error into LQR, matching the MuJoCo controller. */
     vmc_balance.speed_stop_hold_active = 1U;
     vmc_balance.x_offset = (float)motion->kf_x;
-  } else if (vmc_balance.speed_stop_hold_active != 0U) {
-    speed_active = 1U;
-    vmc_balance.x_offset = (float)motion->kf_x;
+    x_error = 0.0;
+  } else {
+    /* Parking mode: hold the last anchor, but drag it if stretch exceeds the
+       allowed spring travel so the robot does not reverse hard to an old point. */
+    const double x_hold_max_stretch =
+        clamp_double(vmc_balance.x_hold_max_stretch, 0.0, VMC_BODY_MOTION_X_LIMIT_DEFAULT);
+    dx_feedback_target = 0.0;
+    x_error = motion->kf_x - vmc_balance.x_offset;
+    if (x_error > x_hold_max_stretch) {
+      vmc_balance.x_offset = (float)(motion->kf_x - x_hold_max_stretch);
+      x_error = x_hold_max_stretch;
+    } else if (x_error < -x_hold_max_stretch) {
+      vmc_balance.x_offset = (float)(motion->kf_x + x_hold_max_stretch);
+      x_error = -x_hold_max_stretch;
+    }
     if (fabs(motion->kf_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {
       vmc_balance.speed_stop_hold_active = 0U;
-      speed_active = 0U;
-      vmc_balance.x_offset = (float)motion->kf_x;
     }
   }
 
-  const double x_error =
-      (vmc_balance.dx_feedback_enable != 0U &&
-       vmc_balance.x_feedback_enable != 0U &&
-       speed_active == 0U)
-          ? (motion->kf_x - vmc_balance.x_offset)
-          : 0.0;
+  if (vmc_balance.dx_feedback_enable == 0U || vmc_balance.x_feedback_enable == 0U) {
+    x_error = 0.0;
+  }
   const double x_feedback_raw =
       x_error * clamp_double(vmc_balance.x_feedback_gain, -200.0, 200.0);
   const double x_feedback_limit =
@@ -878,7 +888,7 @@ void vmc_balance_update(void)
   const double x_feedback_error =
       clamp_double(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
   const double dx_raw = (vmc_balance.dx_feedback_enable != 0U)
-                            ? (motion->kf_dx - dx_target) *
+                            ? (motion->kf_dx - dx_feedback_target) *
                                   clamp_double(vmc_balance.dx_feedback_gain, -200.0, 200.0)
                             : 0.0;
   const double dx_feedback_limit =

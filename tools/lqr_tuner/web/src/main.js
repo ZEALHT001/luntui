@@ -26,6 +26,7 @@ const balanceParamIds = [
   ["speedRampRate", "speed_ramp_rate"],
   ["speedDeadband", "speed_deadband"],
   ["stopSpeedThreshold", "stop_speed_threshold"],
+  ["xHoldMaxStretch", "x_hold_max_stretch"],
   ["speedPitchGain", "speed_pitch_gain"],
   ["speedPitchLimit", "speed_pitch_limit"],
   ["speedPitchRampRate", "speed_pitch_ramp_rate"],

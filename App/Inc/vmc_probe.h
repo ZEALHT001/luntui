@@ -142,6 +142,7 @@ extern "C" {
 #define VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT 0.0f
 #define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.12f
 #define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.5f
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.15f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
@@ -268,6 +269,7 @@ typedef struct {
   float speed_pitch_ramp_rate;
   float speed_pitch_offset;
   uint8_t speed_stop_hold_active;
+  float x_hold_max_stretch;
   float dtheta_lpf_alpha;
   float lqr_dtheta_gain;
   float lqr_dtheta_deadband;

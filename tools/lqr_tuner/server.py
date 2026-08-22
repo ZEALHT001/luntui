@@ -65,6 +65,7 @@ DEFAULT_BALANCE_PARAMS = {
     "speed_ramp_rate": 1.5,
     "speed_deadband": 0.02,
     "stop_speed_threshold": 0.08,
+    "x_hold_max_stretch": 0.15,
     "speed_pitch_gain": 0.0,
     "speed_pitch_limit": 0.12,
     "speed_pitch_ramp_rate": 0.5,

@@ -232,6 +232,11 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.stop_speed_threshold = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "x_hold_max_stretch", &value) != 0U) {
+    vmc_balance.x_hold_max_stretch =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_BODY_MOTION_X_LIMIT_DEFAULT);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "speed_pitch_gain", &value) != 0U) {
     vmc_balance.speed_pitch_gain = vmc_lqr_rtt_clamp_float(value, -1.0f, 1.0f);
     applied = 1U;
