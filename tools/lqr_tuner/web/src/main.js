@@ -2,12 +2,12 @@ import "./styles.css";
 
 const stateNames = ["theta", "dtheta", "x", "dx", "phi", "dphi"];
 const inputNames = ["T", "Tp"];
-const qDefaults = [1, 100, 200, 500, 20000, 1];
-const rDefaults = [35, 1];
+const qDefaults = [1, 100, 150, 20, 10000, 1];
+const rDefaults = [15, 0.3];
 const balanceParamIds = [
   ["thetaTarget", "theta_target"],
   ["pitchTarget", "pitch_target"],
-  ["pitchDeadband", "pitch_deadband"],
+  ["pitchDeadband", "phi_deadband"],
   ["tpOutputEnable", "tp_output_enable"],
   ["wheelOutputUserEnable", "wheel_output_user_enable"],
   ["thetaDeadband", "theta_deadband"],

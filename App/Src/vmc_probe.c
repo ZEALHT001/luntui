@@ -892,7 +892,7 @@ void vmc_balance_update(void)
                                   clamp_double(vmc_balance.dx_feedback_gain, -200.0, 200.0)
                             : 0.0;
   const double dx_feedback_limit =
-      clamp_double(vmc_balance.dx_feedback_limit, 0.0, 20.0);
+      clamp_double(vmc_balance.dx_feedback_limit, 0.0, 30.0);
   const double dx_error =
       clamp_double(dx_raw, -dx_feedback_limit, dx_feedback_limit);
   const double left_lqr_theta_error_raw =

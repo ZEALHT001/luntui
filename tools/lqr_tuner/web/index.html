@@ -61,7 +61,7 @@
           </label>
           <label>
             Pitch 目标 / pitch_target (rad)
-            <input id="pitchTarget" type="number" step="0.001" value="-0.04" />
+            <input id="pitchTarget" type="number" step="0.001" value="-0.05" />
           </label>
           <label>
             Theta 死区 / theta_deadband (rad)
@@ -93,7 +93,7 @@
           </label>
           <label>
             dTheta 限幅 / lqr_dtheta_limit (rad/s)
-            <input id="lqrDthetaLimit" type="number" step="0.1" value="20.0" />
+            <input id="lqrDthetaLimit" type="number" step="0.1" value="10" />
           </label>
           <label>
             关节 Phi 增益 / tp_phi_gain
@@ -121,11 +121,11 @@
           </label>
           <label>
             X 反馈限幅 / x_feedback_limit
-            <input id="xLimit" type="number" step="0.1" value="0.5" />
+            <input id="xLimit" type="number" step="0.1" value="20" />
           </label>
           <label>
             dX 反馈限幅 / dx_feedback_limit
-            <input id="dxLimit" type="number" step="0.1" value="1.5" />
+            <input id="dxLimit" type="number" step="0.1" value="30" />
           </label>
         </div>
 
@@ -137,11 +137,11 @@
           </label>
           <label>
             最大速度 / speed_target_max (m/s)
-            <input id="speedTargetMax" type="number" step="0.1" value="0.8" />
+            <input id="speedTargetMax" type="number" step="0.1" value="2" />
           </label>
           <label>
             速度斜坡 / speed_ramp_rate
-            <input id="speedRampRate" type="number" step="0.1" value="1.5" />
+            <input id="speedRampRate" type="number" step="0.1" value="3" />
           </label>
           <label>
             速度死区 / speed_deadband
@@ -181,7 +181,7 @@
         <div class="params">
           <label>
             腿长 KP / kp_length
-            <input id="kpLength" type="number" step="1" value="1000" />
+            <input id="kpLength" type="number" step="1" value="2000" />
           </label>
           <label>
             腿长 KD / kd_length
@@ -189,7 +189,7 @@
           </label>
           <label>
             最大支撑力 / max_force
-            <input id="maxForce" type="number" step="1" value="120" />
+            <input id="maxForce" type="number" step="1" value="500" />
           </label>
           <label>
             静态支撑力 / support_force
@@ -213,7 +213,7 @@
           </label>
           <label>
             摆角力矩限幅 / max_phi0_torque
-            <input id="maxPhi0Torque" type="number" step="1" value="54" />
+            <input id="maxPhi0Torque" type="number" step="1" value="80" />
           </label>
         </div>
 
@@ -225,11 +225,11 @@
           </label>
           <label>
             Yaw KP / yaw_hold_kp
-            <input id="yawHoldKp" type="number" step="1" value="500" />
+            <input id="yawHoldKp" type="number" step="1" value="2000" />
           </label>
           <label>
             Yaw KD / yaw_hold_kd
-            <input id="yawHoldKd" type="number" step="1" value="60" />
+            <input id="yawHoldKd" type="number" step="1" value="0" />
           </label>
           <label>
             Yaw 死区 / yaw_hold_deadband
@@ -237,7 +237,7 @@
           </label>
           <label>
             Yaw 电流限幅 / yaw_hold_current_limit
-            <input id="yawHoldCurrentLimit" type="number" step="10" value="800" />
+            <input id="yawHoldCurrentLimit" type="number" step="10" value="5000" />
           </label>
         </div>
 
@@ -245,7 +245,7 @@
         <div class="params">
           <label>
             遥控转向电流 / turn_current_max
-            <input id="turnCurrentMax" type="number" step="10" value="600" />
+            <input id="turnCurrentMax" type="number" step="10" value="1000" />
           </label>
         </div>
       </section>

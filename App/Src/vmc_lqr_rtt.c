@@ -144,17 +144,24 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   float value;
   uint8_t applied = 0U;
 
+  /* theta_target is the wheel-leg theta target; pitch_offset is the legacy
+     internal field name kept for backwards-compatible RTT payloads. */
   if (vmc_lqr_rtt_parse_named_float(line, "theta_target", &value) != 0U ||
+      vmc_lqr_rtt_parse_named_float(line, "target_theta", &value) != 0U ||
       vmc_lqr_rtt_parse_named_float(line, "pitch_offset", &value) != 0U) {
     vmc_balance.pitch_offset = vmc_lqr_rtt_clamp_float(value, -0.50f, 0.50f);
     applied = 1U;
   }
+  /* pitch_target is the body pitch/phi target; phi_offset is the legacy
+     internal field name kept for backwards-compatible RTT payloads. */
   if (vmc_lqr_rtt_parse_named_float(line, "pitch_target", &value) != 0U ||
+      vmc_lqr_rtt_parse_named_float(line, "target_pitch", &value) != 0U ||
       vmc_lqr_rtt_parse_named_float(line, "phi_offset", &value) != 0U) {
     vmc_balance.phi_offset = vmc_lqr_rtt_clamp_float(value, -0.50f, 0.50f);
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "pitch_deadband", &value) != 0U) {
+  if (vmc_lqr_rtt_parse_named_float(line, "phi_deadband", &value) != 0U ||
+      vmc_lqr_rtt_parse_named_float(line, "pitch_deadband", &value) != 0U) {
     vmc_balance.phi_deadband = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.20f);
     applied = 1U;
   }
@@ -209,7 +216,7 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "dx_feedback_limit", &value) != 0U) {
-    vmc_balance.dx_feedback_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
+    vmc_balance.dx_feedback_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 30.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "speed_control_enable", &value) != 0U) {
