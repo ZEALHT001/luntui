@@ -35,6 +35,7 @@ const balanceParamIds = [
   ["maxForce", "max_force"],
   ["supportForce", "support_force"],
   ["lengthRampRate", "length_ramp_rate"],
+  ["phi0RampRate", "phi0_ramp_rate"],
   ["kpPhi0", "kp_phi0"],
   ["kdPhi0", "kd_phi0"],
   ["maxPhi0Torque", "max_phi0_torque"],

@@ -15,10 +15,15 @@ extern "C" {
 #define RC_SW_DOWN 2U
 #define RC_CHANNAL_ERROR_VALUE 700
 #define RC_LOST_TIMEOUT_MS 100U
+#define RC_SWITCH_DEBOUNCE_MS 40U
 
 typedef struct {
   int16_t ch[5];
+  uint8_t raw_s[2];
   uint8_t s[2];
+  uint8_t pending_s[2];
+  uint32_t pending_s_since_ms[2];
+  uint32_t switch_debounce_count[2];
   int16_t mouse_x;
   int16_t mouse_y;
   int16_t mouse_z;

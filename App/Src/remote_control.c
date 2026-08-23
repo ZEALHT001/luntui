@@ -20,7 +20,7 @@ static uint8_t rc_switch_is_valid(uint8_t value)
 
 static uint8_t remote_frame_is_valid(const remote_control_t *rc)
 {
-  if (rc_switch_is_valid(rc->s[0]) == 0U || rc_switch_is_valid(rc->s[1]) == 0U) {
+  if (rc_switch_is_valid(rc->raw_s[0]) == 0U || rc_switch_is_valid(rc->raw_s[1]) == 0U) {
     return 0U;
   }
 
@@ -33,9 +33,41 @@ static uint8_t remote_frame_is_valid(const remote_control_t *rc)
   return 1U;
 }
 
+static uint8_t remote_debounce_switch(uint8_t index, uint8_t raw_value, uint32_t now)
+{
+  uint8_t stable_value = remote_control.s[index];
+  uint8_t pending_value = remote_control.pending_s[index];
+  uint32_t pending_since = remote_control.pending_s_since_ms[index];
+
+  if (rc_switch_is_valid(stable_value) == 0U) {
+    return raw_value;
+  }
+
+  if (raw_value == stable_value) {
+    remote_control.pending_s[index] = stable_value;
+    remote_control.pending_s_since_ms[index] = now;
+    return stable_value;
+  }
+
+  if (raw_value != pending_value) {
+    pending_value = raw_value;
+    pending_since = now;
+  } else if ((now - pending_since) >= RC_SWITCH_DEBOUNCE_MS) {
+    remote_control.switch_debounce_count[index]++;
+    remote_control.pending_s[index] = raw_value;
+    remote_control.pending_s_since_ms[index] = now;
+    return raw_value;
+  }
+
+  remote_control.pending_s[index] = pending_value;
+  remote_control.pending_s_since_ms[index] = pending_since;
+  return stable_value;
+}
+
 static void sbus_to_remote(const uint8_t *sbus_buf)
 {
   remote_control_t rc;
+  const uint32_t now = HAL_GetTick();
 
   rc.ch[0] = (int16_t)((sbus_buf[0] | (sbus_buf[1] << 8)) & 0x07FFU);
   rc.ch[1] = (int16_t)(((sbus_buf[1] >> 3) | (sbus_buf[2] << 5)) & 0x07FFU);
@@ -43,8 +75,8 @@ static void sbus_to_remote(const uint8_t *sbus_buf)
                         (sbus_buf[4] << 10)) &
                        0x07FFU);
   rc.ch[3] = (int16_t)(((sbus_buf[4] >> 1) | (sbus_buf[5] << 7)) & 0x07FFU);
-  rc.s[0] = (uint8_t)((sbus_buf[5] >> 4) & 0x03U);
-  rc.s[1] = (uint8_t)(((sbus_buf[5] >> 4) & 0x0CU) >> 2);
+  rc.raw_s[0] = (uint8_t)((sbus_buf[5] >> 4) & 0x03U);
+  rc.raw_s[1] = (uint8_t)(((sbus_buf[5] >> 4) & 0x0CU) >> 2);
   rc.mouse_x = (int16_t)(sbus_buf[6] | (sbus_buf[7] << 8));
   rc.mouse_y = (int16_t)(sbus_buf[8] | (sbus_buf[9] << 8));
   rc.mouse_z = (int16_t)(sbus_buf[10] | (sbus_buf[11] << 8));
@@ -68,7 +100,15 @@ static void sbus_to_remote(const uint8_t *sbus_buf)
   rc.rx_count = remote_control.rx_count + 1U;
   rc.rx_error_count = remote_control.rx_error_count;
   rc.valid = 1U;
-  rc.last_update_ms = HAL_GetTick();
+  rc.last_update_ms = now;
+  rc.s[0] = remote_debounce_switch(0U, rc.raw_s[0], now);
+  rc.s[1] = remote_debounce_switch(1U, rc.raw_s[1], now);
+  rc.pending_s[0] = remote_control.pending_s[0];
+  rc.pending_s[1] = remote_control.pending_s[1];
+  rc.pending_s_since_ms[0] = remote_control.pending_s_since_ms[0];
+  rc.pending_s_since_ms[1] = remote_control.pending_s_since_ms[1];
+  rc.switch_debounce_count[0] = remote_control.switch_debounce_count[0];
+  rc.switch_debounce_count[1] = remote_control.switch_debounce_count[1];
   remote_control = rc;
 }
 

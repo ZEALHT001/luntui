@@ -74,6 +74,7 @@ DEFAULT_BALANCE_PARAMS = {
     "max_force": 120.0,
     "support_force": 0.0,
     "length_ramp_rate": 0.2,
+    "phi0_ramp_rate": 2.0,
     "kp_phi0": 50.0,
     "kd_phi0": 0.5,
     "max_phi0_torque": 54.0,

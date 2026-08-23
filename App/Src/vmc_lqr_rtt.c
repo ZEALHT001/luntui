@@ -271,6 +271,10 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.length_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "phi0_ramp_rate", &value) != 0U) {
+    vmc_control.phi0_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "kp_phi0", &value) != 0U) {
     vmc_control.kp_phi0 = vmc_lqr_rtt_clamp_float(value, 0.0f, 500.0f);
     applied = 1U;

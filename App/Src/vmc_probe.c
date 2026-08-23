@@ -18,12 +18,22 @@ static double vmc_lqr_d_theta_lpf;
 static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
+static uint32_t vmc_s1_mid_enter_ms;
+
+#define VMC_S1_MID_WHEEL_ENABLE_DELAY_MS 3000U
+#define VMC_RECOVERY_SHORT_LEG_READY_LENGTH 0.200
+#define VMC_RECOVERY_SHORT_LEG_TIMEOUT_MS 2500U
+#define VMC_RECOVERY_THETA_DEADBAND_RAD 0.25
+#define VMC_RECOVERY_DTHETA_DEADBAND_RADPS 2.0
+#define VMC_RECOVERY_PITCH_RATE_DEADBAND_RADPS 2.0
+#define VMC_RECOVERY_PHI0_RAMP_RATE_DEFAULT 2.0f
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_phi0_protect_source(void);
 static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
 static void vmc_update_remote_mode(void);
+static void vmc_recovery_update(void);
 static void vmc_update_body_state(void);
 static void vmc_update_motion_state(void);
 static void vmc_update_lqr_gain(void);
@@ -489,6 +499,18 @@ static uint8_t vmc_phi0_protect_source(void)
   return source;
 }
 
+static uint8_t vmc_recovery_request_active(void)
+{
+  const uint32_t now = HAL_GetTick();
+
+  return (remote_control.valid != 0U &&
+          remote_control.rx_count != 0U &&
+          (now - remote_control.last_update_ms) <= RC_LOST_TIMEOUT_MS &&
+          remote_control.s[1] == RC_SW_UP)
+             ? 1U
+             : 0U;
+}
+
 static uint8_t vmc_feedback_is_timeout(uint32_t now, uint32_t last_update_ms)
 {
   return (last_update_ms == 0U || (now - last_update_ms) > VMC_FEEDBACK_TIMEOUT_MS)
@@ -557,6 +579,7 @@ static void vmc_update_remote_mode(void)
   int16_t forward_current;
   int16_t turn_current;
   double speed_target_max;
+  const uint32_t now = HAL_GetTick();
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
@@ -564,25 +587,42 @@ static void vmc_update_remote_mode(void)
   vmc_wheel_control.manual_turn_current = 0;
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
-      (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
+      (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
     vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_s1_mid_enter_ms = 0U;
     return;
   }
 
   if (remote_control.s[1] == RC_SW_UP) {
-    vmc_control.enabled = 1U;
-    vmc_balance.wheel_output_enable = 1U;
+    vmc_control.enabled = 0U;
+    vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_s1_mid_enter_ms = 0U;
+    return;
   } else if (remote_control.s[1] == RC_SW_MID) {
     vmc_control.enabled = 1U;
-    vmc_balance.wheel_output_enable = 0U;
+    vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_balance.tp_output_enable = VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT;
+    if (vmc_s1_mid_enter_ms == 0U) {
+      vmc_s1_mid_enter_ms = now;
+    }
+    vmc_balance.wheel_output_enable =
+        ((now - vmc_s1_mid_enter_ms) >= VMC_S1_MID_WHEEL_ENABLE_DELAY_MS) ? 1U : 0U;
+    if (vmc_balance.wheel_output_enable == 0U) {
+      vmc_balance.speed_target = 0.0f;
+      vmc_balance.yaw_hold_active = 0U;
+      return;
+    }
   } else {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
     vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_s1_mid_enter_ms = 0U;
     return;
   }
 
@@ -622,6 +662,129 @@ static void vmc_update_remote_mode(void)
         clamp_i16((int16_t)(forward_current + turn_current),
                   -VMC_WHEEL_CURRENT_MAX_DEFAULT,
                   VMC_WHEEL_CURRENT_MAX_DEFAULT);
+  }
+}
+
+static void vmc_recovery_set_state(uint8_t state, uint32_t now)
+{
+  if (vmc_probe_state.recovery_state != state) {
+    vmc_probe_state.recovery_state = state;
+    vmc_probe_state.recovery_state_enter_ms = now;
+    if (state == VMC_RECOVERY_STATE_THETA_PD) {
+      vmc_control.ramped_target_phi0 = vmc_control.target_phi0;
+    }
+  }
+}
+
+static void vmc_recovery_reset(uint32_t now)
+{
+  vmc_recovery_set_state(VMC_RECOVERY_STATE_IDLE, now);
+  vmc_probe_state.recovery_left_theta_error = 0.0;
+  vmc_probe_state.recovery_right_theta_error = 0.0;
+  vmc_probe_state.recovery_phi0_target_raw = 0.0;
+  vmc_probe_state.recovery_phi0_target_ramped = 0.0;
+}
+
+static void vmc_recovery_prepare_lqr_capture(void)
+{
+  vmc_body_motion_kf_reset();
+  vmc_balance.x_offset = (float)vmc_probe_state.motion.kf_x;
+  vmc_balance.speed_target = 0.0f;
+  vmc_balance.speed_target_ramped = 0.0f;
+  vmc_balance.speed_pitch_offset = 0.0f;
+  vmc_balance.speed_stop_hold_active = 0U;
+  vmc_balance.yaw_hold_active = 0U;
+  vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+}
+
+static void vmc_recovery_apply_joint_pd_defaults(void)
+{
+  vmc_control.enabled = 1U;
+  vmc_control.target_length = VMC_LEG_TARGET_SHORT;
+  vmc_balance.wheel_output_enable = 0U;
+  vmc_balance.tp_output_enable = 0U;
+  vmc_balance.speed_target = 0.0f;
+  vmc_balance.speed_target_ramped = 0.0f;
+  vmc_wheel_control.manual_left_current = 0;
+  vmc_wheel_control.manual_right_current = 0;
+  vmc_wheel_control.manual_forward_current = 0;
+  vmc_wheel_control.manual_turn_current = 0;
+}
+
+static void vmc_recovery_update(void)
+{
+  const uint32_t now = HAL_GetTick();
+  const double avg_length =
+      (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5;
+  const double left_theta_error = -vmc_probe_state.motion.left_theta;
+  const double right_theta_error = -vmc_probe_state.motion.right_theta;
+  const double left_dtheta = fabs(vmc_probe_state.motion.left_d_theta);
+  const double right_dtheta = fabs(vmc_probe_state.motion.right_d_theta);
+  const double theta_target_phi0 =
+      clamp_double(VMC_PHI0_VERTICAL_RAD + vmc_probe_state.body.pitch,
+                   VMC_PHI0_PROTECT_MIN_RAD,
+                   VMC_PHI0_PROTECT_MAX_RAD);
+  const double phi0_ramp_step =
+      clamp_double(vmc_control.phi0_ramp_rate, 0.0, 10.0) * VMC_CONTROL_DT;
+
+  vmc_probe_state.recovery_update_count++;
+  vmc_probe_state.recovery_left_theta_error = left_theta_error;
+  vmc_probe_state.recovery_right_theta_error = right_theta_error;
+  vmc_probe_state.recovery_phi0_target_raw = theta_target_phi0;
+
+  if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
+      (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS ||
+      remote_control.s[1] != RC_SW_UP) {
+    vmc_recovery_reset(now);
+    return;
+  }
+
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_IDLE) {
+    vmc_recovery_set_state(VMC_RECOVERY_STATE_SHORT_LEG, now);
+  }
+
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_SHORT_LEG) {
+    vmc_recovery_apply_joint_pd_defaults();
+    vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_control.ramped_target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_probe_state.recovery_phi0_target_ramped = vmc_control.ramped_target_phi0;
+
+    if (avg_length <= VMC_RECOVERY_SHORT_LEG_READY_LENGTH ||
+        (now - vmc_probe_state.recovery_state_enter_ms) >=
+            VMC_RECOVERY_SHORT_LEG_TIMEOUT_MS) {
+      vmc_recovery_set_state(VMC_RECOVERY_STATE_THETA_PD, now);
+    }
+    return;
+  }
+
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_THETA_PD) {
+    vmc_recovery_apply_joint_pd_defaults();
+    vmc_control.ramped_target_phi0 =
+        (float)vmc_step_towards(vmc_control.ramped_target_phi0,
+                                theta_target_phi0,
+                                phi0_ramp_step);
+    vmc_control.target_phi0 = vmc_control.ramped_target_phi0;
+    vmc_probe_state.recovery_phi0_target_ramped = vmc_control.ramped_target_phi0;
+
+    if (fabs(vmc_probe_state.motion.left_theta) <= VMC_RECOVERY_THETA_DEADBAND_RAD &&
+        fabs(vmc_probe_state.motion.right_theta) <= VMC_RECOVERY_THETA_DEADBAND_RAD &&
+        left_dtheta <= VMC_RECOVERY_DTHETA_DEADBAND_RADPS &&
+        right_dtheta <= VMC_RECOVERY_DTHETA_DEADBAND_RADPS &&
+        fabs(vmc_probe_state.body.pitch_rate) <= VMC_RECOVERY_PITCH_RATE_DEADBAND_RADPS) {
+      vmc_recovery_prepare_lqr_capture();
+      vmc_recovery_set_state(VMC_RECOVERY_STATE_LQR_CAPTURE, now);
+    }
+    return;
+  }
+
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_LQR_CAPTURE) {
+    vmc_control.enabled = 1U;
+    vmc_control.target_length = VMC_LEG_TARGET_SHORT;
+    vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_balance.tp_output_enable = 1U;
+    vmc_balance.wheel_output_enable = 1U;
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.speed_target_ramped = 0.0f;
   }
 }
 
@@ -1273,15 +1436,16 @@ void vmc_dm_state_machine_update(void)
   const uint8_t phase = vmc_probe_state.dm_tx_phase;
   const uint8_t phi0_source = vmc_phi0_protect_source();
   const uint8_t feedback_source = vmc_feedback_timeout_source();
+  const uint8_t recovery_request = vmc_recovery_request_active();
 
   vmc_probe_state.feedback_timeout_source = feedback_source;
   vmc_probe_state.feedback_timeout_active =
       (feedback_source == VMC_FEEDBACK_TIMEOUT_NONE) ? 0U : 1U;
 
-  if (phi0_source != VMC_PHI0_PROTECT_NONE) {
+  if (phi0_source != VMC_PHI0_PROTECT_NONE && recovery_request == 0U) {
     vmc_probe_state.phi0_protect_latched = 1U;
     vmc_probe_state.phi0_protect_source = phi0_source;
-  } else if (remote_control_is_s1_down() != 0U) {
+  } else if (remote_control_is_s1_down() != 0U || recovery_request != 0U) {
     vmc_probe_state.phi0_protect_latched = 0U;
     vmc_probe_state.phi0_protect_source = VMC_PHI0_PROTECT_NONE;
   }
@@ -1377,6 +1541,8 @@ void vmc_control_init(void)
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
   vmc_control.kd_length = VMC_LEG_LENGTH_KD_DEFAULT;
   vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.ramped_target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.phi0_ramp_rate = VMC_RECOVERY_PHI0_RAMP_RATE_DEFAULT;
   vmc_control.kp_phi0 = VMC_LEG_PHI0_KP_DEFAULT;
   vmc_control.kd_phi0 = VMC_LEG_PHI0_KD_DEFAULT;
   vmc_control.max_phi0_torque = VMC_LEG_PHI0_TORQUE_MAX_DEFAULT;
@@ -1479,7 +1645,9 @@ void vmc_control_update(void)
   double max_phi0_torque;
   double support_force;
 
-  vmc_update_remote_target_length();
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_IDLE) {
+    vmc_update_remote_target_length();
+  }
 
   if (vmc_control.enabled == 0U ||
       vmc_probe_state.phi0_protect_latched != 0U ||
@@ -1627,6 +1795,7 @@ void vmc_probe_task(void const *argument)
     vmc_update_motion_state();
     vmc_lqr_rtt_update();
     vmc_update_lqr_gain();
+    vmc_recovery_update();
     vmc_balance_update();
     vmc_lqr_rtt_telemetry_update();
     vmc_control_update();

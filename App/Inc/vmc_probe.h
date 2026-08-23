@@ -93,6 +93,11 @@ extern "C" {
 #define VMC_DM_STATE_RECOVER       2U
 #define VMC_DM_STATE_DISABLE       3U
 
+#define VMC_RECOVERY_STATE_IDLE        0U
+#define VMC_RECOVERY_STATE_SHORT_LEG   1U
+#define VMC_RECOVERY_STATE_THETA_PD    2U
+#define VMC_RECOVERY_STATE_LQR_CAPTURE 3U
+
 #define VMC_PHI0_PROTECT_MIN_RAD   (20.0f * VMC_PI / 180.0f)
 #define VMC_PHI0_PROTECT_MAX_RAD   (160.0f * VMC_PI / 180.0f)
 #define VMC_PHI0_PROTECT_NONE      0U
@@ -215,6 +220,8 @@ typedef struct {
   float kp_length;
   float kd_length;
   float target_phi0;
+  float ramped_target_phi0;
+  float phi0_ramp_rate;
   float kp_phi0;
   float kd_phi0;
   float max_phi0_torque;
@@ -436,6 +443,13 @@ typedef struct {
   uint8_t phi0_protect_source;
   uint8_t feedback_timeout_active;
   uint8_t feedback_timeout_source;
+  uint8_t recovery_state;
+  uint32_t recovery_state_enter_ms;
+  uint32_t recovery_update_count;
+  double recovery_left_theta_error;
+  double recovery_right_theta_error;
+  double recovery_phi0_target_raw;
+  double recovery_phi0_target_ramped;
 } vmc_probe_state_t;
 
 extern volatile vmc_probe_state_t vmc_probe_state;
