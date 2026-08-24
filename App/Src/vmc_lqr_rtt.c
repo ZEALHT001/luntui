@@ -336,6 +336,42 @@ static void vmc_lqr_rtt_process_line(char *line)
     return;
   }
 
+  if (strstr(line, "vmc_recovery_cmd") != NULL) {
+    if (strstr(line, "short_leg") != NULL ||
+        strstr(line, "\"cmd\":1") != NULL ||
+        strstr(line, "\"command\":1") != NULL) {
+      vmc_recovery_set_manual_command(VMC_RECOVERY_CMD_SHORT_LEG);
+    } else if (strstr(line, "theta_pd") != NULL ||
+               strstr(line, "\"cmd\":2") != NULL ||
+               strstr(line, "\"command\":2") != NULL) {
+      vmc_recovery_set_manual_command(VMC_RECOVERY_CMD_THETA_PD);
+    } else if (strstr(line, "lqr_joint") != NULL ||
+               strstr(line, "\"cmd\":3") != NULL ||
+               strstr(line, "\"command\":3") != NULL) {
+      vmc_recovery_set_manual_command(VMC_RECOVERY_CMD_LQR_JOINT);
+    } else if (strstr(line, "lqr_wheel") != NULL ||
+               strstr(line, "lqr_capture") != NULL ||
+               strstr(line, "\"cmd\":4") != NULL ||
+               strstr(line, "\"command\":4") != NULL) {
+      vmc_recovery_set_manual_command(VMC_RECOVERY_CMD_LQR_WHEEL);
+    } else if (strstr(line, "idle") != NULL ||
+               strstr(line, "reset") != NULL ||
+               strstr(line, "\"cmd\":0") != NULL ||
+               strstr(line, "\"command\":0") != NULL) {
+      vmc_recovery_set_manual_command(VMC_RECOVERY_CMD_IDLE);
+    } else {
+      vmc_lqr_rtt_set_error(VMC_LQR_RTT_ERR_PARAMS);
+      vmc_lqr_rtt_ack("VMC_RECOVERY_CMD ERR\n");
+      return;
+    }
+
+    vmc_probe_state.lqr.rtt_last_error = VMC_LQR_RTT_ERR_NONE;
+    vmc_probe_state.lqr.rtt_update_count++;
+    vmc_probe_state.lqr.rtt_last_update_ms = HAL_GetTick();
+    vmc_lqr_rtt_ack("VMC_RECOVERY_CMD OK\n");
+    return;
+  }
+
   if (strstr(line, "vmc_balance_params") != NULL) {
     if (vmc_lqr_rtt_apply_balance_params(line) == 0U) {
       vmc_lqr_rtt_set_error(VMC_LQR_RTT_ERR_PARAMS);

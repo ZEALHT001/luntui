@@ -96,7 +96,14 @@ extern "C" {
 #define VMC_RECOVERY_STATE_IDLE        0U
 #define VMC_RECOVERY_STATE_SHORT_LEG   1U
 #define VMC_RECOVERY_STATE_THETA_PD    2U
-#define VMC_RECOVERY_STATE_LQR_CAPTURE 3U
+#define VMC_RECOVERY_STATE_LQR_JOINT   3U
+#define VMC_RECOVERY_STATE_LQR_WHEEL   4U
+
+#define VMC_RECOVERY_CMD_IDLE        0U
+#define VMC_RECOVERY_CMD_SHORT_LEG   1U
+#define VMC_RECOVERY_CMD_THETA_PD    2U
+#define VMC_RECOVERY_CMD_LQR_JOINT   3U
+#define VMC_RECOVERY_CMD_LQR_WHEEL   4U
 
 #define VMC_PHI0_PROTECT_MIN_RAD   (20.0f * VMC_PI / 180.0f)
 #define VMC_PHI0_PROTECT_MAX_RAD   (160.0f * VMC_PI / 180.0f)
@@ -444,6 +451,7 @@ typedef struct {
   uint8_t feedback_timeout_active;
   uint8_t feedback_timeout_source;
   uint8_t recovery_state;
+  uint8_t recovery_command;
   uint32_t recovery_state_enter_ms;
   uint32_t recovery_update_count;
   double recovery_left_theta_error;
@@ -468,6 +476,7 @@ void vmc_wheel_control_init(void);
 void vmc_wheel_control_update(void);
 void vmc_balance_init(void);
 void vmc_balance_update(void);
+void vmc_recovery_set_manual_command(uint8_t command);
 
 #ifdef __cplusplus
 }

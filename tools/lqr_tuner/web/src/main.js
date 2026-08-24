@@ -268,6 +268,25 @@ async function clearKOverride() {
   }
 }
 
+async function sendRecoveryCommand(command, label) {
+  setStatus(`${label} 下发中...`);
+  try {
+    const payload = JSON.stringify({ type: "vmc_recovery_cmd", cmd: command });
+    const data = await post("/api/send-rtt", {
+      payload,
+      dry_run: $("dryRun").checked,
+      ...rttTarget()
+    });
+    $("payload").value = payload;
+    assertRttOk(data.rtt);
+    appendLog(data.rtt);
+    setStatus(`${label} 已下发`);
+  } catch (error) {
+    appendLog(error.message);
+    setStatus(`${label} 失败`, false);
+  }
+}
+
 function scheduleLiveParams() {
   if (!$("liveParams").checked) {
     return;
@@ -305,6 +324,11 @@ $("sendBtn").addEventListener("click", () => calculate(true));
 $("clearKBtn").addEventListener("click", clearKOverride);
 $("sendParamsBtn").addEventListener("click", () => sendBalanceParams(false));
 $("saveParamsBtn").addEventListener("click", saveUiState);
+$("recoveryIdleBtn").addEventListener("click", () => sendRecoveryCommand("idle", "倒地待命"));
+$("recoveryShortLegBtn").addEventListener("click", () => sendRecoveryCommand("short_leg", "收腿"));
+$("recoveryThetaBtn").addEventListener("click", () => sendRecoveryCommand("theta_pd", "锁定 Theta"));
+$("recoveryLqrJointBtn").addEventListener("click", () => sendRecoveryCommand("lqr_joint", "打开 LQR 关节"));
+$("recoveryLqrWheelBtn").addEventListener("click", () => sendRecoveryCommand("lqr_wheel", "打开 LQR 轮子"));
 balanceParamIds.map(([id]) => id).forEach((id) => {
   $(id).addEventListener("input", scheduleLiveParams);
   $(id).addEventListener("change", scheduleLiveParams);

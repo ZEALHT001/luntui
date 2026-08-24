@@ -19,6 +19,9 @@ static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
 static uint32_t vmc_s1_mid_enter_ms;
+static uint8_t vmc_recovery_short_leg_ramp_seeded;
+static double vmc_recovery_short_leg_left_theta;
+static double vmc_recovery_short_leg_right_theta;
 
 #define VMC_S1_MID_WHEEL_ENABLE_DELAY_MS 3000U
 #define VMC_RECOVERY_SHORT_LEG_READY_LENGTH 0.200
@@ -678,11 +681,33 @@ static void vmc_recovery_set_state(uint8_t state, uint32_t now)
 
 static void vmc_recovery_reset(uint32_t now)
 {
+  vmc_probe_state.recovery_command = VMC_RECOVERY_CMD_IDLE;
+  vmc_recovery_short_leg_ramp_seeded = 0U;
+  vmc_recovery_short_leg_left_theta = 0.0;
+  vmc_recovery_short_leg_right_theta = 0.0;
   vmc_recovery_set_state(VMC_RECOVERY_STATE_IDLE, now);
   vmc_probe_state.recovery_left_theta_error = 0.0;
   vmc_probe_state.recovery_right_theta_error = 0.0;
   vmc_probe_state.recovery_phi0_target_raw = 0.0;
   vmc_probe_state.recovery_phi0_target_ramped = 0.0;
+}
+
+void vmc_recovery_set_manual_command(uint8_t command)
+{
+  const uint32_t now = HAL_GetTick();
+
+  if (command > VMC_RECOVERY_CMD_LQR_WHEEL) {
+    command = VMC_RECOVERY_CMD_IDLE;
+  }
+
+  if (vmc_probe_state.recovery_command != command) {
+    vmc_recovery_short_leg_ramp_seeded = 0U;
+  }
+
+  vmc_probe_state.recovery_command = command;
+  if (command == VMC_RECOVERY_CMD_IDLE) {
+    vmc_recovery_reset(now);
+  }
 }
 
 static void vmc_recovery_prepare_lqr_capture(void)
@@ -714,14 +739,10 @@ static void vmc_recovery_apply_joint_pd_defaults(void)
 static void vmc_recovery_update(void)
 {
   const uint32_t now = HAL_GetTick();
-  const double avg_length =
-      (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5;
   const double left_theta_error = -vmc_probe_state.motion.left_theta;
   const double right_theta_error = -vmc_probe_state.motion.right_theta;
-  const double left_dtheta = fabs(vmc_probe_state.motion.left_d_theta);
-  const double right_dtheta = fabs(vmc_probe_state.motion.right_d_theta);
   const double theta_target_phi0 =
-      clamp_double(VMC_PHI0_VERTICAL_RAD + vmc_probe_state.body.pitch,
+      clamp_double(VMC_PHI0_VERTICAL_RAD - vmc_probe_state.body.pitch,
                    VMC_PHI0_PROTECT_MIN_RAD,
                    VMC_PHI0_PROTECT_MAX_RAD);
   const double phi0_ramp_step =
@@ -739,21 +760,49 @@ static void vmc_recovery_update(void)
     return;
   }
 
-  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_IDLE) {
+  if (vmc_probe_state.recovery_command == VMC_RECOVERY_CMD_IDLE) {
+    vmc_recovery_set_state(VMC_RECOVERY_STATE_IDLE, now);
+    vmc_control.enabled = 0U;
+    vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.tp_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.speed_target_ramped = 0.0f;
+    vmc_probe_state.recovery_phi0_target_ramped = vmc_control.ramped_target_phi0;
+    return;
+  }
+
+  if (vmc_probe_state.recovery_command == VMC_RECOVERY_CMD_SHORT_LEG) {
     vmc_recovery_set_state(VMC_RECOVERY_STATE_SHORT_LEG, now);
+  } else if (vmc_probe_state.recovery_command == VMC_RECOVERY_CMD_THETA_PD) {
+    vmc_recovery_set_state(VMC_RECOVERY_STATE_THETA_PD, now);
+  } else if (vmc_probe_state.recovery_command == VMC_RECOVERY_CMD_LQR_JOINT) {
+    if (vmc_probe_state.recovery_state != VMC_RECOVERY_STATE_LQR_JOINT) {
+      vmc_recovery_prepare_lqr_capture();
+      vmc_recovery_set_state(VMC_RECOVERY_STATE_LQR_JOINT, now);
+    }
+  } else if (vmc_probe_state.recovery_command == VMC_RECOVERY_CMD_LQR_WHEEL) {
+    if (vmc_probe_state.recovery_state != VMC_RECOVERY_STATE_LQR_WHEEL) {
+      vmc_recovery_prepare_lqr_capture();
+      vmc_recovery_set_state(VMC_RECOVERY_STATE_LQR_WHEEL, now);
+    }
   }
 
   if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_SHORT_LEG) {
     vmc_recovery_apply_joint_pd_defaults();
+    if (vmc_recovery_short_leg_ramp_seeded == 0U) {
+      vmc_control.ramped_target_length = (float)clamp_double(
+          (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5,
+          VMC_LEG_TARGET_SHORT,
+          VMC_LEG_LENGTH_MAX);
+      vmc_recovery_short_leg_left_theta = vmc_probe_state.motion.left_theta;
+      vmc_recovery_short_leg_right_theta = vmc_probe_state.motion.right_theta;
+      vmc_control.ramp_active = 1U;
+      vmc_recovery_short_leg_ramp_seeded = 1U;
+    }
     vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
     vmc_control.ramped_target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
     vmc_probe_state.recovery_phi0_target_ramped = vmc_control.ramped_target_phi0;
 
-    if (avg_length <= VMC_RECOVERY_SHORT_LEG_READY_LENGTH ||
-        (now - vmc_probe_state.recovery_state_enter_ms) >=
-            VMC_RECOVERY_SHORT_LEG_TIMEOUT_MS) {
-      vmc_recovery_set_state(VMC_RECOVERY_STATE_THETA_PD, now);
-    }
     return;
   }
 
@@ -766,18 +815,21 @@ static void vmc_recovery_update(void)
     vmc_control.target_phi0 = vmc_control.ramped_target_phi0;
     vmc_probe_state.recovery_phi0_target_ramped = vmc_control.ramped_target_phi0;
 
-    if (fabs(vmc_probe_state.motion.left_theta) <= VMC_RECOVERY_THETA_DEADBAND_RAD &&
-        fabs(vmc_probe_state.motion.right_theta) <= VMC_RECOVERY_THETA_DEADBAND_RAD &&
-        left_dtheta <= VMC_RECOVERY_DTHETA_DEADBAND_RADPS &&
-        right_dtheta <= VMC_RECOVERY_DTHETA_DEADBAND_RADPS &&
-        fabs(vmc_probe_state.body.pitch_rate) <= VMC_RECOVERY_PITCH_RATE_DEADBAND_RADPS) {
-      vmc_recovery_prepare_lqr_capture();
-      vmc_recovery_set_state(VMC_RECOVERY_STATE_LQR_CAPTURE, now);
-    }
     return;
   }
 
-  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_LQR_CAPTURE) {
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_LQR_JOINT) {
+    vmc_control.enabled = 1U;
+    vmc_control.target_length = VMC_LEG_TARGET_SHORT;
+    vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_balance.tp_output_enable = 1U;
+    vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.speed_target_ramped = 0.0f;
+    return;
+  }
+
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_LQR_WHEEL) {
     vmc_control.enabled = 1U;
     vmc_control.target_length = VMC_LEG_TARGET_SHORT;
     vmc_control.target_phi0 = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -1437,6 +1489,13 @@ void vmc_dm_state_machine_update(void)
   const uint8_t phi0_source = vmc_phi0_protect_source();
   const uint8_t feedback_source = vmc_feedback_timeout_source();
   const uint8_t recovery_request = vmc_recovery_request_active();
+  const uint8_t recovery_command_active =
+      (recovery_request != 0U &&
+       vmc_probe_state.recovery_command != VMC_RECOVERY_CMD_IDLE)
+          ? 1U
+          : 0U;
+  const uint8_t recovery_waiting =
+      (recovery_request != 0U && recovery_command_active == 0U) ? 1U : 0U;
 
   vmc_probe_state.feedback_timeout_source = feedback_source;
   vmc_probe_state.feedback_timeout_active =
@@ -1451,7 +1510,9 @@ void vmc_dm_state_machine_update(void)
   }
 
   if (vmc_probe_state.phi0_protect_latched != 0U ||
-      vmc_probe_state.feedback_timeout_active != 0U ||
+      (vmc_probe_state.feedback_timeout_active != 0U &&
+       recovery_command_active == 0U) ||
+      recovery_waiting != 0U ||
       remote_control_allows_joint_enable() == 0U) {
     clear_leg_command(&vmc_probe_state.left_leg);
     clear_leg_command(&vmc_probe_state.right_leg);
@@ -1642,6 +1703,8 @@ void vmc_control_update(void)
   double ramped_target_length;
   double max_force;
   double target_phi0;
+  double left_target_phi0;
+  double right_target_phi0;
   double max_phi0_torque;
   double support_force;
 
@@ -1681,6 +1744,20 @@ void vmc_control_update(void)
   target_phi0 = clamp_double(vmc_control.target_phi0,
                              VMC_PHI0_PROTECT_MIN_RAD,
                              VMC_PHI0_PROTECT_MAX_RAD);
+  left_target_phi0 = target_phi0;
+  right_target_phi0 = target_phi0;
+  if (vmc_probe_state.recovery_state == VMC_RECOVERY_STATE_SHORT_LEG) {
+    left_target_phi0 = clamp_double(VMC_PHI0_VERTICAL_RAD +
+                                        vmc_probe_state.body.pitch +
+                                        vmc_recovery_short_leg_left_theta,
+                                    VMC_PHI0_PROTECT_MIN_RAD,
+                                    VMC_PHI0_PROTECT_MAX_RAD);
+    right_target_phi0 = clamp_double(VMC_PHI0_VERTICAL_RAD +
+                                         vmc_probe_state.body.pitch +
+                                         vmc_recovery_short_leg_right_theta,
+                                     VMC_PHI0_PROTECT_MIN_RAD,
+                                     VMC_PHI0_PROTECT_MAX_RAD);
+  }
   max_phi0_torque = clamp_double(vmc_control.max_phi0_torque,
                                  0.0,
                                  VMC_DM_J8009_TMAX);
@@ -1693,7 +1770,7 @@ void vmc_control_update(void)
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,
-                            target_phi0,
+                            left_target_phi0,
                             vmc_control.kp_phi0,
                             vmc_control.kd_phi0,
                             max_phi0_torque,
@@ -1705,7 +1782,7 @@ void vmc_control_update(void)
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,
-                            target_phi0,
+                            right_target_phi0,
                             vmc_control.kp_phi0,
                             vmc_control.kd_phi0,
                             max_phi0_torque,
