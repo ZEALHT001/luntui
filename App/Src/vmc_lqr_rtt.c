@@ -3,6 +3,7 @@
 #include "SEGGER_RTT.h"
 #include "stm32f4xx_hal.h"
 #include "vmc_probe.h"
+#include "vmc_math.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,27 +90,39 @@ static uint8_t vmc_lqr_rtt_parse_named_float(char *line,
                                              const char *name,
                                              float *value)
 {
-  char *cursor = strstr(line, name);
+  char *cursor = line;
   char *endptr;
   double parsed;
+  const size_t name_len = strlen(name);
 
-  if (cursor == NULL) {
-    return 0U;
+  while ((cursor = strstr(cursor, name)) != NULL) {
+    const char before = (cursor == line) ? '\0' : cursor[-1];
+    const char after = cursor[name_len];
+    const uint8_t quoted_key = (before == '"' && after == '"') ? 1U : 0U;
+    const uint8_t bare_key =
+        ((before == '\0' || before == '{' || before == ',' ||
+          before == ' ' || before == '\t') &&
+         (after == ':' || after == ' ' || after == '\t')) ? 1U : 0U;
+
+    if (quoted_key != 0U || bare_key != 0U) {
+      cursor += name_len;
+      cursor = strchr(cursor, ':');
+      if (cursor == NULL) {
+        return 0U;
+      }
+      cursor++;
+
+      parsed = strtod(cursor, &endptr);
+      if (endptr == cursor) {
+        return 0U;
+      }
+
+      *value = (float)parsed;
+      return 1U;
+    }
+    cursor += name_len;
   }
-
-  cursor = strchr(cursor, ':');
-  if (cursor == NULL) {
-    return 0U;
-  }
-  cursor++;
-
-  parsed = strtod(cursor, &endptr);
-  if (endptr == cursor) {
-    return 0U;
-  }
-
-  *value = (float)parsed;
-  return 1U;
+  return 0U;
 }
 
 static float vmc_lqr_rtt_clamp_float(float value, float min_value, float max_value)
@@ -304,6 +317,16 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_deadband", &value) != 0U) {
     vmc_balance.yaw_hold_deadband = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.50f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_target", &value) != 0U) {
+    vmc_balance.yaw_target = vmc_rad_format(value);
+    vmc_balance.yaw_hold_active = 1U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_target_rate_max", &value) != 0U ||
+      vmc_lqr_rtt_parse_named_float(line, "turn_yaw_rate_max", &value) != 0U) {
+    vmc_balance.yaw_target_rate_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_current_limit", &value) != 0U) {

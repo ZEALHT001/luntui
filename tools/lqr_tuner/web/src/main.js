@@ -42,8 +42,8 @@ const balanceParamIds = [
   ["yawHoldKp", "yaw_hold_kp"],
   ["yawHoldKd", "yaw_hold_kd"],
   ["yawHoldDeadband", "yaw_hold_deadband"],
+  ["yawTargetRateMax", "yaw_target_rate_max"],
   ["yawHoldCurrentLimit", "yaw_hold_current_limit"],
-  ["turnCurrentMax", "turn_current_max"]
 ];
 const savedParamsKey = "vmc-lqr-tuner-saved-params-v1";
 let liveParamsTimer = 0;

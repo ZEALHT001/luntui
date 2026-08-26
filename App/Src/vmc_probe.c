@@ -18,6 +18,7 @@ static double vmc_lqr_d_theta_lpf;
 static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
+static uint32_t vmc_remote_mode_last_ms;
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_phi0_protect_source(void);
@@ -110,6 +111,14 @@ static int16_t rc_channel_to_current(int16_t ch, int16_t max_current)
     return 0;
   }
   return (int16_t)((int32_t)ch * max_current / RC_CHANNAL_ERROR_VALUE);
+}
+
+static double rc_channel_to_unit(int16_t ch)
+{
+  if (ch > -VMC_RC_CH_DEADBAND && ch < VMC_RC_CH_DEADBAND) {
+    return 0.0;
+  }
+  return clamp_double((double)ch / (double)RC_CHANNAL_ERROR_VALUE, -1.0, 1.0);
 }
 
 static void vmc_body_motion_kf_reset(void)
@@ -555,8 +564,11 @@ static double vmc_step_towards(double current, double target, double step)
 static void vmc_update_remote_mode(void)
 {
   int16_t forward_current;
-  int16_t turn_current;
+  double turn_input;
   double speed_target_max;
+  double yaw_rate_max;
+  double dt = VMC_CONTROL_DT;
+  const uint32_t now = HAL_GetTick();
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
@@ -564,13 +576,20 @@ static void vmc_update_remote_mode(void)
   vmc_wheel_control.manual_turn_current = 0;
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
-      (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
+      (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
     vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_remote_mode_last_ms = now;
     return;
   }
+
+  if (vmc_remote_mode_last_ms != 0U) {
+    dt = (double)(now - vmc_remote_mode_last_ms) * 0.001;
+    dt = clamp_double(dt, VMC_CONTROL_DT, 0.10);
+  }
+  vmc_remote_mode_last_ms = now;
 
   if (remote_control.s[1] == RC_SW_UP) {
     vmc_control.enabled = 1U;
@@ -588,12 +607,22 @@ static void vmc_update_remote_mode(void)
 
   forward_current = rc_channel_to_current((int16_t)-remote_control.ch[3],
                                           VMC_RC_WHEEL_FWD_CURRENT_MAX);
-  turn_current = rc_channel_to_current((int16_t)-remote_control.ch[2],
-                                       clamp_i16(vmc_balance.turn_current_max,
-                                                 0,
-                                                 VMC_WHEEL_CURRENT_MAX_DEFAULT));
+  turn_input = rc_channel_to_unit((int16_t)-remote_control.ch[2]);
   vmc_wheel_control.manual_forward_current = forward_current;
-  vmc_wheel_control.manual_turn_current = turn_current;
+
+  if (vmc_balance.yaw_hold_enable != 0U &&
+      vmc_balance.wheel_output_enable != 0U &&
+      vmc_probe_state.body.imu_valid != 0U &&
+      vmc_probe_state.body.imu_connected != 0U) {
+    if (vmc_balance.yaw_hold_active == 0U) {
+      vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+      vmc_balance.yaw_hold_active = 1U;
+    }
+    yaw_rate_max = clamp_double(vmc_balance.yaw_target_rate_max, 0.0, 10.0);
+    vmc_balance.yaw_target =
+        vmc_rad_format((float)((double)vmc_balance.yaw_target +
+                               turn_input * yaw_rate_max * dt));
+  }
 
   if (vmc_balance.speed_control_enable != 0U) {
     speed_target_max = clamp_double(vmc_balance.speed_target_max, 0.0, 3.0);
@@ -601,25 +630,17 @@ static void vmc_update_remote_mode(void)
         (float)((-(double)forward_current * speed_target_max) /
                 (double)VMC_RC_WHEEL_FWD_CURRENT_MAX);
 
-    vmc_wheel_control.manual_left_current =
-        clamp_i16((int16_t)(-turn_current),
-                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
-                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
-    vmc_wheel_control.manual_right_current =
-        clamp_i16(turn_current,
-                  -VMC_WHEEL_CURRENT_MAX_DEFAULT,
-                  VMC_WHEEL_CURRENT_MAX_DEFAULT);
   } else {
     vmc_balance.speed_target = 0.0f;
     vmc_balance.speed_target_ramped = 0.0f;
     vmc_balance.speed_stop_hold_active = 0U;
 
     vmc_wheel_control.manual_left_current =
-        clamp_i16((int16_t)(forward_current - turn_current),
+        clamp_i16(forward_current,
                   -VMC_WHEEL_CURRENT_MAX_DEFAULT,
                   VMC_WHEEL_CURRENT_MAX_DEFAULT);
     vmc_wheel_control.manual_right_current =
-        clamp_i16((int16_t)(forward_current + turn_current),
+        clamp_i16(forward_current,
                   -VMC_WHEEL_CURRENT_MAX_DEFAULT,
                   VMC_WHEEL_CURRENT_MAX_DEFAULT);
   }
@@ -776,6 +797,7 @@ void vmc_balance_init(void)
   vmc_balance.yaw_hold_kp = VMC_YAW_HOLD_KP_DEFAULT;
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
+  vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
   vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
   vmc_balance.turn_current_max = VMC_RC_WHEEL_TURN_CURRENT_MAX;
   vmc_lqr_d_theta_lpf = 0.0;
@@ -818,12 +840,20 @@ void vmc_balance_update(void)
                          -clamp_double(vmc_balance.speed_target_max, 0.0, 3.0),
                          clamp_double(vmc_balance.speed_target_max, 0.0, 3.0))
           : 0.0;
+  const uint8_t stick_speed_active =
+      (vmc_balance.speed_control_enable != 0U && fabs(speed_target) > speed_deadband) ? 1U : 0U;
+  const uint8_t released_from_speed =
+      (stick_speed_active == 0U && vmc_balance.speed_stop_hold_active != 0U) ? 1U : 0U;
+  double speed_target_ramped = vmc_balance.speed_target_ramped;
+  if (released_from_speed != 0U) {
+    /* On release, brake from the measured velocity instead of carrying a
+       stale ramped command into the parking controller. */
+    speed_target_ramped = 0.0;
+  }
   const double speed_ramp_step =
       clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0) * VMC_CONTROL_DT;
   const double dx_target =
-      vmc_step_towards(vmc_balance.speed_target_ramped, speed_target, speed_ramp_step);
-  const uint8_t stick_speed_active =
-      (vmc_balance.speed_control_enable != 0U && fabs(speed_target) > speed_deadband) ? 1U : 0U;
+      vmc_step_towards(speed_target_ramped, speed_target, speed_ramp_step);
   const double stop_speed_threshold =
       clamp_double(vmc_balance.stop_speed_threshold, 0.0, 1.0);
 
@@ -860,6 +890,14 @@ void vmc_balance_update(void)
     vmc_balance.x_offset = (float)motion->kf_x;
     x_error = 0.0;
   } else {
+    if (released_from_speed != 0U) {
+      /* Capture the release position exactly once.  The next command will
+         recapture it again, so reverse motion never inherits an old anchor. */
+      vmc_balance.x_offset = (float)motion->kf_x;
+      vmc_balance.speed_target_ramped = 0.0f;
+      vmc_balance.speed_pitch_offset = 0.0f;
+      vmc_balance.speed_stop_hold_active = 0U;
+    }
     /* Parking mode: hold the last anchor, but drag it if stretch exceeds the
        allowed spring travel so the robot does not reverse hard to an old point. */
     const double x_hold_max_stretch =
@@ -1092,7 +1130,6 @@ void vmc_balance_update(void)
 
 static int16_t vmc_update_yaw_hold_current(void)
 {
-  const int16_t turn_current = vmc_wheel_control.manual_turn_current;
   double yaw_error_raw;
   double yaw_error;
   double yaw_rate_error;
@@ -1109,8 +1146,7 @@ static int16_t vmc_update_yaw_hold_current(void)
   if (vmc_balance.yaw_hold_enable == 0U ||
       vmc_balance.wheel_output_enable == 0U ||
       vmc_probe_state.body.imu_valid == 0U ||
-      vmc_probe_state.body.imu_connected == 0U ||
-      turn_current != 0) {
+      vmc_probe_state.body.imu_connected == 0U) {
     vmc_balance.yaw_hold_active = 0U;
     vmc_balance.yaw_target = vmc_probe_state.body.yaw;
     vmc_balance.yaw_error_raw = 0.0;

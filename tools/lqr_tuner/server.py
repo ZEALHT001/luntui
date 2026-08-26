@@ -81,8 +81,8 @@ DEFAULT_BALANCE_PARAMS = {
     "yaw_hold_kp": 2000.0,
     "yaw_hold_kd": 0.0,
     "yaw_hold_deadband": 0.01,
+    "yaw_target_rate_max": 2.0,
     "yaw_hold_current_limit": 5000.0,
-    "turn_current_max": 1000.0,
 }
 
 
