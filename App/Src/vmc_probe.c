@@ -14,6 +14,7 @@ volatile vmc_probe_state_t vmc_probe_state;
 volatile vmc_control_t vmc_control;
 volatile vmc_wheel_control_t vmc_wheel_control;
 volatile vmc_balance_t vmc_balance;
+volatile uint8_t vmc_getup_fully_fallen;
 static double vmc_lqr_d_theta_lpf;
 static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
@@ -24,6 +25,9 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_phi0_protect_source(void);
 static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
+static uint8_t vmc_getup_is_active(void);
+static uint8_t vmc_getup_pose_ready(void);
+static void vmc_update_getup_state(void);
 static void vmc_update_remote_mode(void);
 static void vmc_update_body_state(void);
 static void vmc_update_motion_state(void);
@@ -559,6 +563,70 @@ static double vmc_step_towards(double current, double target, double step)
     return (current < target) ? target : current;
   }
   return current;
+}
+
+static uint8_t vmc_getup_is_active(void)
+{
+  return (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
+          vmc_control.getup_state == VMC_GETUP_STATE_SHRINK)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_getup_pose_ready(void)
+{
+  const double left_theta = vmc_probe_state.motion.left_theta;
+  const double right_theta = vmc_probe_state.motion.right_theta;
+
+  return (left_theta > VMC_GETUP_THETA_MIN_RAD &&
+          left_theta < VMC_GETUP_THETA_MAX_RAD &&
+          right_theta > VMC_GETUP_THETA_MIN_RAD &&
+          right_theta < VMC_GETUP_THETA_MAX_RAD &&
+          fabs(vmc_probe_state.body.pitch) < VMC_GETUP_PITCH_READY_RAD)
+             ? 1U
+             : 0U;
+}
+
+static void vmc_update_getup_state(void)
+{
+  const uint8_t joint_allowed = remote_control_allows_joint_enable();
+  const uint8_t imu_ready =
+      (vmc_probe_state.body.imu_valid != 0U &&
+       vmc_probe_state.body.imu_connected != 0U)
+          ? 1U
+          : 0U;
+  const double pitch = vmc_probe_state.body.pitch;
+  const uint8_t fully_fallen =
+      (imu_ready != 0U && fabs(pitch) > VMC_GETUP_START_PITCH_RAD) ? 1U : 0U;
+
+  vmc_getup_fully_fallen = fully_fallen;
+
+  if (vmc_control.enabled == 0U || joint_allowed == 0U || imu_ready == 0U ||
+      vmc_probe_state.feedback_timeout_active != 0U) {
+    vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
+    vmc_control.getup_turn_direction = 0;
+    return;
+  }
+
+  if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
+       vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
+      fully_fallen != 0U) {
+    vmc_control.getup_state = VMC_GETUP_STATE_TURN;
+    vmc_control.getup_turn_direction = (pitch < 0.0) ? 1 : -1;
+  }
+
+  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN &&
+      vmc_getup_pose_ready() != 0U) {
+    vmc_control.getup_state = VMC_GETUP_STATE_SHRINK;
+  }
+
+  if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK &&
+      fabs(vmc_probe_state.left_leg.length - VMC_GETUP_STAND_LENGTH) < 0.030 &&
+      fabs(vmc_probe_state.right_leg.length - VMC_GETUP_STAND_LENGTH) < 0.030 &&
+      fabs(vmc_probe_state.left_leg.phi0 - VMC_PHI0_VERTICAL_RAD) < VMC_GETUP_PHI0_READY_RAD &&
+      fabs(vmc_probe_state.right_leg.phi0 - VMC_PHI0_VERTICAL_RAD) < VMC_GETUP_PHI0_READY_RAD) {
+    vmc_control.getup_state = VMC_GETUP_STATE_READY;
+  }
 }
 
 static void vmc_update_remote_mode(void)
@@ -1187,6 +1255,7 @@ static void vmc_balance_apply_wheel_output(void)
   if (vmc_balance.enabled != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_balance.wheel_output_user_enable != 0U &&
+      vmc_getup_is_active() == 0U &&
       vmc_safety_allows_output() != 0U) {
     yaw_current = vmc_update_yaw_hold_current();
     vmc_wheel_control.enabled = 1U;
@@ -1309,15 +1378,21 @@ void vmc_dm_state_machine_update(void)
   const uint8_t phase = vmc_probe_state.dm_tx_phase;
   const uint8_t phi0_source = vmc_phi0_protect_source();
   const uint8_t feedback_source = vmc_feedback_timeout_source();
+  const uint8_t wheel_output_requested =
+      (vmc_balance.wheel_output_enable != 0U &&
+       vmc_balance.wheel_output_user_enable != 0U)
+          ? 1U
+          : 0U;
 
   vmc_probe_state.feedback_timeout_source = feedback_source;
   vmc_probe_state.feedback_timeout_active =
       (feedback_source == VMC_FEEDBACK_TIMEOUT_NONE) ? 0U : 1U;
 
-  if (phi0_source != VMC_PHI0_PROTECT_NONE) {
+  if (wheel_output_requested != 0U && vmc_getup_is_active() == 0U &&
+      phi0_source != VMC_PHI0_PROTECT_NONE) {
     vmc_probe_state.phi0_protect_latched = 1U;
     vmc_probe_state.phi0_protect_source = phi0_source;
-  } else if (remote_control_is_s1_down() != 0U) {
+  } else if (wheel_output_requested == 0U || remote_control_is_s1_down() != 0U) {
     vmc_probe_state.phi0_protect_latched = 0U;
     vmc_probe_state.phi0_protect_source = VMC_PHI0_PROTECT_NONE;
   }
@@ -1426,6 +1501,11 @@ void vmc_control_init(void)
   vmc_control.roll_comp_offset = 0.0f;
   vmc_control.left_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
+  vmc_control.getup_turn_direction = 0;
+  vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_getup_fully_fallen = 0U;
   vmc_control.ramp_active = 0U;
 }
 
@@ -1485,10 +1565,12 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
       VMC_LEG_PHI0_PID_DIRECTION * (phi0_p_output + phi0_d_output);
   const double phi0_torque_raw =
       clamp_double(phi0_pid_output, -max_phi0_torque, max_phi0_torque);
+  const uint8_t use_lqr_tp =
+      (vmc_balance.tp_output_enable != 0U && vmc_getup_is_active() == 0U) ? 1U : 0U;
   const double phi0_torque =
-      (vmc_balance.tp_output_enable != 0U) ? 0.0 : phi0_torque_raw;
+      (use_lqr_tp != 0U) ? 0.0 : phi0_torque_raw;
   const double lqr_tp_torque =
-      (vmc_balance.tp_output_enable != 0U)
+      (use_lqr_tp != 0U)
           ? ((leg == &vmc_probe_state.left_leg)
                  ? (double)vmc_balance.left_tp_cmd
                  : (double)vmc_balance.right_tp_cmd)
@@ -1519,7 +1601,8 @@ void vmc_control_update(void)
   double target_length;
   double ramped_target_length;
   double max_force;
-  double target_phi0;
+  double left_target_phi0;
+  double right_target_phi0;
   double max_phi0_torque;
   double support_force;
   double roll_error;
@@ -1530,6 +1613,7 @@ void vmc_control_update(void)
   double right_target_length;
 
   vmc_update_remote_target_length();
+  vmc_update_getup_state();
 
   if (vmc_control.enabled == 0U ||
       vmc_probe_state.phi0_protect_latched != 0U ||
@@ -1539,6 +1623,8 @@ void vmc_control_update(void)
     vmc_control.roll_comp_offset = 0.0f;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
+    vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
     clear_leg_command(&vmc_probe_state.left_leg);
     clear_leg_command(&vmc_probe_state.right_leg);
     return;
@@ -1555,6 +1641,11 @@ void vmc_control_update(void)
   target_length = clamp_double(vmc_control.target_length,
                                VMC_LEG_LENGTH_MIN,
                                VMC_LEG_LENGTH_MAX);
+  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
+    target_length = VMC_GETUP_TURN_LENGTH;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
+    target_length = VMC_GETUP_STAND_LENGTH;
+  }
   ramped_target_length =
       vmc_step_towards(vmc_control.ramped_target_length,
                        target_length,
@@ -1566,6 +1657,7 @@ void vmc_control_update(void)
   roll_error = (double)vmc_probe_state.body.roll - (double)vmc_control.roll_target;
   roll_comp_desired =
       (vmc_control.roll_comp_enable != 0U &&
+       vmc_getup_is_active() == 0U &&
        vmc_probe_state.body.imu_valid != 0U &&
        vmc_probe_state.body.imu_connected != 0U)
           ? clamp_double(roll_error * (double)vmc_control.roll_comp_gain,
@@ -1591,9 +1683,27 @@ void vmc_control_update(void)
   vmc_control.right_target_length = (float)right_target_length;
 
   max_force = clamp_double(vmc_control.max_force, 0.0, VMC_LEG_FORCE_MAX_DEFAULT);
-  target_phi0 = clamp_double(vmc_control.target_phi0,
-                             VMC_PHI0_PROTECT_MIN_RAD,
-                             VMC_PHI0_PROTECT_MAX_RAD);
+  left_target_phi0 = vmc_control.target_phi0;
+  right_target_phi0 = vmc_control.target_phi0;
+  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
+    left_target_phi0 = vmc_probe_state.left_leg.phi0 +
+                       (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
+    right_target_phi0 = vmc_probe_state.right_leg.phi0 +
+                        (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
+    left_target_phi0 = VMC_PHI0_VERTICAL_RAD;
+    right_target_phi0 = VMC_PHI0_VERTICAL_RAD;
+  }
+  if (vmc_control.getup_state != VMC_GETUP_STATE_TURN) {
+    left_target_phi0 = clamp_double(left_target_phi0,
+                                    VMC_PHI0_PROTECT_MIN_RAD,
+                                    VMC_PHI0_PROTECT_MAX_RAD);
+    right_target_phi0 = clamp_double(right_target_phi0,
+                                     VMC_PHI0_PROTECT_MIN_RAD,
+                                     VMC_PHI0_PROTECT_MAX_RAD);
+  }
+  vmc_control.getup_target_phi0_left = (float)left_target_phi0;
+  vmc_control.getup_target_phi0_right = (float)right_target_phi0;
   max_phi0_torque = clamp_double(vmc_control.max_phi0_torque,
                                  0.0,
                                  VMC_DM_J8009_TMAX);
@@ -1606,7 +1716,7 @@ void vmc_control_update(void)
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,
-                            target_phi0,
+                            left_target_phi0,
                             vmc_control.kp_phi0,
                             vmc_control.kd_phi0,
                             max_phi0_torque,
@@ -1618,7 +1728,7 @@ void vmc_control_update(void)
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,
-                            target_phi0,
+                            right_target_phi0,
                             vmc_control.kp_phi0,
                             vmc_control.kd_phi0,
                             max_phi0_torque,

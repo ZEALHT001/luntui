@@ -50,7 +50,7 @@ extern "C" {
 #define VMC_LEG_PHI0_KD_DEFAULT     0.5f
 #define VMC_LEG_PHI0_TORQUE_MAX_DEFAULT 80.0f
 #define VMC_LEG_PHI0_PID_DIRECTION  1.0f
-#define VMC_LEG_SUPPORT_FORCE_DEFAULT 500.0f
+#define VMC_LEG_SUPPORT_FORCE_DEFAULT 200.0f
 #define VMC_LEG_SUPPORT_FORCE_MAX     120.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
 #define VMC_LEG_TARGET_SHORT      0.180f
@@ -98,6 +98,20 @@ extern "C" {
 #define VMC_DM_STATE_RECOVER       2U
 #define VMC_DM_STATE_DISABLE       3U
 
+#define VMC_GETUP_STATE_IDLE       0U
+#define VMC_GETUP_STATE_TURN       1U
+#define VMC_GETUP_STATE_SHRINK     2U
+#define VMC_GETUP_STATE_READY      3U
+
+#define VMC_GETUP_START_PITCH_RAD  0.80f
+#define VMC_GETUP_TURN_LENGTH      0.300f
+#define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
+#define VMC_GETUP_PHI0_STEP        0.300f
+#define VMC_GETUP_THETA_MIN_RAD    0.500f
+#define VMC_GETUP_THETA_MAX_RAD    1.400f
+#define VMC_GETUP_PITCH_READY_RAD  0.300f
+#define VMC_GETUP_PHI0_READY_RAD   0.100f
+
 #define VMC_PHI0_PROTECT_MIN_RAD   (20.0f * VMC_PI / 180.0f)
 #define VMC_PHI0_PROTECT_MAX_RAD   (160.0f * VMC_PI / 180.0f)
 #define VMC_PHI0_PROTECT_NONE      0U
@@ -127,7 +141,7 @@ extern "C" {
     VMC_BALANCE_WHEEL_TORQUE_CONSTANT * \
     VMC_BALANCE_C620_MAX_CURRENT_A))
 #define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 10.0f
-#define VMC_BALANCE_TP_LIMIT_DEFAULT 5.0f
+#define VMC_BALANCE_TP_LIMIT_DEFAULT 15.0f
 #define VMC_BALANCE_TP_PHI_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_X_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT 1U
@@ -246,6 +260,10 @@ typedef struct {
   float roll_comp_offset;
   float left_target_length;
   float right_target_length;
+  uint8_t getup_state;
+  int8_t getup_turn_direction;
+  float getup_target_phi0_left;
+  float getup_target_phi0_right;
   uint8_t ramp_active;
 } vmc_control_t;
 
@@ -469,6 +487,7 @@ extern volatile vmc_probe_state_t vmc_probe_state;
 extern volatile vmc_control_t vmc_control;
 extern volatile vmc_wheel_control_t vmc_wheel_control;
 extern volatile vmc_balance_t vmc_balance;
+extern volatile uint8_t vmc_getup_fully_fallen;
 
 void vmc_probe_task(void const *argument);
 void vmc_can_init(void);
