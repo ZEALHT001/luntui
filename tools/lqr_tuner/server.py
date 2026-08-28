@@ -53,6 +53,8 @@ DEFAULT_BALANCE_PARAMS = {
     "lqr_dtheta_gain": 1.0,
     "lqr_dtheta_deadband": 0.0,
     "lqr_dtheta_limit": 10.0,
+    "wheel_torque_limit": 3.3,
+    "tp_limit": 5.0,
     "tp_phi_gain": 1.0,
     "tp_x_gain": 1.0,
     "dpitch_lpf_alpha": 1.0,
@@ -74,6 +76,11 @@ DEFAULT_BALANCE_PARAMS = {
     "max_force": 500.0,
     "support_force": 0.0,
     "length_ramp_rate": 0.2,
+    "roll_comp_enable": 1.0,
+    "roll_target": 0.0,
+    "roll_comp_gain": 0.10,
+    "roll_comp_limit": 0.04,
+    "roll_comp_ramp_rate": 0.12,
     "kp_phi0": 50.0,
     "kd_phi0": 0.5,
     "max_phi0_torque": 80.0,
@@ -187,17 +194,43 @@ def _balance_params_payload(data: dict[str, Any]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def _balance_params_payload_chunks(data: dict[str, Any], max_len: int = 700) -> list[str]:
+    params = dict(DEFAULT_BALANCE_PARAMS)
+    params.update(data.get("params", {}))
+    chunks: list[str] = []
+    payload: dict[str, Any] = {"type": "vmc_balance_params"}
+
+    for key in DEFAULT_BALANCE_PARAMS:
+        candidate = dict(payload)
+        candidate[key] = float(params[key])
+        candidate_text = json.dumps(candidate, separators=(",", ":"))
+        if len(candidate_text) > max_len and len(payload) > 1:
+            chunks.append(json.dumps(payload, separators=(",", ":")))
+            payload = {"type": "vmc_balance_params", key: float(params[key])}
+        else:
+            payload = candidate
+
+    if len(payload) > 1:
+        chunks.append(json.dumps(payload, separators=(",", ":")))
+    return chunks
+
+
 def _send_balance_params_response(data: dict[str, Any]) -> dict[str, Any]:
     payload = _balance_params_payload(data)
+    payloads = _balance_params_payload_chunks(data)
     return {
         "payload": payload,
-        "rtt": send_rtt_line(
-            payload,
-            host=_rtt_host(data),
-            port=_rtt_port(data),
-            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
-            dry_run=bool(data.get("dry_run", False)),
-        ),
+        "payloads": payloads,
+        "rtt_results": [
+            send_rtt_line(
+                chunk,
+                host=_rtt_host(data),
+                port=_rtt_port(data),
+                timeout_s=float(data.get("rtt_timeout_s", 1.0)),
+                dry_run=bool(data.get("dry_run", False)),
+            )
+            for chunk in payloads
+        ],
     }
 
 

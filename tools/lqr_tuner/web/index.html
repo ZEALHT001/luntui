@@ -96,6 +96,14 @@
             <input id="lqrDthetaLimit" type="number" step="0.1" value="10" />
           </label>
           <label>
+            轮子 T 力矩限幅 / wheel_torque_limit
+            <input id="wheelTorqueLimit" type="number" step="0.1" min="0" value="3.3" />
+          </label>
+          <label>
+            关节 Tp 力矩限幅 / tp_limit
+            <input id="tpLimit" type="number" step="0.1" min="0" value="5.0" />
+          </label>
+          <label>
             关节 Phi 增益 / tp_phi_gain
             <input id="tpPhiGain" type="number" step="0.05" value="1.0" />
           </label>
@@ -198,6 +206,26 @@
           <label>
             腿长斜坡 / length_ramp_rate
             <input id="lengthRampRate" type="number" step="0.01" value="0.2" />
+          </label>
+          <label>
+            Roll 补偿使能 / roll_comp_enable
+            <input id="rollCompEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            Roll 目标 / roll_target (rad)
+            <input id="rollTarget" type="number" step="0.01" value="0.0" />
+          </label>
+          <label>
+            Roll 腿长补偿增益 / roll_comp_gain
+            <input id="rollCompGain" type="number" step="0.01" value="0.10" />
+          </label>
+          <label>
+            Roll 腿长补偿限幅 / roll_comp_limit (m)
+            <input id="rollCompLimit" type="number" step="0.005" min="0" value="0.04" />
+          </label>
+          <label>
+            Roll 补偿斜坡 / roll_comp_ramp_rate
+            <input id="rollCompRampRate" type="number" step="0.01" min="0" value="0.12" />
           </label>
         </div>
 

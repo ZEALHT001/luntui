@@ -605,7 +605,7 @@ static void vmc_update_remote_mode(void)
     return;
   }
 
-  forward_current = rc_channel_to_current((int16_t)-remote_control.ch[3],
+  forward_current = rc_channel_to_current(remote_control.ch[3],
                                           VMC_RC_WHEEL_FWD_CURRENT_MAX);
   turn_input = rc_channel_to_unit((int16_t)-remote_control.ch[2]);
   vmc_wheel_control.manual_forward_current = forward_current;
@@ -1418,6 +1418,14 @@ void vmc_control_init(void)
   vmc_control.max_phi0_torque = VMC_LEG_PHI0_TORQUE_MAX_DEFAULT;
   vmc_control.max_force = VMC_LEG_FORCE_MAX_DEFAULT;
   vmc_control.support_force = VMC_LEG_SUPPORT_FORCE_DEFAULT;
+  vmc_control.roll_comp_enable = VMC_ROLL_COMP_ENABLE_DEFAULT;
+  vmc_control.roll_target = VMC_ROLL_TARGET_DEFAULT;
+  vmc_control.roll_comp_gain = VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT;
+  vmc_control.roll_comp_limit = VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT;
+  vmc_control.roll_comp_ramp_rate = VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT;
+  vmc_control.roll_comp_offset = 0.0f;
+  vmc_control.left_target_length = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.ramp_active = 0U;
 }
 
@@ -1514,6 +1522,12 @@ void vmc_control_update(void)
   double target_phi0;
   double max_phi0_torque;
   double support_force;
+  double roll_error;
+  double roll_comp_desired;
+  double roll_comp_offset;
+  double roll_comp_limit;
+  double left_target_length;
+  double right_target_length;
 
   vmc_update_remote_target_length();
 
@@ -1522,6 +1536,9 @@ void vmc_control_update(void)
       vmc_probe_state.feedback_timeout_active != 0U ||
       remote_control_allows_joint_enable() == 0U) {
     vmc_control.ramp_active = 0U;
+    vmc_control.roll_comp_offset = 0.0f;
+    vmc_control.left_target_length = vmc_control.target_length;
+    vmc_control.right_target_length = vmc_control.target_length;
     clear_leg_command(&vmc_probe_state.left_leg);
     clear_leg_command(&vmc_probe_state.right_leg);
     return;
@@ -1545,6 +1562,34 @@ void vmc_control_update(void)
                            VMC_CONTROL_DT);
   vmc_control.ramped_target_length = (float)ramped_target_length;
 
+  roll_comp_limit = clamp_double(vmc_control.roll_comp_limit, 0.0, 0.10);
+  roll_error = (double)vmc_probe_state.body.roll - (double)vmc_control.roll_target;
+  roll_comp_desired =
+      (vmc_control.roll_comp_enable != 0U &&
+       vmc_probe_state.body.imu_valid != 0U &&
+       vmc_probe_state.body.imu_connected != 0U)
+          ? clamp_double(roll_error * (double)vmc_control.roll_comp_gain,
+                         -roll_comp_limit,
+                         roll_comp_limit)
+          : 0.0;
+  roll_comp_offset =
+      vmc_step_towards(vmc_control.roll_comp_offset,
+                       roll_comp_desired,
+                       clamp_double(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) *
+                           VMC_CONTROL_DT);
+  vmc_control.roll_comp_offset = (float)roll_comp_offset;
+
+  left_target_length =
+      clamp_double(ramped_target_length + roll_comp_offset,
+                   VMC_LEG_LENGTH_MIN,
+                   VMC_LEG_LENGTH_MAX);
+  right_target_length =
+      clamp_double(ramped_target_length - roll_comp_offset,
+                   VMC_LEG_LENGTH_MIN,
+                   VMC_LEG_LENGTH_MAX);
+  vmc_control.left_target_length = (float)left_target_length;
+  vmc_control.right_target_length = (float)right_target_length;
+
   max_force = clamp_double(vmc_control.max_force, 0.0, VMC_LEG_FORCE_MAX_DEFAULT);
   target_phi0 = clamp_double(vmc_control.target_phi0,
                              VMC_PHI0_PROTECT_MIN_RAD,
@@ -1557,7 +1602,7 @@ void vmc_control_update(void)
                                VMC_LEG_SUPPORT_FORCE_MAX);
 
   update_leg_length_control(&vmc_probe_state.left_leg,
-                            ramped_target_length,
+                            left_target_length,
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,
@@ -1569,7 +1614,7 @@ void vmc_control_update(void)
                             VMC_DIR_LEFT_AHEAD,
                             VMC_DIR_LEFT_BACK);
   update_leg_length_control(&vmc_probe_state.right_leg,
-                            ramped_target_length,
+                            right_target_length,
                             vmc_control.kp_length,
                             vmc_control.kd_length,
                             max_force,

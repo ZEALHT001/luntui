@@ -54,9 +54,14 @@ extern "C" {
 #define VMC_LEG_SUPPORT_FORCE_MAX     120.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
 #define VMC_LEG_TARGET_SHORT      0.180f
-#define VMC_LEG_TARGET_MID        0.280f
-#define VMC_LEG_TARGET_LONG       0.380f
+#define VMC_LEG_TARGET_MID        0.230f
+#define VMC_LEG_TARGET_LONG       0.280f
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.200f
+#define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
+#define VMC_ROLL_TARGET_DEFAULT 0.0f
+#define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.10f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.040f
+#define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.120f
 #define VMC_CONTROL_DT            0.001f
 #define VMC_FEEDBACK_TIMEOUT_MS   100U
 #define VMC_WHEEL_RADIUS          0.065f
@@ -232,6 +237,14 @@ typedef struct {
   float max_phi0_torque;
   float max_force;
   float support_force;
+  uint8_t roll_comp_enable;
+  float roll_target;
+  float roll_comp_gain;
+  float roll_comp_limit;
+  float roll_comp_ramp_rate;
+  float roll_comp_offset;
+  float left_target_length;
+  float right_target_length;
   uint8_t ramp_active;
 } vmc_control_t;
 

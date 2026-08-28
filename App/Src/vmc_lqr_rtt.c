@@ -10,7 +10,7 @@
 #include <string.h>
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
-#define VMC_LQR_RTT_LINE_MAX     1024U
+#define VMC_LQR_RTT_LINE_MAX     1536U
 #define VMC_LQR_RTT_READ_CHUNK   64U
 #define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
 #define VMC_LQR_RTT_TELEM_SCALE 1000L
@@ -23,6 +23,7 @@
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
+static uint8_t lqr_rtt_discard_until_newline;
 static uint32_t lqr_rtt_last_telem_ms;
 
 static void vmc_lqr_rtt_ack(const char *text)
@@ -203,6 +204,14 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.lqr_dtheta_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 50.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "wheel_torque_limit", &value) != 0U) {
+    vmc_balance.wheel_torque_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
+    vmc_balance.tp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_DM_J8009_TMAX);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_phi_gain", &value) != 0U) {
     vmc_balance.tp_phi_gain = vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
     applied = 1U;
@@ -289,6 +298,26 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "length_ramp_rate", &value) != 0U) {
     vmc_control.length_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_enable", &value) != 0U) {
+    vmc_control.roll_comp_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "roll_target", &value) != 0U) {
+    vmc_control.roll_target = vmc_lqr_rtt_clamp_float(value, -0.50f, 0.50f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_gain", &value) != 0U) {
+    vmc_control.roll_comp_gain = vmc_lqr_rtt_clamp_float(value, -0.50f, 0.50f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_limit", &value) != 0U) {
+    vmc_control.roll_comp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.10f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_ramp_rate", &value) != 0U) {
+    vmc_control.roll_comp_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "kp_phi0", &value) != 0U) {
@@ -393,6 +422,7 @@ void vmc_lqr_rtt_init(void)
 {
   SEGGER_RTT_Init();
   lqr_rtt_line_len = 0U;
+  lqr_rtt_discard_until_newline = 0U;
 }
 
 void vmc_lqr_rtt_update(void)
@@ -411,6 +441,13 @@ void vmc_lqr_rtt_update(void)
     for (i = 0U; i < read_len; i++) {
       const char c = (char)data[i];
 
+      if (lqr_rtt_discard_until_newline != 0U) {
+        if (c == '\n' || c == '\r') {
+          lqr_rtt_discard_until_newline = 0U;
+        }
+        continue;
+      }
+
       if (c == '\n' || c == '\r') {
         if (lqr_rtt_line_len > 0U) {
           lqr_rtt_line[lqr_rtt_line_len] = '\0';
@@ -422,6 +459,7 @@ void vmc_lqr_rtt_update(void)
 
       if (lqr_rtt_line_len >= (VMC_LQR_RTT_LINE_MAX - 1U)) {
         lqr_rtt_line_len = 0U;
+        lqr_rtt_discard_until_newline = 1U;
         vmc_lqr_rtt_set_error(VMC_LQR_RTT_ERR_OVERFLOW);
         vmc_lqr_rtt_ack("VMC_LQR_RTT ERR OVERFLOW\n");
         continue;

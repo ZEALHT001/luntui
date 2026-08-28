@@ -14,6 +14,8 @@ const balanceParamIds = [
   ["lqrDthetaGain", "lqr_dtheta_gain"],
   ["lqrDthetaDeadband", "lqr_dtheta_deadband"],
   ["lqrDthetaLimit", "lqr_dtheta_limit"],
+  ["wheelTorqueLimit", "wheel_torque_limit"],
+  ["tpLimit", "tp_limit"],
   ["tpPhiGain", "tp_phi_gain"],
   ["tpXGain", "tp_x_gain"],
   ["dpitchLpfAlpha", "dpitch_lpf_alpha"],
@@ -35,6 +37,11 @@ const balanceParamIds = [
   ["maxForce", "max_force"],
   ["supportForce", "support_force"],
   ["lengthRampRate", "length_ramp_rate"],
+  ["rollCompEnable", "roll_comp_enable"],
+  ["rollTarget", "roll_target"],
+  ["rollCompGain", "roll_comp_gain"],
+  ["rollCompLimit", "roll_comp_limit"],
+  ["rollCompRampRate", "roll_comp_ramp_rate"],
   ["kpPhi0", "kp_phi0"],
   ["kdPhi0", "kd_phi0"],
   ["maxPhi0Torque", "max_phi0_torque"],
@@ -175,6 +182,10 @@ function appendLog(value) {
 }
 
 function assertRttOk(rtt) {
+  if (Array.isArray(rtt)) {
+    rtt.forEach(assertRttOk);
+    return;
+  }
   if (!rtt || rtt.ok !== false) {
     return;
   }
@@ -239,8 +250,8 @@ async function sendBalanceParams(silent = false) {
   try {
     const data = await post("/api/send-params", paramsRequestBody());
     $("payload").value = data.payload;
-    assertRttOk(data.rtt);
-    appendLog(data.rtt);
+    assertRttOk(data.rtt_results || data.rtt);
+    appendLog(data.rtt_results || data.rtt);
     setStatus("参数已下发");
   } catch (error) {
     appendLog(error.message);
