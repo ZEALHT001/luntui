@@ -278,6 +278,26 @@ async function clearKOverride() {
   }
 }
 
+async function writeFirmwareDefaults() {
+  setStatus("写入固件默认值中...");
+  try {
+    const data = await post("/api/save-firmware-defaults", {
+      ...requestBody(false),
+      params: readBalanceParams()
+    });
+    appendLog({
+      saved: true,
+      lqr_file: data.lqr_file,
+      defaults_file: data.defaults_file,
+      changed_macros: data.changed_macros.length
+    });
+    setStatus("固件默认值已写入");
+  } catch (error) {
+    appendLog(error.message);
+    setStatus("写入固件默认值失败", false);
+  }
+}
+
 function scheduleLiveParams() {
   if (!$("liveParams").checked) {
     return;
@@ -315,6 +335,7 @@ $("sendBtn").addEventListener("click", () => calculate(true));
 $("clearKBtn").addEventListener("click", clearKOverride);
 $("sendParamsBtn").addEventListener("click", () => sendBalanceParams(false));
 $("saveParamsBtn").addEventListener("click", saveUiState);
+$("writeDefaultsBtn").addEventListener("click", writeFirmwareDefaults);
 balanceParamIds.map(([id]) => id).forEach((id) => {
   $(id).addEventListener("input", scheduleLiveParams);
   $(id).addEventListener("change", scheduleLiveParams);

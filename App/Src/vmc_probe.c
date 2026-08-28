@@ -757,7 +757,7 @@ void vmc_balance_init(void)
 {
   vmc_balance.enabled = 1U;
   vmc_balance.wheel_output_enable = 0U;
-  vmc_balance.wheel_output_user_enable = 1U;
+  vmc_balance.wheel_output_user_enable = VMC_BALANCE_WHEEL_OUTPUT_USER_ENABLE_DEFAULT;
   vmc_balance.tp_output_enable = VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT;
   vmc_balance.dx_feedback_enable = VMC_BALANCE_DX_FEEDBACK_ENABLE_DEFAULT;
   vmc_balance.x_feedback_enable = VMC_BALANCE_X_FEEDBACK_ENABLE_DEFAULT;

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -90,6 +91,55 @@ DEFAULT_BALANCE_PARAMS = {
     "yaw_hold_deadband": 0.01,
     "yaw_target_rate_max": 2.0,
     "yaw_hold_current_limit": 5000.0,
+}
+
+BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
+    "theta_target": ("VMC_BALANCE_THETA_TARGET_DEFAULT", "float"),
+    "pitch_target": ("VMC_BALANCE_PITCH_TARGET_DEFAULT", "float"),
+    "phi_deadband": ("VMC_BALANCE_PHI_DEADBAND_DEFAULT", "float"),
+    "tp_output_enable": ("VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT", "uint"),
+    "wheel_output_user_enable": ("VMC_BALANCE_WHEEL_OUTPUT_USER_ENABLE_DEFAULT", "uint"),
+    "theta_deadband": ("VMC_BALANCE_THETA_DEADBAND_DEFAULT", "float"),
+    "lqr_dtheta_gain": ("VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT", "float"),
+    "lqr_dtheta_deadband": ("VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT", "float"),
+    "lqr_dtheta_limit": ("VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT", "float"),
+    "wheel_torque_limit": ("VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT", "float"),
+    "tp_limit": ("VMC_BALANCE_TP_LIMIT_DEFAULT", "float"),
+    "tp_phi_gain": ("VMC_BALANCE_TP_PHI_GAIN_DEFAULT", "float"),
+    "tp_x_gain": ("VMC_BALANCE_TP_X_GAIN_DEFAULT", "float"),
+    "dpitch_lpf_alpha": ("VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT", "float"),
+    "x_feedback_gain": ("VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT", "float"),
+    "dx_feedback_gain": ("VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT", "float"),
+    "x_feedback_limit": ("VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT", "float"),
+    "dx_feedback_limit": ("VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT", "float"),
+    "speed_control_enable": ("VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT", "uint"),
+    "speed_target_max": ("VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT", "float"),
+    "speed_ramp_rate": ("VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT", "float"),
+    "speed_deadband": ("VMC_BALANCE_SPEED_DEADBAND_DEFAULT", "float"),
+    "stop_speed_threshold": ("VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT", "float"),
+    "x_hold_max_stretch": ("VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT", "float"),
+    "speed_pitch_gain": ("VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT", "float"),
+    "speed_pitch_limit": ("VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT", "float"),
+    "speed_pitch_ramp_rate": ("VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT", "float"),
+    "kp_length": ("VMC_LEG_LENGTH_KP_DEFAULT", "float"),
+    "kd_length": ("VMC_LEG_LENGTH_KD_DEFAULT", "float"),
+    "max_force": ("VMC_LEG_FORCE_MAX_DEFAULT", "float"),
+    "support_force": ("VMC_LEG_SUPPORT_FORCE_DEFAULT", "float"),
+    "length_ramp_rate": ("VMC_LEG_LENGTH_RAMP_RATE_DEFAULT", "float"),
+    "roll_comp_enable": ("VMC_ROLL_COMP_ENABLE_DEFAULT", "uint"),
+    "roll_target": ("VMC_ROLL_TARGET_DEFAULT", "float"),
+    "roll_comp_gain": ("VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT", "float"),
+    "roll_comp_limit": ("VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT", "float"),
+    "roll_comp_ramp_rate": ("VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT", "float"),
+    "kp_phi0": ("VMC_LEG_PHI0_KP_DEFAULT", "float"),
+    "kd_phi0": ("VMC_LEG_PHI0_KD_DEFAULT", "float"),
+    "max_phi0_torque": ("VMC_LEG_PHI0_TORQUE_MAX_DEFAULT", "float"),
+    "yaw_hold_enable": ("VMC_YAW_HOLD_ENABLE_DEFAULT", "uint"),
+    "yaw_hold_kp": ("VMC_YAW_HOLD_KP_DEFAULT", "float"),
+    "yaw_hold_kd": ("VMC_YAW_HOLD_KD_DEFAULT", "float"),
+    "yaw_hold_deadband": ("VMC_YAW_HOLD_DEADBAND_DEFAULT", "float"),
+    "yaw_target_rate_max": ("VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT", "float"),
+    "yaw_hold_current_limit": ("VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT", "int"),
 }
 
 
@@ -231,6 +281,81 @@ def _send_balance_params_response(data: dict[str, Any]) -> dict[str, Any]:
             )
             for chunk in payloads
         ],
+    }
+
+
+def _format_c_literal(value: float, value_type: str) -> str:
+    if value_type == "uint":
+        return "1U" if float(value) > 0.5 else "0U"
+    if value_type == "int":
+        return str(int(round(float(value))))
+
+    numeric = float(value)
+    if abs(numeric) < 1e-12:
+        numeric = 0.0
+    text = f"{numeric:.9g}"
+    if "e" not in text.lower() and "." not in text:
+        text += ".0"
+    return f"{text}f"
+
+
+def _replace_define(source: str, macro: str, value: str) -> tuple[str, bool]:
+    pattern = re.compile(rf"^(#define\s+{re.escape(macro)}\s+)(\S+)(.*)$", re.MULTILINE)
+
+    def repl(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{value}{match.group(3)}"
+
+    updated, count = pattern.subn(repl, source, count=1)
+    return updated, count == 1
+
+
+def _write_balance_defaults(params: dict[str, Any]) -> list[str]:
+    header_path = ROOT / "App" / "Inc" / "vmc_probe.h"
+    source = header_path.read_text()
+    updated = source
+    changed_macros: list[str] = []
+    missing: list[str] = []
+
+    for key, (macro, value_type) in BALANCE_PARAM_DEFAULT_MACROS.items():
+        if key not in params:
+            continue
+        literal = _format_c_literal(float(params[key]), value_type)
+        updated, changed = _replace_define(updated, macro, literal)
+        if changed:
+            changed_macros.append(macro)
+        else:
+            missing.append(macro)
+
+    if missing:
+        raise ValueError(f"missing default macro(s): {', '.join(missing)}")
+    if updated != source:
+        header_path.write_text(updated)
+    return changed_macros
+
+
+def _save_firmware_defaults_response(data: dict[str, Any]) -> dict[str, Any]:
+    preset_name, preset = _preset_from_request(data)
+    leg_min = float(data.get("leg_min", 0.03))
+    leg_max = float(data.get("leg_max", 0.50))
+    leg_step = float(data.get("leg_step", 0.005))
+    degree = int(data.get("degree", 3))
+    _lengths, _gains, coeffs = fit_schedule(preset, leg_min, leg_max, leg_step, degree)
+
+    lqr_path = ROOT / "App" / "Src" / "vmc_lqr.c"
+    c_source = emit_c(coeffs)
+    lqr_path.write_text(c_source)
+
+    params = dict(DEFAULT_BALANCE_PARAMS)
+    params.update(data.get("params", {}))
+    changed_macros = _write_balance_defaults(params)
+
+    return {
+        "preset": preset_name,
+        "q": [float(v) for v in np.diag(preset.q)],
+        "r": [float(v) for v in np.diag(preset.r)],
+        "lqr_file": str(lqr_path.relative_to(ROOT)),
+        "defaults_file": "App/Inc/vmc_probe.h",
+        "changed_macros": changed_macros,
     }
 
 
@@ -534,6 +659,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/send-params":
                 self._send_json(200, {"ok": True, **_send_balance_params_response(data)})
+                return
+            if self.path == "/api/save-firmware-defaults":
+                self._send_json(200, {"ok": True, **_save_firmware_defaults_response(data)})
                 return
             self._send_json(404, {"ok": False, "error": "not found"})
         except Exception as exc:  # noqa: BLE001
