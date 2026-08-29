@@ -20,6 +20,7 @@ static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
 static uint32_t vmc_remote_mode_last_ms;
+static uint8_t vmc_remote_source_last;
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_phi0_protect_source(void);
@@ -34,6 +35,7 @@ static void vmc_update_motion_state(void);
 static void vmc_update_lqr_gain(void);
 static uint8_t vmc_safety_allows_output(void);
 static int16_t vmc_update_yaw_hold_current(void);
+static int16_t vmc_update_gimbal_follow_current(void);
 static void vmc_balance_apply_wheel_output(void);
 static void vmc_body_motion_kf_reset(void);
 static void vmc_body_motion_kf_update(double measured_dx, double measured_acc);
@@ -88,6 +90,30 @@ static double apply_soft_deadband(double value, double deadband)
     return value + deadband;
   }
   return 0.0;
+}
+
+static double apply_encoder_deadband(double value, double deadband)
+{
+  deadband = clamp_double(deadband, 0.0, 4096.0);
+  if (value > deadband) {
+    return value - deadband;
+  }
+  if (value < -deadband) {
+    return value + deadband;
+  }
+  return 0.0;
+}
+
+static int16_t vmc_gimbal_encoder_error(uint16_t ecd, uint16_t front_ecd)
+{
+  int32_t error = (int32_t)ecd - (int32_t)front_ecd;
+
+  if (error > 4095) {
+    error -= 8192;
+  } else if (error < -4096) {
+    error += 8192;
+  }
+  return (int16_t)error;
 }
 
 static int16_t clamp_i16(int16_t value, int16_t min_value, int16_t max_value)
@@ -637,11 +663,20 @@ static void vmc_update_remote_mode(void)
   double yaw_rate_max;
   double dt = VMC_CONTROL_DT;
   const uint32_t now = HAL_GetTick();
+  uint8_t follow_requested = 0U;
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
   vmc_wheel_control.manual_forward_current = 0;
   vmc_wheel_control.manual_turn_current = 0;
+
+  if (remote_control_source != vmc_remote_source_last) {
+    vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_wheel_control.gimbal_follow_current = 0;
+    vmc_remote_source_last = remote_control_source;
+  }
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
@@ -649,6 +684,8 @@ static void vmc_update_remote_mode(void)
     vmc_balance.wheel_output_enable = 0U;
     vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_wheel_control.gimbal_follow_current = 0;
     vmc_remote_mode_last_ms = now;
     return;
   }
@@ -670,6 +707,8 @@ static void vmc_update_remote_mode(void)
     vmc_balance.wheel_output_enable = 0U;
     vmc_balance.speed_target = 0.0f;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_wheel_control.gimbal_follow_current = 0;
     return;
   }
 
@@ -678,7 +717,31 @@ static void vmc_update_remote_mode(void)
   turn_input = rc_channel_to_unit((int16_t)-remote_control.ch[2]);
   vmc_wheel_control.manual_forward_current = forward_current;
 
-  if (vmc_balance.yaw_hold_enable != 0U &&
+  if (remote_control_source == RC_SOURCE_CBOARD &&
+      vmc_balance.gimbal_follow_enable != 0U &&
+      vmc_balance.gimbal_follow_front_valid != 0U &&
+      vmc_balance.wheel_output_enable != 0U &&
+      board_comm_remote_is_valid() != 0U &&
+      (board_comm_state.remote_flags & BOARD_COMM_FLAG_YAW_ACTIVE) != 0U &&
+      (board_comm_state.remote_flags & BOARD_COMM_FLAG_YAW_MOTOR_ONLINE) != 0U &&
+      (board_comm_state.remote_flags & BOARD_COMM_FLAG_GIMBAL_ENABLED) != 0U) {
+    follow_requested = 1U;
+  }
+
+  if (follow_requested != 0U) {
+    vmc_balance.gimbal_follow_active = 1U;
+    vmc_balance.yaw_hold_active = 0U;
+  } else {
+    if (vmc_balance.gimbal_follow_active != 0U) {
+      vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+      vmc_balance.yaw_hold_active = 0U;
+      vmc_wheel_control.gimbal_follow_current = 0;
+    }
+    vmc_balance.gimbal_follow_active = 0U;
+  }
+
+  if (vmc_balance.gimbal_follow_active == 0U &&
+      vmc_balance.yaw_hold_enable != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_probe_state.body.imu_valid != 0U &&
       vmc_probe_state.body.imu_connected != 0U) {
@@ -861,12 +924,22 @@ void vmc_balance_init(void)
   vmc_dpitch_lpf = 0.0;
   vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
   vmc_balance.yaw_hold_active = 0U;
+  vmc_balance.gimbal_follow_enable = VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT;
+  vmc_balance.gimbal_follow_active = 0U;
+  vmc_balance.gimbal_follow_front_valid = VMC_GIMBAL_FOLLOW_FRONT_VALID_DEFAULT;
   vmc_balance.yaw_target = 0.0f;
   vmc_balance.yaw_hold_kp = VMC_YAW_HOLD_KP_DEFAULT;
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
   vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
+  vmc_balance.gimbal_follow_front_ecd = VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT;
+  vmc_balance.gimbal_follow_kp = VMC_GIMBAL_FOLLOW_KP_DEFAULT;
+  vmc_balance.gimbal_follow_kd = VMC_GIMBAL_FOLLOW_KD_DEFAULT;
+  vmc_balance.gimbal_follow_deadband = VMC_GIMBAL_FOLLOW_DEADBAND_DEFAULT;
+  vmc_balance.gimbal_follow_direction = VMC_GIMBAL_FOLLOW_DIRECTION_DEFAULT;
+  vmc_balance.gimbal_follow_current_limit =
+      VMC_GIMBAL_FOLLOW_CURRENT_LIMIT_DEFAULT;
   vmc_balance.turn_current_max = VMC_RC_WHEEL_TURN_CURRENT_MAX;
   vmc_lqr_d_theta_lpf = 0.0;
   vmc_lqr_left_d_theta_lpf = 0.0;
@@ -1246,6 +1319,58 @@ static int16_t vmc_update_yaw_hold_current(void)
   return vmc_wheel_control.yaw_hold_current;
 }
 
+static int16_t vmc_update_gimbal_follow_current(void)
+{
+  double error_raw;
+  double error;
+  double p_output;
+  double d_output;
+  double output;
+  int16_t current_limit = vmc_balance.gimbal_follow_current_limit;
+
+  if (current_limit < 0) {
+    current_limit = (int16_t)-current_limit;
+  }
+  if (current_limit > vmc_wheel_control.max_current) {
+    current_limit = vmc_wheel_control.max_current;
+  }
+
+  if (vmc_balance.gimbal_follow_enable == 0U ||
+      vmc_balance.gimbal_follow_active == 0U ||
+      vmc_balance.gimbal_follow_front_valid == 0U ||
+      vmc_balance.wheel_output_enable == 0U ||
+      remote_control_source != RC_SOURCE_CBOARD ||
+      board_comm_remote_is_valid() == 0U ||
+      (board_comm_state.remote_flags & BOARD_COMM_FLAG_YAW_MOTOR_ONLINE) == 0U) {
+    vmc_balance.gimbal_follow_error_raw = 0.0;
+    vmc_balance.gimbal_follow_error = 0.0;
+    vmc_balance.gimbal_follow_p_output = 0.0;
+    vmc_balance.gimbal_follow_d_output = 0.0;
+    vmc_balance.gimbal_follow_output = 0.0;
+    vmc_wheel_control.gimbal_follow_current = 0;
+    return 0;
+  }
+
+  error_raw = (double)vmc_gimbal_encoder_error(
+      board_comm_state.yaw_ecd, vmc_balance.gimbal_follow_front_ecd);
+  error = apply_encoder_deadband(error_raw,
+                                 (double)vmc_balance.gimbal_follow_deadband);
+  p_output = (double)vmc_balance.gimbal_follow_kp * error;
+  d_output = (double)vmc_balance.gimbal_follow_kd *
+             (double)board_comm_state.yaw_speed_rpm;
+  output = (double)vmc_balance.gimbal_follow_direction *
+           (p_output + d_output);
+  output = clamp_double(output, (double)-current_limit, (double)current_limit);
+
+  vmc_balance.gimbal_follow_error_raw = error_raw;
+  vmc_balance.gimbal_follow_error = error;
+  vmc_balance.gimbal_follow_p_output = p_output;
+  vmc_balance.gimbal_follow_d_output = d_output;
+  vmc_balance.gimbal_follow_output = output;
+  vmc_wheel_control.gimbal_follow_current = (int16_t)output;
+  return vmc_wheel_control.gimbal_follow_current;
+}
+
 static void vmc_balance_apply_wheel_output(void)
 {
   int16_t yaw_current;
@@ -1257,7 +1382,13 @@ static void vmc_balance_apply_wheel_output(void)
       vmc_balance.wheel_output_user_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       vmc_safety_allows_output() != 0U) {
-    yaw_current = vmc_update_yaw_hold_current();
+    if (vmc_balance.gimbal_follow_active != 0U) {
+      yaw_current = vmc_update_gimbal_follow_current();
+      vmc_wheel_control.yaw_hold_current = 0;
+    } else {
+      yaw_current = vmc_update_yaw_hold_current();
+      vmc_wheel_control.gimbal_follow_current = 0;
+    }
     vmc_wheel_control.enabled = 1U;
     vmc_wheel_control.left_current =
         clamp_i16((int16_t)(vmc_balance.left_wheel_current_cmd +
@@ -1278,6 +1409,13 @@ static void vmc_balance_apply_wheel_output(void)
     vmc_balance.yaw_error = 0.0;
     vmc_balance.yaw_rate_error = 0.0;
     vmc_wheel_control.yaw_hold_current = 0;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_balance.gimbal_follow_error_raw = 0.0;
+    vmc_balance.gimbal_follow_error = 0.0;
+    vmc_balance.gimbal_follow_p_output = 0.0;
+    vmc_balance.gimbal_follow_d_output = 0.0;
+    vmc_balance.gimbal_follow_output = 0.0;
+    vmc_wheel_control.gimbal_follow_current = 0;
     vmc_wheel_control.enabled = 0U;
     vmc_wheel_control.left_current = 0;
     vmc_wheel_control.right_current = 0;
@@ -1812,6 +1950,7 @@ void vmc_probe_task(void const *argument)
 
   for (;;) {
     hi12_imu_update();
+    remote_control_update_source();
     vmc_update_remote_mode();
     vmc_update_body_state();
     vmc_update_leg_state();

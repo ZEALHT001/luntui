@@ -108,7 +108,9 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(VMCProbe, vmc_probe_task, osPriorityNormal, 0, 512);
+  /* The VMC task executes the balance controller and RTT formatting path.
+   * Reserve extra stack headroom for the floating-point control routines. */
+  osThreadDef(VMCProbe, vmc_probe_task, osPriorityNormal, 0, 1024);
   VMCProbeHandle = osThreadCreate(osThread(VMCProbe), NULL);
   /* USER CODE END RTOS_THREADS */
 

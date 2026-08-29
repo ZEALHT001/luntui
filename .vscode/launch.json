@@ -19,12 +19,8 @@
         "-RTTTelnetPort",
         "19021"
       ],
-      "runToEntryPoint": "main",
       "preLaunchTask": "CMake: build Debug",
       "showDevDebugOutput": "none",
-      "postLaunchCommands": [
-        "monitor reset halt"
-      ],
       "liveWatch": {
         "enabled": true,
         "samplesPerSecond": 4

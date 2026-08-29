@@ -91,6 +91,12 @@ DEFAULT_BALANCE_PARAMS = {
     "yaw_hold_deadband": 0.01,
     "yaw_target_rate_max": 2.0,
     "yaw_hold_current_limit": 5000.0,
+    "gimbal_follow_enable": 1.0,
+    "gimbal_follow_kp": 0.8,
+    "gimbal_follow_kd": 2.0,
+    "gimbal_follow_deadband": 15.0,
+    "gimbal_follow_current_limit": 1500.0,
+    "gimbal_follow_direction": 1.0,
 }
 
 BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
@@ -140,6 +146,14 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "yaw_hold_deadband": ("VMC_YAW_HOLD_DEADBAND_DEFAULT", "float"),
     "yaw_target_rate_max": ("VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT", "float"),
     "yaw_hold_current_limit": ("VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT", "int"),
+    "gimbal_follow_enable": ("VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT", "uint"),
+    "gimbal_follow_front_ecd": ("VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT", "uint_value"),
+    "gimbal_follow_front_valid": ("VMC_GIMBAL_FOLLOW_FRONT_VALID_DEFAULT", "uint"),
+    "gimbal_follow_kp": ("VMC_GIMBAL_FOLLOW_KP_DEFAULT", "float"),
+    "gimbal_follow_kd": ("VMC_GIMBAL_FOLLOW_KD_DEFAULT", "float"),
+    "gimbal_follow_deadband": ("VMC_GIMBAL_FOLLOW_DEADBAND_DEFAULT", "float"),
+    "gimbal_follow_current_limit": ("VMC_GIMBAL_FOLLOW_CURRENT_LIMIT_DEFAULT", "int"),
+    "gimbal_follow_direction": ("VMC_GIMBAL_FOLLOW_DIRECTION_DEFAULT", "float"),
 }
 
 
@@ -287,6 +301,8 @@ def _send_balance_params_response(data: dict[str, Any]) -> dict[str, Any]:
 def _format_c_literal(value: float, value_type: str) -> str:
     if value_type == "uint":
         return "1U" if float(value) > 0.5 else "0U"
+    if value_type == "uint_value":
+        return f"{max(0, int(round(float(value))))}U"
     if value_type == "int":
         return str(int(round(float(value))))
 

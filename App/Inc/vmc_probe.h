@@ -106,7 +106,7 @@ extern "C" {
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
 #define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
-#define VMC_GETUP_PHI0_STEP        0.300f
+#define VMC_GETUP_PHI0_STEP        0.100f
 #define VMC_GETUP_THETA_MIN_RAD    0.500f
 #define VMC_GETUP_THETA_MAX_RAD    1.400f
 #define VMC_GETUP_PITCH_READY_RAD  0.300f
@@ -189,6 +189,14 @@ extern "C" {
 #define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
 #define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 5000
 #define VMC_YAW_HOLD_DIRECTION 1.0f
+#define VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT 0U
+#define VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT 0U
+#define VMC_GIMBAL_FOLLOW_FRONT_VALID_DEFAULT 0U
+#define VMC_GIMBAL_FOLLOW_KP_DEFAULT 0.8f
+#define VMC_GIMBAL_FOLLOW_KD_DEFAULT 2.0f
+#define VMC_GIMBAL_FOLLOW_DEADBAND_DEFAULT 15.0f
+#define VMC_GIMBAL_FOLLOW_CURRENT_LIMIT_DEFAULT 1500
+#define VMC_GIMBAL_FOLLOW_DIRECTION_DEFAULT 1.0f
 
 typedef struct {
   int16_t ecd;
@@ -277,6 +285,7 @@ typedef struct {
   int16_t manual_forward_current;
   int16_t manual_turn_current;
   int16_t yaw_hold_current;
+  int16_t gimbal_follow_current;
   int16_t left_current_output;
   int16_t right_current_output;
 } vmc_wheel_control_t;
@@ -291,6 +300,9 @@ typedef struct {
   uint8_t safety_allows_output;
   uint8_t yaw_hold_enable;
   uint8_t yaw_hold_active;
+  uint8_t gimbal_follow_enable;
+  uint8_t gimbal_follow_active;
+  uint8_t gimbal_follow_front_valid;
   float pitch_offset;
   float phi_offset;
   float theta_deadband;
@@ -325,6 +337,12 @@ typedef struct {
   float yaw_hold_deadband;
   float yaw_target_rate_max;
   int16_t yaw_hold_current_limit;
+  uint16_t gimbal_follow_front_ecd;
+  float gimbal_follow_kp;
+  float gimbal_follow_kd;
+  float gimbal_follow_deadband;
+  float gimbal_follow_direction;
+  int16_t gimbal_follow_current_limit;
   int16_t turn_current_max;
   int16_t wheel_current_limit;
   float wheel_torque_limit;
@@ -359,6 +377,11 @@ typedef struct {
   double yaw_error_raw;
   double yaw_error;
   double yaw_rate_error;
+  double gimbal_follow_error_raw;
+  double gimbal_follow_error;
+  double gimbal_follow_p_output;
+  double gimbal_follow_d_output;
+  double gimbal_follow_output;
   double left_wheel_theta_term;
   double left_wheel_dtheta_term;
   double left_wheel_x_term;

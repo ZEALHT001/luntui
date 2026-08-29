@@ -1,6 +1,8 @@
 #include "vmc_lqr_rtt.h"
 
 #include "SEGGER_RTT.h"
+#include "board_comm.h"
+#include "remote_control.h"
 #include "stm32f4xx_hal.h"
 #include "vmc_probe.h"
 #include "vmc_math.h"
@@ -363,6 +365,54 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         (int16_t)vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_WHEEL_CURRENT_MAX_DEFAULT);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_enable", &value) != 0U) {
+    vmc_balance.gimbal_follow_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_front_ecd", &value) != 0U) {
+    vmc_balance.gimbal_follow_front_ecd =
+        (uint16_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 8191.0f);
+    vmc_balance.gimbal_follow_front_valid = 1U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_front_valid", &value) != 0U) {
+    vmc_balance.gimbal_follow_front_valid = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_capture_front", &value) != 0U) {
+    if (value <= 0.5f) {
+      applied = 1U;
+    } else if (board_comm_gimbal_state_is_valid() != 0U) {
+      vmc_balance.gimbal_follow_front_ecd = board_comm_state.yaw_ecd;
+      vmc_balance.gimbal_follow_front_valid = 1U;
+      applied = 1U;
+    }
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_kp", &value) != 0U) {
+    vmc_balance.gimbal_follow_kp =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_kd", &value) != 0U) {
+    vmc_balance.gimbal_follow_kd =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_deadband", &value) != 0U) {
+    vmc_balance.gimbal_follow_deadband =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 4096.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_current_limit", &value) != 0U) {
+    vmc_balance.gimbal_follow_current_limit =
+        (int16_t)vmc_lqr_rtt_clamp_float(value, 0.0f,
+                                        VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "gimbal_follow_direction", &value) != 0U) {
+    vmc_balance.gimbal_follow_direction = (value < 0.0f) ? -1.0f : 1.0f;
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "turn_current_max", &value) != 0U) {
     vmc_balance.turn_current_max =
         (int16_t)vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_WHEEL_CURRENT_MAX_DEFAULT);
@@ -499,7 +549,9 @@ void vmc_lqr_rtt_telemetry_update(void)
   const volatile vmc_balance_t *b = &vmc_balance;
   const volatile vmc_motion_state_t *m = &vmc_probe_state.motion;
   const volatile vmc_body_state_t *body = &vmc_probe_state.body;
-  char line[512];
+  /* Keep the large telemetry line out of the VMC task stack.  This function
+   * runs from one task only, so a static buffer is safe here. */
+  static char line[VMC_LQR_RTT_LINE_MAX];
   int offset;
   const double tp_phi_gain = b->tp_phi_gain;
   const double left_tp_phi_term = tp_phi_gain * vmc_probe_state.lqr.left_k[9] * b->phi_error;
@@ -564,6 +616,44 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->x_error);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_x_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->dpitch_lpf);
+
+  /* VMCVOFA fields 47..60: RC source, RC-frame age, state-frame age,
+   * right-stick yaw, left-stick turn, yaw ECD, front ECD, front valid,
+   * wrapped error, yaw speed RPM, follow active, P, D, follow current. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)remote_control_source);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      board_comm_state.rc_last_rx_ms == 0U
+          ? -1.0
+          : (double)(now - board_comm_state.rc_last_rx_ms));
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      board_comm_state.state_last_rx_ms == 0U
+          ? -1.0
+          : (double)(now - board_comm_state.state_last_rx_ms));
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)remote_control.ch[0]);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)remote_control.ch[2]);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)board_comm_state.yaw_ecd);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->gimbal_follow_front_ecd);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->gimbal_follow_front_valid);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     b->gimbal_follow_error_raw);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)board_comm_state.yaw_speed_rpm);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->gimbal_follow_active);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     b->gimbal_follow_p_output);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     b->gimbal_follow_d_output);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     b->gimbal_follow_output);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

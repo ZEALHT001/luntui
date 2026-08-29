@@ -272,6 +272,50 @@
             <input id="yawHoldCurrentLimit" type="number" step="10" value="5000" />
           </label>
         </div>
+
+        <h3>底盘跟随云台 Yaw PD</h3>
+        <div class="params">
+          <label>
+            跟随使能 / gimbal_follow_enable
+            <input id="gimbalFollowEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            跟随 KP / gimbal_follow_kp
+            <input id="gimbalFollowKp" type="number" step="0.1" min="0" value="0.8" />
+          </label>
+          <label>
+            跟随 KD / gimbal_follow_kd
+            <input id="gimbalFollowKd" type="number" step="0.1" min="0" value="2.0" />
+          </label>
+          <label>
+            编码器死区 / gimbal_follow_deadband
+            <input id="gimbalFollowDeadband" type="number" step="1" min="0" max="4096" value="15" />
+          </label>
+          <label>
+            跟随电流限幅 / gimbal_follow_current_limit
+            <input id="gimbalFollowCurrentLimit" type="number" step="10" min="0" value="1500" />
+          </label>
+          <label>
+            输出方向 / gimbal_follow_direction
+            <select id="gimbalFollowDirection">
+              <option value="1">+1</option>
+              <option value="-1">-1</option>
+            </select>
+          </label>
+          <label>
+            正前方编码值 / gimbal_follow_front_ecd
+            <input id="gimbalFollowFrontEcd" type="number" step="1" min="0" max="8191" value="0" />
+          </label>
+          <label>
+            正前方标定有效 / gimbal_follow_front_valid
+            <input id="gimbalFollowFrontValid" type="number" step="1" min="0" max="1" value="0" />
+          </label>
+        </div>
+        <div class="inline-actions">
+          <button id="captureGimbalFrontBtn" type="button">以当前编码器标定正前方</button>
+          <button id="sendGimbalFrontBtn" type="button">下发输入的正前方编码值</button>
+          <span>捕获按钮只修改当前运行参数；输入值可随“写入固件默认值”保存到代码宏。</span>
+        </div>
       </section>
 
       <section class="actions">

@@ -15,6 +15,9 @@ extern "C" {
 #define RC_SW_DOWN 2U
 #define RC_CHANNAL_ERROR_VALUE 700
 #define RC_LOST_TIMEOUT_MS 100U
+#define RC_SOURCE_NONE  0U
+#define RC_SOURCE_LOCAL 1U
+#define RC_SOURCE_CBOARD 2U
 
 typedef struct {
   int16_t ch[5];
@@ -32,8 +35,10 @@ typedef struct {
 } remote_control_t;
 
 extern volatile remote_control_t remote_control;
+extern volatile uint8_t remote_control_source;
 
 void remote_control_init(void);
+void remote_control_update_source(void);
 uint8_t remote_control_is_s1_down(void);
 uint8_t remote_control_allows_joint_enable(void);
 

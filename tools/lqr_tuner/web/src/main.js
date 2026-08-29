@@ -51,6 +51,12 @@ const balanceParamIds = [
   ["yawHoldDeadband", "yaw_hold_deadband"],
   ["yawTargetRateMax", "yaw_target_rate_max"],
   ["yawHoldCurrentLimit", "yaw_hold_current_limit"],
+  ["gimbalFollowEnable", "gimbal_follow_enable"],
+  ["gimbalFollowKp", "gimbal_follow_kp"],
+  ["gimbalFollowKd", "gimbal_follow_kd"],
+  ["gimbalFollowDeadband", "gimbal_follow_deadband"],
+  ["gimbalFollowCurrentLimit", "gimbal_follow_current_limit"],
+  ["gimbalFollowDirection", "gimbal_follow_direction"],
 ];
 const savedParamsKey = "vmc-lqr-tuner-saved-params-v1";
 let liveParamsTimer = 0;
@@ -119,7 +125,9 @@ function readUiState() {
     liveParams: $("liveParams").checked,
     q: readWeights("q", 6),
     r: readWeights("r", 2),
-    balanceParams: readBalanceParams()
+    balanceParams: readBalanceParams(),
+    gimbalFollowFrontEcd: Number($("gimbalFollowFrontEcd").value),
+    gimbalFollowFrontValid: Number($("gimbalFollowFrontValid").value)
   };
 }
 
@@ -146,6 +154,12 @@ function applyUiState(state) {
   }
   if (state.balanceParams) {
     setBalanceParams(state.balanceParams);
+  }
+  if (state.gimbalFollowFrontEcd !== undefined) {
+    $("gimbalFollowFrontEcd").value = state.gimbalFollowFrontEcd;
+  }
+  if (state.gimbalFollowFrontValid !== undefined) {
+    $("gimbalFollowFrontValid").value = state.gimbalFollowFrontValid;
   }
   return true;
 }
@@ -187,6 +201,9 @@ function assertRttOk(rtt) {
     return;
   }
   if (!rtt || rtt.ok !== false) {
+    if (rtt && rtt.target_applied === false) {
+      throw new Error(rtt.target_ack || "目标板未确认参数生效");
+    }
     return;
   }
   throw new Error(rtt.error || `RTT failed: ${rtt.host}:${rtt.port}`);
@@ -278,12 +295,60 @@ async function clearKOverride() {
   }
 }
 
+async function sendFollowCalibration(payloadFields, successText) {
+  setStatus("云台正前方标定下发中...");
+  try {
+    const payload = JSON.stringify({
+      type: "vmc_balance_params",
+      ...payloadFields
+    });
+    const data = await post("/api/send-rtt", {
+      payload,
+      dry_run: $("dryRun").checked,
+      ...rttTarget()
+    });
+    $("payload").value = payload;
+    assertRttOk(data.rtt);
+    appendLog(data.rtt);
+    setStatus(successText);
+  } catch (error) {
+    appendLog(error.message);
+    setStatus("云台正前方标定失败", false);
+  }
+}
+
+async function captureGimbalFront() {
+  await sendFollowCalibration(
+    { gimbal_follow_capture_front: 1 },
+    "已捕获当前云台正前方"
+  );
+}
+
+async function sendGimbalFrontEcd() {
+  const frontEcd = Number($("gimbalFollowFrontEcd").value);
+  if (!Number.isInteger(frontEcd) || frontEcd < 0 || frontEcd > 8191) {
+    setStatus("正前方编码值必须为 0～8191", false);
+    return;
+  }
+  await sendFollowCalibration(
+    {
+      gimbal_follow_front_ecd: frontEcd,
+      gimbal_follow_front_valid: Number($("gimbalFollowFrontValid").value) > 0.5 ? 1 : 0
+    },
+    "正前方编码值已下发"
+  );
+}
+
 async function writeFirmwareDefaults() {
   setStatus("写入固件默认值中...");
   try {
     const data = await post("/api/save-firmware-defaults", {
       ...requestBody(false),
-      params: readBalanceParams()
+      params: {
+        ...readBalanceParams(),
+        gimbal_follow_front_ecd: Number($("gimbalFollowFrontEcd").value),
+        gimbal_follow_front_valid: Number($("gimbalFollowFrontValid").value)
+      }
     });
     appendLog({
       saved: true,
@@ -334,6 +399,8 @@ $("calcBtn").addEventListener("click", () => calculate(false));
 $("sendBtn").addEventListener("click", () => calculate(true));
 $("clearKBtn").addEventListener("click", clearKOverride);
 $("sendParamsBtn").addEventListener("click", () => sendBalanceParams(false));
+$("captureGimbalFrontBtn").addEventListener("click", captureGimbalFront);
+$("sendGimbalFrontBtn").addEventListener("click", sendGimbalFrontEcd);
 $("saveParamsBtn").addEventListener("click", saveUiState);
 $("writeDefaultsBtn").addEventListener("click", writeFirmwareDefaults);
 balanceParamIds.map(([id]) => id).forEach((id) => {

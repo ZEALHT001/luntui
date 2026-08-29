@@ -147,6 +147,19 @@ textarea {
   margin-bottom: 16px;
 }
 
+.inline-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.inline-actions span {
+  color: #52606d;
+  font-size: 12px;
+}
+
 button {
   border: 0;
   border-radius: 6px;
