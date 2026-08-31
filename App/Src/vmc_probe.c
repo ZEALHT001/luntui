@@ -1032,6 +1032,26 @@ void vmc_balance_init(void)
   vmc_balance.lqr_dtheta_deadband = VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT;
   vmc_balance.lqr_dtheta_limit = VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT;
   vmc_balance.dpitch_lpf_alpha = VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT;
+  vmc_balance.disturbance_observer_enable =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT;
+  vmc_balance.disturbance_observer_gain =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT;
+  vmc_balance.disturbance_observer_leak =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT;
+  vmc_balance.disturbance_observer_limit =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_LIMIT_DEFAULT;
+  vmc_balance.disturbance_observer_speed_limit =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_SPEED_LIMIT_DEFAULT;
+  vmc_balance.disturbance_observer_delay =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_DELAY_DEFAULT;
+  vmc_balance.disturbance_observer_pitch_gain =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_PITCH_GAIN_DEFAULT;
+  vmc_balance.disturbance_observer_theta_gain =
+      VMC_BALANCE_DISTURBANCE_OBSERVER_THETA_GAIN_DEFAULT;
+  vmc_balance.disturbance_observer_output = 0.0f;
+  vmc_balance.disturbance_observer_residual = 0.0f;
+  vmc_balance.disturbance_observer_neutral_time = 0.0f;
+  vmc_balance.disturbance_observer_active = 0U;
   vmc_dpitch_lpf = 0.0;
   vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
   vmc_balance.yaw_hold_active = 0U;
@@ -1083,9 +1103,6 @@ void vmc_balance_update(void)
   const double lqr_d_theta =
       vmc_lqr_d_theta_lpf + dtheta_alpha * (lqr_d_theta_raw - vmc_lqr_d_theta_lpf);
   vmc_lqr_d_theta_lpf = lqr_d_theta;
-  const double theta_error_raw = lqr_theta - vmc_balance.pitch_offset;
-  const double theta_error =
-      apply_soft_deadband(theta_error_raw, vmc_balance.theta_deadband);
   const double speed_deadband =
       clamp_double(vmc_balance.speed_deadband, 0.0, 0.5);
   const double speed_target =
@@ -1123,8 +1140,68 @@ void vmc_balance_update(void)
       vmc_step_towards(vmc_balance.speed_pitch_offset,
                        speed_pitch_target,
                        speed_pitch_step);
-  const double pitch_target = vmc_balance.phi_offset + speed_pitch_offset;
-  const double phi_error_raw = motion->phi - pitch_target;
+  const double pitch_target_base = vmc_balance.phi_offset + speed_pitch_offset;
+  double pitch_target = pitch_target_base;
+  double phi_error_raw;
+  if (vmc_balance.disturbance_observer_enable != 0U &&
+      vmc_balance.speed_control_enable != 0U &&
+      vmc_control.enabled != 0U &&
+      vmc_balance.wheel_output_enable != 0U &&
+      vmc_probe_state.feedback_timeout_active == 0U &&
+      vmc_getup_is_active() == 0U) {
+    const double observer_gain =
+        clamp_double(vmc_balance.disturbance_observer_gain, -20.0, 20.0);
+    const double observer_leak =
+        clamp_double(vmc_balance.disturbance_observer_leak, 0.0, 2.0);
+    const double observer_limit =
+        clamp_double(vmc_balance.disturbance_observer_limit, 0.0, 0.5);
+    const double observer_speed_limit =
+        clamp_double(vmc_balance.disturbance_observer_speed_limit, 0.01, 2.0);
+    const double observer_delay =
+        clamp_double(vmc_balance.disturbance_observer_delay, 0.0, 5.0);
+    double observer_output = clamp_double(
+        vmc_balance.disturbance_observer_output, -observer_limit, observer_limit);
+
+    /* Learn the static balance trim only while the forward stick is released.
+     * The velocity sign follows the existing speed loop: a positive gain
+     * integrates (target velocity - measured velocity) into the trim state.
+     * During commanded travel, keep applying the learned trim but freeze the
+     * estimator so acceleration and braking do not wind it up. */
+    if (stick_speed_active == 0U) {
+      const double speed_error = -motion->kf_dx;
+      vmc_balance.disturbance_observer_neutral_time = (float)clamp_double(
+          vmc_balance.disturbance_observer_neutral_time + VMC_CONTROL_DT,
+          0.0,
+          observer_delay + 1.0);
+      if ((double)vmc_balance.disturbance_observer_neutral_time >= observer_delay &&
+          fabs(speed_error) <= observer_speed_limit) {
+        vmc_balance.disturbance_observer_active = 1U;
+        vmc_balance.disturbance_observer_residual = (float)speed_error;
+        observer_output +=
+            (observer_gain * speed_error - observer_leak * observer_output) *
+            VMC_CONTROL_DT;
+        observer_output =
+            clamp_double(observer_output, -observer_limit, observer_limit);
+      } else {
+        vmc_balance.disturbance_observer_active = 0U;
+        vmc_balance.disturbance_observer_residual = 0.0f;
+      }
+    } else {
+      vmc_balance.disturbance_observer_neutral_time = 0.0f;
+      vmc_balance.disturbance_observer_active = 0U;
+      vmc_balance.disturbance_observer_residual = 0.0f;
+    }
+    vmc_balance.disturbance_observer_output = (float)observer_output;
+  } else {
+    vmc_balance.disturbance_observer_output = 0.0f;
+    vmc_balance.disturbance_observer_residual = 0.0f;
+    vmc_balance.disturbance_observer_neutral_time = 0.0f;
+    vmc_balance.disturbance_observer_active = 0U;
+  }
+  pitch_target +=
+      (double)vmc_balance.disturbance_observer_output *
+      clamp_double(vmc_balance.disturbance_observer_pitch_gain, -2.0, 2.0);
+  phi_error_raw = motion->phi - pitch_target;
   const double phi_error =
       apply_soft_deadband(phi_error_raw, vmc_balance.phi_deadband);
   const double dpitch_raw = motion->d_phi;
@@ -1187,10 +1264,18 @@ void vmc_balance_update(void)
       clamp_double(vmc_balance.dx_feedback_limit, 0.0, 30.0);
   const double dx_error =
       clamp_double(dx_raw, -dx_feedback_limit, dx_feedback_limit);
-  const double left_lqr_theta_error_raw =
-      motion->left_theta - vmc_balance.pitch_offset;
-  const double right_lqr_theta_error_raw =
-      motion->right_theta - vmc_balance.pitch_offset;
+  /* Shifting the virtual-leg theta target moves the wheel contact point under
+   * the combined chassis/gimbal centre of mass.  This provides substantially
+   * more static balancing authority than body-pitch trim alone. */
+  const double theta_target =
+      vmc_balance.pitch_offset +
+      (double)vmc_balance.disturbance_observer_output *
+          clamp_double(vmc_balance.disturbance_observer_theta_gain, -2.0, 2.0);
+  const double theta_error_raw = lqr_theta - theta_target;
+  const double theta_error =
+      apply_soft_deadband(theta_error_raw, vmc_balance.theta_deadband);
+  const double left_lqr_theta_error_raw = motion->left_theta - theta_target;
+  const double right_lqr_theta_error_raw = motion->right_theta - theta_target;
   const double left_lqr_theta_error =
       apply_soft_deadband(left_lqr_theta_error_raw, vmc_balance.theta_deadband);
   const double right_lqr_theta_error =

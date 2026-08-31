@@ -226,6 +226,54 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.dpitch_lpf_alpha = vmc_lqr_rtt_clamp_float(value, 0.001f, 1.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_enable", &value) != 0U) {
+    vmc_balance.disturbance_observer_enable = (value > 0.5f) ? 1U : 0U;
+    if (vmc_balance.disturbance_observer_enable == 0U) {
+      vmc_balance.disturbance_observer_output = 0.0f;
+    }
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_gain", &value) != 0U) {
+    vmc_balance.disturbance_observer_gain =
+        vmc_lqr_rtt_clamp_float(value, -20.0f, 20.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_leak", &value) != 0U) {
+    vmc_balance.disturbance_observer_leak =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_limit", &value) != 0U) {
+    vmc_balance.disturbance_observer_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 0.5f);
+    if (vmc_balance.disturbance_observer_output > vmc_balance.disturbance_observer_limit) {
+      vmc_balance.disturbance_observer_output = vmc_balance.disturbance_observer_limit;
+    } else if (vmc_balance.disturbance_observer_output <
+               -vmc_balance.disturbance_observer_limit) {
+      vmc_balance.disturbance_observer_output = -vmc_balance.disturbance_observer_limit;
+    }
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_speed_limit", &value) != 0U) {
+    vmc_balance.disturbance_observer_speed_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.01f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_delay", &value) != 0U) {
+    vmc_balance.disturbance_observer_delay =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 5.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_pitch_gain", &value) != 0U) {
+    vmc_balance.disturbance_observer_pitch_gain =
+        vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_theta_gain", &value) != 0U) {
+    vmc_balance.disturbance_observer_theta_gain =
+        vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
     vmc_balance.x_feedback_gain = vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
     applied = 1U;
@@ -636,7 +684,7 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_x_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->dpitch_lpf);
 
-  /* VMCVOFA fields 46..62: RC source, RC-frame age, state-frame age,
+  /* VMCVOFA fields 46..61: RC source, RC-frame age, state-frame age,
    * right-stick yaw, left-stick turn, yaw ECD, front ECD, front valid,
    * wrapped error, yaw speed RPM, follow active, P, D, follow current,
    * final left-wheel current and final right-wheel current. */
@@ -680,6 +728,31 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_wheel_control.right_current_output);
+
+  /* VMCVOFA fields 62..69: disturbance observer enable, observer output,
+   * configured gain, speed error (target velocity - measured velocity),
+   * active state, neutral-stick elapsed time, effective pitch compensation
+   * and effective virtual-leg theta compensation. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_enable);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_output);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_gain);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_residual);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_active);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)b->disturbance_observer_neutral_time);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->disturbance_observer_output *
+          (double)b->disturbance_observer_pitch_gain);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->disturbance_observer_output *
+          (double)b->disturbance_observer_theta_gain);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
