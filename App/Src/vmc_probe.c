@@ -21,9 +21,17 @@ static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
 static uint32_t vmc_remote_mode_last_ms;
 static uint8_t vmc_remote_source_last;
+static float vmc_yaw_last_wrapped;
+static float vmc_yaw_unwrapped;
+static uint8_t vmc_yaw_unwrap_initialized;
+/* A fall detected while the robot was enabled requires an explicit emergency
+ * stop followed by S1=3 before control can be enabled again. */
+static uint8_t vmc_fall_rearm_required;
+static uint8_t vmc_fall_rearm_armed;
+static uint8_t vmc_fall_monitor_armed;
+static uint8_t vmc_fall_prev_fully_fallen;
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
-static uint8_t vmc_phi0_protect_source(void);
 static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
 static uint8_t vmc_getup_is_active(void);
@@ -506,23 +514,6 @@ static uint8_t vmc_joint_state_is_any(uint8_t status)
              : 0U;
 }
 
-static uint8_t vmc_phi0_protect_source(void)
-{
-  uint8_t source = VMC_PHI0_PROTECT_NONE;
-
-  if (vmc_probe_state.left_leg.phi0 < VMC_PHI0_PROTECT_MIN_RAD ||
-      vmc_probe_state.left_leg.phi0 > VMC_PHI0_PROTECT_MAX_RAD) {
-    source |= VMC_PHI0_PROTECT_LEFT;
-  }
-
-  if (vmc_probe_state.right_leg.phi0 < VMC_PHI0_PROTECT_MIN_RAD ||
-      vmc_probe_state.right_leg.phi0 > VMC_PHI0_PROTECT_MAX_RAD) {
-    source |= VMC_PHI0_PROTECT_RIGHT;
-  }
-
-  return source;
-}
-
 static uint8_t vmc_feedback_is_timeout(uint32_t now, uint32_t last_update_ms)
 {
   return (last_update_ms == 0U || (now - last_update_ms) > VMC_FEEDBACK_TIMEOUT_MS)
@@ -666,12 +657,52 @@ static void vmc_update_getup_state(void)
 
   vmc_getup_fully_fallen = fully_fallen;
 
+  if (remote_control.s[1] == RC_SW_DOWN) {
+    vmc_fall_rearm_required = 0U;
+    vmc_fall_rearm_armed = 1U;
+    vmc_fall_monitor_armed = 0U;
+    vmc_fall_prev_fully_fallen = fully_fallen;
+  }
+
   if (vmc_control.enabled == 0U || joint_allowed == 0U || imu_ready == 0U ||
       vmc_probe_state.feedback_timeout_active != 0U) {
     vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
     vmc_control.getup_turn_direction = 0;
     return;
   }
+
+  /* Arm fall detection only after observing an upright running state.  This
+   * deliberately ignores the case where S1=3 is selected while the chassis
+   * was already lying down, allowing that explicit restart to perform one
+   * get-up sequence. */
+  if (fully_fallen == 0U &&
+      (remote_control.s[1] == RC_SW_MID || remote_control.s[1] == RC_SW_UP)) {
+    vmc_fall_monitor_armed = 1U;
+  }
+
+  /* Once re-armed by S1=2, only S1=3 may start the controller again.  The
+   * one-shot arm is consumed when starting recovery from a fallen pose. */
+  if (vmc_fall_rearm_armed != 0U && remote_control.s[1] == RC_SW_MID) {
+    if (fully_fallen == 0U ||
+        (vmc_control.getup_state != VMC_GETUP_STATE_IDLE &&
+         vmc_control.getup_state != VMC_GETUP_STATE_READY)) {
+      vmc_fall_rearm_armed = 0U;
+    }
+  }
+
+  if (fully_fallen != 0U && vmc_fall_monitor_armed != 0U &&
+      vmc_fall_prev_fully_fallen == 0U && vmc_fall_rearm_armed == 0U &&
+      (remote_control.s[1] == RC_SW_MID || remote_control.s[1] == RC_SW_UP) &&
+      (vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
+       vmc_control.getup_state == VMC_GETUP_STATE_READY)) {
+    vmc_fall_rearm_required = 1U;
+    vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
+    vmc_control.getup_turn_direction = 0;
+    vmc_fall_prev_fully_fallen = fully_fallen;
+    return;
+  }
+
+  vmc_fall_prev_fully_fallen = fully_fallen;
 
   if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
        vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
@@ -725,6 +756,7 @@ static void vmc_update_remote_mode(void)
     vmc_balance.yaw_hold_active = 0U;
     vmc_balance.gimbal_follow_active = 0U;
     vmc_wheel_control.gimbal_follow_current = 0;
+    vmc_fall_monitor_armed = 0U;
     vmc_remote_mode_last_ms = now;
     return;
   }
@@ -734,6 +766,18 @@ static void vmc_update_remote_mode(void)
     dt = clamp_double(dt, VMC_CONTROL_DT, 0.10);
   }
   vmc_remote_mode_last_ms = now;
+
+  if ((vmc_fall_rearm_required != 0U && remote_control.s[1] != RC_SW_DOWN) ||
+      (vmc_fall_rearm_armed != 0U && remote_control.s[1] != RC_SW_DOWN &&
+       remote_control.s[1] != RC_SW_MID)) {
+    vmc_control.enabled = 0U;
+    vmc_balance.wheel_output_enable = 0U;
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_wheel_control.gimbal_follow_current = 0;
+    return;
+  }
 
   if (remote_control.s[1] == RC_SW_UP) {
     vmc_control.enabled = 1U;
@@ -799,10 +843,14 @@ static void vmc_update_remote_mode(void)
       vmc_balance.yaw_target = vmc_probe_state.body.yaw;
       vmc_balance.yaw_hold_active = 1U;
     }
-    yaw_rate_max = clamp_double(vmc_balance.yaw_target_rate_max, 0.0, 10.0);
+    yaw_rate_max = clamp_double(
+        (remote_control.s[1] == RC_SW_UP)
+            ? vmc_balance.s1_up_yaw_target_rate_max
+            : vmc_balance.yaw_target_rate_max,
+        0.0, 10.0);
     vmc_balance.yaw_target =
-        vmc_rad_format((float)((double)vmc_balance.yaw_target +
-                               turn_input * yaw_rate_max * dt));
+        (float)((double)vmc_balance.yaw_target +
+                turn_input * yaw_rate_max * dt);
   }
 
   if (vmc_balance.speed_control_enable != 0U) {
@@ -826,14 +874,6 @@ static void vmc_update_remote_mode(void)
                   VMC_WHEEL_CURRENT_MAX_DEFAULT);
   }
 
-  if (remote_control.s[1] == RC_SW_UP) {
-    const int16_t turn_current = clamp_i16(
-        vmc_control.s1_up_wheel_current,
-        (int16_t)-VMC_WHEEL_CURRENT_MAX_DEFAULT,
-        (int16_t)VMC_WHEEL_CURRENT_MAX_DEFAULT);
-    vmc_wheel_control.manual_left_current = (int16_t)-turn_current;
-    vmc_wheel_control.manual_right_current = turn_current;
-  }
 }
 
 static void vmc_update_body_state(void)
@@ -845,7 +885,21 @@ static void vmc_update_body_state(void)
   pitch = VMC_BODY_PITCH_DIRECTION * hi12_imu.angle_rad[1];
   pitch_rate = VMC_BODY_PITCH_RATE_DIRECTION * hi12_imu.gyro_radps[0];
   vmc_probe_state.body.pitch = pitch;
-  vmc_probe_state.body.yaw = hi12_imu.angle_rad[2];
+  {
+    const float yaw_wrapped = hi12_imu.angle_rad[2];
+    if (hi12_imu.connected == 0U || hi12_imu.valid == 0U) {
+      vmc_yaw_unwrap_initialized = 0U;
+      vmc_yaw_unwrapped = yaw_wrapped;
+    } else if (vmc_yaw_unwrap_initialized == 0U) {
+      vmc_yaw_last_wrapped = yaw_wrapped;
+      vmc_yaw_unwrapped = yaw_wrapped;
+      vmc_yaw_unwrap_initialized = 1U;
+    } else {
+      vmc_yaw_unwrapped += vmc_rad_format(yaw_wrapped - vmc_yaw_last_wrapped);
+      vmc_yaw_last_wrapped = yaw_wrapped;
+    }
+    vmc_probe_state.body.yaw = vmc_yaw_unwrapped;
+  }
   vmc_probe_state.body.pitch_rate = pitch_rate;
   vmc_probe_state.body.wx = pitch_rate;
   vmc_probe_state.body.wy = hi12_imu.gyro_radps[1];
@@ -905,9 +959,7 @@ static void vmc_update_motion_state(void)
       (vmc_probe_state.motion.left_body_dx + vmc_probe_state.motion.right_body_dx) * 0.5;
   vmc_probe_state.motion.dd_x = vmc_probe_state.body.ax;
 
-  if (vmc_control.enabled == 0U ||
-      vmc_probe_state.phi0_protect_latched != 0U ||
-      vmc_probe_state.feedback_timeout_active != 0U) {
+  if (vmc_control.enabled == 0U || vmc_probe_state.feedback_timeout_active != 0U) {
     vmc_body_motion_kf_reset();
   } else {
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
@@ -936,7 +988,7 @@ static void vmc_update_lqr_gain(void)
 
 static uint8_t vmc_safety_allows_output(void)
 {
-  return (vmc_probe_state.phi0_protect_latched == 0U &&
+  return (vmc_fall_rearm_required == 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
           remote_control_allows_joint_enable() != 0U)
              ? 1U
@@ -991,6 +1043,8 @@ void vmc_balance_init(void)
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
+  vmc_balance.s1_up_yaw_target_rate_max =
+      VMC_S1_UP_YAW_TARGET_RATE_MAX_DEFAULT;
   vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
   vmc_balance.gimbal_follow_front_ecd = VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT;
   vmc_balance.gimbal_follow_kp = VMC_GIMBAL_FOLLOW_KP_DEFAULT;
@@ -1361,8 +1415,10 @@ static int16_t vmc_update_yaw_hold_current(void)
     vmc_balance.yaw_hold_active = 1U;
   }
 
-  yaw_error_raw = vmc_rad_format((float)(vmc_balance.yaw_target -
-                                         vmc_probe_state.body.yaw));
+  /* Both target and feedback are unwrapped, so this error remains valid over
+   * multiple complete rotations instead of jumping at +/-pi. */
+  yaw_error_raw = (double)vmc_balance.yaw_target -
+                  (double)vmc_probe_state.body.yaw;
   yaw_error = apply_soft_deadband(yaw_error_raw, vmc_balance.yaw_hold_deadband);
   yaw_rate_error = -vmc_probe_state.body.wz;
   yaw_current =
@@ -1573,28 +1629,16 @@ static void vmc_dm_send_control_phase(uint8_t phase)
 void vmc_dm_state_machine_update(void)
 {
   const uint8_t phase = vmc_probe_state.dm_tx_phase;
-  const uint8_t phi0_source = vmc_phi0_protect_source();
   const uint8_t feedback_source = vmc_feedback_timeout_source();
-  const uint8_t wheel_output_requested =
-      (vmc_balance.wheel_output_enable != 0U &&
-       vmc_balance.wheel_output_user_enable != 0U)
-          ? 1U
-          : 0U;
 
   vmc_probe_state.feedback_timeout_source = feedback_source;
   vmc_probe_state.feedback_timeout_active =
       (feedback_source == VMC_FEEDBACK_TIMEOUT_NONE) ? 0U : 1U;
 
-  if (wheel_output_requested != 0U && vmc_getup_is_active() == 0U &&
-      phi0_source != VMC_PHI0_PROTECT_NONE) {
-    vmc_probe_state.phi0_protect_latched = 1U;
-    vmc_probe_state.phi0_protect_source = phi0_source;
-  } else if (wheel_output_requested == 0U || remote_control_is_s1_down() != 0U) {
-    vmc_probe_state.phi0_protect_latched = 0U;
-    vmc_probe_state.phi0_protect_source = VMC_PHI0_PROTECT_NONE;
-  }
+  vmc_probe_state.phi0_protect_latched = 0U;
+  vmc_probe_state.phi0_protect_source = VMC_PHI0_PROTECT_NONE;
 
-  if (vmc_probe_state.phi0_protect_latched != 0U ||
+  if (vmc_fall_rearm_required != 0U ||
       vmc_probe_state.feedback_timeout_active != 0U ||
       remote_control_allows_joint_enable() == 0U) {
     clear_leg_command(&vmc_probe_state.left_leg);
@@ -1683,7 +1727,6 @@ void vmc_control_init(void)
   vmc_control.s1_up_leg_low = VMC_S1_UP_LEG_LOW_DEFAULT;
   vmc_control.s1_up_leg_high = VMC_S1_UP_LEG_HIGH_DEFAULT;
   vmc_control.s1_up_leg_speed = VMC_S1_UP_LEG_SPEED_DEFAULT;
-  vmc_control.s1_up_wheel_current = VMC_S1_UP_WHEEL_CURRENT_DEFAULT;
   vmc_control.ramped_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.length_ramp_rate = VMC_LEG_LENGTH_RAMP_RATE_DEFAULT;
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
@@ -1707,6 +1750,10 @@ void vmc_control_init(void)
   vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_getup_fully_fallen = 0U;
+  vmc_fall_rearm_required = 0U;
+  vmc_fall_rearm_armed = 0U;
+  vmc_fall_monitor_armed = 0U;
+  vmc_fall_prev_fully_fallen = 0U;
   vmc_control.ramp_active = 0U;
 }
 
@@ -1818,7 +1865,7 @@ void vmc_control_update(void)
   vmc_update_getup_state();
 
   if (vmc_control.enabled == 0U ||
-      vmc_probe_state.phi0_protect_latched != 0U ||
+      vmc_fall_rearm_required != 0U ||
       vmc_probe_state.feedback_timeout_active != 0U ||
       remote_control_allows_joint_enable() == 0U) {
     vmc_control.ramp_active = 0U;
@@ -1899,14 +1946,6 @@ void vmc_control_update(void)
     left_target_phi0 = VMC_PHI0_VERTICAL_RAD;
     right_target_phi0 = VMC_PHI0_VERTICAL_RAD;
   }
-  if (vmc_control.getup_state != VMC_GETUP_STATE_TURN) {
-    left_target_phi0 = clamp_double(left_target_phi0,
-                                    VMC_PHI0_PROTECT_MIN_RAD,
-                                    VMC_PHI0_PROTECT_MAX_RAD);
-    right_target_phi0 = clamp_double(right_target_phi0,
-                                     VMC_PHI0_PROTECT_MIN_RAD,
-                                     VMC_PHI0_PROTECT_MAX_RAD);
-  }
   vmc_control.getup_target_phi0_left = (float)left_target_phi0;
   vmc_control.getup_target_phi0_right = (float)right_target_phi0;
   max_phi0_torque = clamp_double(vmc_control.max_phi0_torque,
@@ -1961,7 +2000,6 @@ void vmc_wheel_control_update(void)
   if (vmc_wheel_control.enabled != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_balance.wheel_output_user_enable != 0U &&
-      vmc_probe_state.phi0_protect_latched == 0U &&
       vmc_probe_state.feedback_timeout_active == 0U &&
       remote_control_allows_joint_enable() != 0U) {
     left_current = clamp_i16(vmc_wheel_control.left_current,

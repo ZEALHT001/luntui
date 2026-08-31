@@ -60,7 +60,6 @@ extern "C" {
 #define VMC_S1_UP_LEG_LOW_DEFAULT VMC_LEG_TARGET_SHORT
 #define VMC_S1_UP_LEG_HIGH_DEFAULT VMC_LEG_TARGET_LONG
 #define VMC_S1_UP_LEG_SPEED_DEFAULT 0.05f
-#define VMC_S1_UP_WHEEL_CURRENT_DEFAULT 300
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -116,8 +115,8 @@ extern "C" {
 #define VMC_GETUP_PITCH_READY_RAD  0.300f
 #define VMC_GETUP_PHI0_READY_RAD   0.100f
 
-#define VMC_PHI0_PROTECT_MIN_RAD   (20.0f * VMC_PI / 180.0f)
-#define VMC_PHI0_PROTECT_MAX_RAD   (160.0f * VMC_PI / 180.0f)
+/* Phi0 range protection is intentionally disabled.  These diagnostic state
+ * values remain for debugger/telemetry compatibility only. */
 #define VMC_PHI0_PROTECT_NONE      0U
 #define VMC_PHI0_PROTECT_LEFT      1U
 #define VMC_PHI0_PROTECT_RIGHT     2U
@@ -187,6 +186,7 @@ extern "C" {
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 2.0f
+#define VMC_S1_UP_YAW_TARGET_RATE_MAX_DEFAULT 4.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 4000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 400.0f
@@ -257,7 +257,6 @@ typedef struct {
   float s1_up_leg_low;
   float s1_up_leg_high;
   float s1_up_leg_speed;
-  int16_t s1_up_wheel_current;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;
@@ -344,6 +343,7 @@ typedef struct {
   float yaw_hold_kd;
   float yaw_hold_deadband;
   float yaw_target_rate_max;
+  float s1_up_yaw_target_rate_max;
   int16_t yaw_hold_current_limit;
   uint16_t gimbal_follow_front_ecd;
   float gimbal_follow_kp;

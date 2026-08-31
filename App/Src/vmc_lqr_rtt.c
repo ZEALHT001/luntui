@@ -316,12 +316,6 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.s1_up_leg_speed = vmc_lqr_rtt_clamp_float(value, 0.001f, 1.0f);
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_wheel_current", &value) != 0U) {
-    vmc_control.s1_up_wheel_current = (int16_t)vmc_lqr_rtt_clamp_float(
-        value, -(float)VMC_WHEEL_CURRENT_MAX_DEFAULT,
-        (float)VMC_WHEEL_CURRENT_MAX_DEFAULT);
-    applied = 1U;
-  }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_enable", &value) != 0U) {
     vmc_control.roll_comp_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
@@ -371,13 +365,18 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_target", &value) != 0U) {
-    vmc_balance.yaw_target = vmc_rad_format(value);
+    vmc_balance.yaw_target = value;
     vmc_balance.yaw_hold_active = 1U;
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_target_rate_max", &value) != 0U ||
       vmc_lqr_rtt_parse_named_float(line, "turn_yaw_rate_max", &value) != 0U) {
     vmc_balance.yaw_target_rate_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_yaw_target_rate_max", &value) != 0U) {
+    vmc_balance.s1_up_yaw_target_rate_max =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_current_limit", &value) != 0U) {
