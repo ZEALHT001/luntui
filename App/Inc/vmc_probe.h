@@ -105,6 +105,7 @@ extern "C" {
 #define VMC_GETUP_STATE_TURN       1U
 #define VMC_GETUP_STATE_SHRINK     2U
 #define VMC_GETUP_STATE_READY      3U
+#define VMC_GETUP_STATE_LEG_RECOVER 4U
 
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
@@ -113,7 +114,13 @@ extern "C" {
 #define VMC_GETUP_THETA_MIN_RAD    0.500f
 #define VMC_GETUP_THETA_MAX_RAD    1.400f
 #define VMC_GETUP_PITCH_READY_RAD  0.300f
-#define VMC_GETUP_PHI0_READY_RAD   0.100f
+#define VMC_GETUP_LENGTH_READY_TOL 0.080f
+#define VMC_GETUP_LEG_BAD_NEG_MIN_RAD -3.140f
+#define VMC_GETUP_LEG_BAD_NEG_MAX_RAD -0.790f
+#define VMC_GETUP_LEG_BAD_POS_MIN_RAD  2.000f
+#define VMC_GETUP_LEG_BAD_POS_MAX_RAD  3.140f
+#define VMC_GETUP_LEG_RECOVER_TARGET_RAD 1.100f
+#define VMC_GETUP_LEG_RECOVER_TOL_RAD    0.100f
 
 /* Phi0 range protection is intentionally disabled.  These diagnostic state
  * values remain for debugger/telemetry compatibility only. */
@@ -285,6 +292,9 @@ typedef struct {
   float right_target_length;
   uint8_t getup_state;
   int8_t getup_turn_direction;
+  uint8_t getup_lqr_release_pending;
+  float getup_shrink_target_theta_left;
+  float getup_shrink_target_theta_right;
   float getup_target_phi0_left;
   float getup_target_phi0_right;
   uint8_t ramp_active;

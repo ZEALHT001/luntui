@@ -120,7 +120,9 @@ static HAL_StatusTypeDef board_comm_send_heartbeat(void)
    * level body pitch is required before re-enabling the gimbal. */
   const uint8_t getup_active =
       (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
-       vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) ? 1U : 0U;
+       vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
+       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER ||
+       vmc_control.getup_lqr_release_pending != 0U) ? 1U : 0U;
   const uint8_t pitch_ready =
       (fabsf(vmc_probe_state.body.pitch) < VMC_GETUP_PITCH_READY_RAD) ? 1U : 0U;
   const uint8_t getup_required =

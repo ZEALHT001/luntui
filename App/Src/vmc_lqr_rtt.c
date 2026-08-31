@@ -754,6 +754,40 @@ void vmc_lqr_rtt_telemetry_update(void)
       (double)b->disturbance_observer_output *
           (double)b->disturbance_observer_theta_gain);
 
+  /* VMCVOFA fields 70..74: get-up state, average/left/right theta and the
+   * fully-fallen decision.  State 4 is the link-ground leg-recovery mode. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.getup_state);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     m->theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     m->left_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     m->right_theta);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_getup_fully_fallen);
+
+  /* VMCVOFA fields 75..77: measured left/right leg length and the ramped
+   * target used by the recovery length controller. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     vmc_probe_state.left_leg.length);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     vmc_probe_state.right_leg.length);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.ramped_target_length);
+  /* VMCVOFA field 78: LQR joint release is blocked until recovery length is
+   * confirmed safe. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.getup_lqr_release_pending);
+  /* VMCVOFA fields 79..80: theta held while shrinking the legs. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.getup_shrink_target_theta_left);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.getup_shrink_target_theta_right);
+
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
     line[offset] = '\0';

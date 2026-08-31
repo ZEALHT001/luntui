@@ -624,7 +624,41 @@ static double vmc_step_towards(double current, double target, double step)
 static uint8_t vmc_getup_is_active(void)
 {
   return (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
-          vmc_control.getup_state == VMC_GETUP_STATE_SHRINK)
+          vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
+          vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER ||
+          vmc_control.getup_lqr_release_pending != 0U)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_getup_theta_is_in_bad_zone(double theta)
+{
+  return ((theta > VMC_GETUP_LEG_BAD_NEG_MIN_RAD &&
+           theta < VMC_GETUP_LEG_BAD_NEG_MAX_RAD) ||
+          (theta > VMC_GETUP_LEG_BAD_POS_MIN_RAD &&
+           theta < VMC_GETUP_LEG_BAD_POS_MAX_RAD))
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_getup_leg_recover_is_required(void)
+{
+  return (vmc_getup_theta_is_in_bad_zone(vmc_probe_state.motion.theta) != 0U ||
+          vmc_getup_theta_is_in_bad_zone(vmc_probe_state.motion.left_theta) != 0U ||
+          vmc_getup_theta_is_in_bad_zone(vmc_probe_state.motion.right_theta) != 0U)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_getup_leg_recover_pose_ready(void)
+{
+  const double left_error = vmc_rad_format((float)(
+      vmc_probe_state.motion.left_theta - VMC_GETUP_LEG_RECOVER_TARGET_RAD));
+  const double right_error = vmc_rad_format((float)(
+      vmc_probe_state.motion.right_theta - VMC_GETUP_LEG_RECOVER_TARGET_RAD));
+
+  return (fabs(left_error) < VMC_GETUP_LEG_RECOVER_TOL_RAD &&
+          fabs(right_error) < VMC_GETUP_LEG_RECOVER_TOL_RAD)
              ? 1U
              : 0U;
 }
@@ -709,19 +743,66 @@ static void vmc_update_getup_state(void)
       fully_fallen != 0U) {
     vmc_control.getup_state = VMC_GETUP_STATE_TURN;
     vmc_control.getup_turn_direction = (pitch < 0.0) ? 1 : -1;
+    vmc_control.getup_lqr_release_pending = 1U;
+  } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
+              vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
+             fully_fallen == 0U &&
+             vmc_getup_leg_recover_is_required() != 0U) {
+    /* The chassis is not fully fallen, but the links are behind/above the
+     * body and can be pinned against the ground.  Rotate toward the forward
+     * recovery angle using the dedicated negative direction. */
+    vmc_control.getup_state = VMC_GETUP_STATE_LEG_RECOVER;
+    vmc_control.getup_turn_direction = -1;
+    vmc_control.getup_lqr_release_pending = 1U;
+  } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
+              vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
+             vmc_control.getup_lqr_release_pending != 0U) {
+    /* A recovery was interrupted after the legs had been extended.  Resume
+     * the safe length-settle stage before any LQR joint output is released. */
+    vmc_control.getup_state = VMC_GETUP_STATE_SHRINK;
+    vmc_control.getup_turn_direction = 0;
+    vmc_control.getup_shrink_target_theta_left =
+        (float)vmc_probe_state.motion.left_theta;
+    vmc_control.getup_shrink_target_theta_right =
+        (float)vmc_probe_state.motion.right_theta;
+  }
+
+  if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER &&
+      fully_fallen != 0U) {
+    vmc_control.getup_state = VMC_GETUP_STATE_TURN;
+    vmc_control.getup_turn_direction = (pitch < 0.0) ? 1 : -1;
+    vmc_control.getup_lqr_release_pending = 1U;
   }
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_TURN &&
       vmc_getup_pose_ready() != 0U) {
     vmc_control.getup_state = VMC_GETUP_STATE_SHRINK;
+    vmc_control.getup_shrink_target_theta_left =
+        (float)vmc_probe_state.motion.left_theta;
+    vmc_control.getup_shrink_target_theta_right =
+        (float)vmc_probe_state.motion.right_theta;
   }
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK &&
-      fabs(vmc_probe_state.left_leg.length - VMC_GETUP_STAND_LENGTH) < 0.030 &&
-      fabs(vmc_probe_state.right_leg.length - VMC_GETUP_STAND_LENGTH) < 0.030 &&
-      fabs(vmc_probe_state.left_leg.phi0 - VMC_PHI0_VERTICAL_RAD) < VMC_GETUP_PHI0_READY_RAD &&
-      fabs(vmc_probe_state.right_leg.phi0 - VMC_PHI0_VERTICAL_RAD) < VMC_GETUP_PHI0_READY_RAD) {
+      fabs(vmc_probe_state.left_leg.length - VMC_GETUP_STAND_LENGTH) <
+          VMC_GETUP_LENGTH_READY_TOL &&
+      fabs(vmc_probe_state.right_leg.length - VMC_GETUP_STAND_LENGTH) <
+          VMC_GETUP_LENGTH_READY_TOL) {
     vmc_control.getup_state = VMC_GETUP_STATE_READY;
+    vmc_control.getup_lqr_release_pending = 0U;
+  }
+
+  if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER &&
+      vmc_getup_leg_recover_pose_ready() != 0U) {
+    /* Never hand the joints directly from the 0.30 m turn pose to LQR.
+     * First reuse the normal SHRINK stage and wait for both measured leg
+     * lengths to reach the safe stand target. */
+    vmc_control.getup_state = VMC_GETUP_STATE_SHRINK;
+    vmc_control.getup_turn_direction = 0;
+    vmc_control.getup_shrink_target_theta_left =
+        VMC_GETUP_LEG_RECOVER_TARGET_RAD;
+    vmc_control.getup_shrink_target_theta_right =
+        VMC_GETUP_LEG_RECOVER_TARGET_RAD;
   }
 }
 
@@ -1832,6 +1913,9 @@ void vmc_control_init(void)
   vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
   vmc_control.getup_turn_direction = 0;
+  vmc_control.getup_lqr_release_pending = 0U;
+  vmc_control.getup_shrink_target_theta_left = 0.0f;
+  vmc_control.getup_shrink_target_theta_right = 0.0f;
   vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_getup_fully_fallen = 0U;
@@ -1975,7 +2059,8 @@ void vmc_control_update(void)
   target_length = clamp_double(vmc_control.target_length,
                                VMC_LEG_LENGTH_MIN,
                                VMC_LEG_LENGTH_MAX);
-  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
+  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
+      vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     target_length = VMC_GETUP_TURN_LENGTH;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
     target_length = VMC_GETUP_STAND_LENGTH;
@@ -2022,14 +2107,21 @@ void vmc_control_update(void)
   max_force = clamp_double(vmc_control.max_force, 0.0, VMC_LEG_FORCE_MAX_DEFAULT);
   left_target_phi0 = vmc_control.target_phi0;
   right_target_phi0 = vmc_control.target_phi0;
-  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
+  if (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
+      vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     left_target_phi0 = vmc_probe_state.left_leg.phi0 +
                        (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
     right_target_phi0 = vmc_probe_state.right_leg.phi0 +
                         (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
-    left_target_phi0 = VMC_PHI0_VERTICAL_RAD;
-    right_target_phi0 = VMC_PHI0_VERTICAL_RAD;
+    const double left_theta_error = vmc_rad_format((float)(
+        vmc_control.getup_shrink_target_theta_left -
+        vmc_probe_state.motion.left_theta));
+    const double right_theta_error = vmc_rad_format((float)(
+        vmc_control.getup_shrink_target_theta_right -
+        vmc_probe_state.motion.right_theta));
+    left_target_phi0 = vmc_probe_state.left_leg.phi0 + left_theta_error;
+    right_target_phi0 = vmc_probe_state.right_leg.phi0 + right_theta_error;
   }
   vmc_control.getup_target_phi0_left = (float)left_target_phi0;
   vmc_control.getup_target_phi0_right = (float)right_target_phi0;
