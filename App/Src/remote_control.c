@@ -41,7 +41,6 @@ static void sbus_to_remote(const uint8_t *sbus_buf)
   remote_control_t rc;
 
   memset(&rc, 0, sizeof(rc));
-
   rc.ch[0] = (int16_t)((sbus_buf[0] | (sbus_buf[1] << 8)) & 0x07FFU);
   rc.ch[1] = (int16_t)(((sbus_buf[1] >> 3) | (sbus_buf[2] << 5)) & 0x07FFU);
   rc.ch[2] = (int16_t)(((sbus_buf[2] >> 6) | (sbus_buf[3] << 2) |
@@ -105,8 +104,7 @@ void remote_control_update_source(void)
     selected.ch[1] = board_comm_state.remote_ch[1];
     selected.ch[2] = board_comm_state.remote_ch[2];
     selected.ch[3] = board_comm_state.remote_ch[3];
-    /* Keep the native DBUS layout used throughout A-board firmware:
-     * s[0] is physical S2 and s[1] is physical S1. */
+    /* Native DBUS layout: s[0] is physical S2 and s[1] is physical S1. */
     selected.s[0] = board_comm_state.remote_s2;
     selected.s[1] = board_comm_state.remote_s1;
     selected.rx_count = board_comm_state.rx_success_count;
@@ -121,7 +119,6 @@ void remote_control_update_source(void)
   } else {
     remote_control_source = RC_SOURCE_NONE;
   }
-
   remote_control = selected;
 }
 
@@ -146,7 +143,9 @@ uint8_t remote_control_allows_joint_enable(void)
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  if (huart == &huart1) {
+  if (huart == &huart8) {
+    board_comm_on_uart_rx_event(huart, Size);
+  } else if (huart == &huart1) {
     if (Size >= RC_FRAME_LENGTH) {
       sbus_to_remote(sbus_rx_buf);
     } else {
@@ -156,4 +155,20 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   } else if (huart == &huart6) {
     hi12_imu_on_uart_rx_event(huart, Size);
   }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart == &huart8) {
+    board_comm_on_uart_error(huart);
+  } else if (huart == &huart1) {
+    remote_control_restart_rx();
+  } else if (huart == &huart6) {
+    hi12_imu_init();
+  }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  board_comm_on_uart_tx_complete(huart);
 }

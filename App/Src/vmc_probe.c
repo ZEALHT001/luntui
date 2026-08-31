@@ -106,14 +106,9 @@ static double apply_encoder_deadband(double value, double deadband)
 
 static int16_t vmc_gimbal_encoder_error(uint16_t ecd, uint16_t front_ecd)
 {
-  int32_t error = (int32_t)ecd - (int32_t)front_ecd;
-
-  if (error > 4095) {
-    error -= 8192;
-  } else if (error < -4096) {
-    error += 8192;
-  }
-  return (int16_t)error;
+  /* Shortest signed distance on the 13-bit encoder ring. */
+  const int32_t wrapped = ((int32_t)ecd - (int32_t)front_ecd + 4096) & 0x1FFF;
+  return (int16_t)(wrapped - 4096);
 }
 
 static int16_t clamp_i16(int16_t value, int16_t min_value, int16_t max_value)
@@ -724,7 +719,8 @@ static void vmc_update_remote_mode(void)
       board_comm_remote_is_valid() != 0U &&
       (board_comm_state.remote_flags & BOARD_COMM_FLAG_YAW_ACTIVE) != 0U &&
       (board_comm_state.remote_flags & BOARD_COMM_FLAG_YAW_MOTOR_ONLINE) != 0U &&
-      (board_comm_state.remote_flags & BOARD_COMM_FLAG_GIMBAL_ENABLED) != 0U) {
+      vmc_getup_fully_fallen == 0U &&
+      vmc_getup_is_active() == 0U) {
     follow_requested = 1U;
   }
 
@@ -1356,7 +1352,7 @@ static int16_t vmc_update_gimbal_follow_current(void)
   error = apply_encoder_deadband(error_raw,
                                  (double)vmc_balance.gimbal_follow_deadband);
   p_output = (double)vmc_balance.gimbal_follow_kp * error;
-  d_output = (double)vmc_balance.gimbal_follow_kd *
+  d_output = -(double)vmc_balance.gimbal_follow_kd *
              (double)board_comm_state.yaw_speed_rpm;
   output = (double)vmc_balance.gimbal_follow_direction *
            (p_output + d_output);
@@ -1927,9 +1923,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) == HAL_OK &&
         header.IDE == CAN_ID_STD && header.DLC == 8U) {
-      if (board_comm_on_can_rx(hcan, header.StdId, data) == 0U) {
-        parse_can_frame(hcan, header.StdId, data);
-      }
+      parse_can_frame(hcan, header.StdId, data);
     }
   }
 }

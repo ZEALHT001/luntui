@@ -617,9 +617,10 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_x_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->dpitch_lpf);
 
-  /* VMCVOFA fields 47..60: RC source, RC-frame age, state-frame age,
+  /* VMCVOFA fields 46..62: RC source, RC-frame age, state-frame age,
    * right-stick yaw, left-stick turn, yaw ECD, front ECD, front valid,
-   * wrapped error, yaw speed RPM, follow active, P, D, follow current. */
+   * wrapped error, yaw speed RPM, follow active, P, D, follow current,
+   * final left-wheel current and final right-wheel current. */
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      (double)remote_control_source);
   offset = vmc_lqr_rtt_append_scaled(
@@ -654,6 +655,12 @@ void vmc_lqr_rtt_telemetry_update(void)
                                      b->gimbal_follow_d_output);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      b->gimbal_follow_output);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_wheel_control.left_current_output);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_wheel_control.right_current_output);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
