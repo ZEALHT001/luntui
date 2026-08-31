@@ -302,6 +302,26 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.length_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_low", &value) != 0U) {
+    vmc_control.s1_up_leg_low =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_high", &value) != 0U) {
+    vmc_control.s1_up_leg_high =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_speed", &value) != 0U) {
+    vmc_control.s1_up_leg_speed = vmc_lqr_rtt_clamp_float(value, 0.001f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_wheel_current", &value) != 0U) {
+    vmc_control.s1_up_wheel_current = (int16_t)vmc_lqr_rtt_clamp_float(
+        value, -(float)VMC_WHEEL_CURRENT_MAX_DEFAULT,
+        (float)VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_enable", &value) != 0U) {
     vmc_control.roll_comp_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;

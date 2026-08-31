@@ -57,6 +57,10 @@ extern "C" {
 #define VMC_LEG_TARGET_MID        0.230f
 #define VMC_LEG_TARGET_LONG       0.280f
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.2f
+#define VMC_S1_UP_LEG_LOW_DEFAULT VMC_LEG_TARGET_SHORT
+#define VMC_S1_UP_LEG_HIGH_DEFAULT VMC_LEG_TARGET_LONG
+#define VMC_S1_UP_LEG_SPEED_DEFAULT 0.05f
+#define VMC_S1_UP_WHEEL_CURRENT_DEFAULT 300
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -250,6 +254,10 @@ typedef struct {
 typedef struct {
   uint8_t enabled;
   float target_length;
+  float s1_up_leg_low;
+  float s1_up_leg_high;
+  float s1_up_leg_speed;
+  int16_t s1_up_wheel_current;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;

@@ -559,8 +559,12 @@ static uint8_t vmc_feedback_timeout_source(void)
 
 static void vmc_update_remote_target_length(void)
 {
+  static uint32_t s1_up_oscillation_start_ms;
+  const uint32_t now = HAL_GetTick();
+
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
+    s1_up_oscillation_start_ms = 0U;
     return;
   }
 
@@ -570,6 +574,46 @@ static void vmc_update_remote_target_length(void)
     vmc_control.target_length = VMC_LEG_TARGET_MID;
   } else if (remote_control.s[0] == RC_SW_DOWN) {
     vmc_control.target_length = VMC_LEG_TARGET_SHORT;
+  }
+
+  /* S1 up is a continuous chassis test mode.  Keep the legs moving between
+   * the established short/long targets with a triangular waveform. */
+  if (remote_control.s[1] == RC_SW_UP) {
+    float low = clamp_float(vmc_control.s1_up_leg_low,
+                            VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    float high = clamp_float(vmc_control.s1_up_leg_high,
+                             VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    const float speed = clamp_float(vmc_control.s1_up_leg_speed, 0.001f, 1.0f);
+    uint32_t period;
+    uint32_t half_period;
+    float span;
+    uint32_t elapsed;
+    uint32_t phase;
+
+    if (high < low) {
+      const float tmp = low;
+      low = high;
+      high = tmp;
+    }
+    span = high - low;
+    period = (uint32_t)((2.0f * span / speed) * 1000.0f);
+    if (period < 2U) period = 2U;
+    half_period = period / 2U;
+
+    if (s1_up_oscillation_start_ms == 0U) {
+      s1_up_oscillation_start_ms = now;
+    }
+    elapsed = now - s1_up_oscillation_start_ms;
+    phase = (period == 0U) ? 0U : (elapsed % period);
+    if (phase < half_period) {
+      vmc_control.target_length =
+          low + span * ((float)phase / (float)half_period);
+    } else {
+      vmc_control.target_length =
+          high - span * ((float)(phase - half_period) / (float)half_period);
+    }
+  } else {
+    s1_up_oscillation_start_ms = 0U;
   }
 }
 
@@ -696,7 +740,11 @@ static void vmc_update_remote_mode(void)
     vmc_balance.wheel_output_enable = 1U;
   } else if (remote_control.s[1] == RC_SW_MID) {
     vmc_control.enabled = 1U;
-    vmc_balance.wheel_output_enable = 0U;
+    /* In the middle position, allow wheels only when the chassis is upright
+     * and the automatic get-up sequence is no longer active.  Joints remain
+     * enabled during get-up so the state machine can recover the chassis. */
+    vmc_balance.wheel_output_enable =
+        (vmc_getup_fully_fallen == 0U && vmc_getup_is_active() == 0U) ? 1U : 0U;
   } else {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
@@ -709,6 +757,12 @@ static void vmc_update_remote_mode(void)
 
   forward_current = rc_channel_to_current(remote_control.ch[3],
                                           VMC_RC_WHEEL_FWD_CURRENT_MAX);
+  /* S1 up is an in-place rotation test.  Do not convert the neutral forward
+   * stick into a forward speed command; the configured current is applied as
+   * an equal/opposite differential to the two wheels below. */
+  if (remote_control.s[1] == RC_SW_UP) {
+    forward_current = 0;
+  }
   turn_input = rc_channel_to_unit((int16_t)-remote_control.ch[2]);
   vmc_wheel_control.manual_forward_current = forward_current;
 
@@ -770,6 +824,15 @@ static void vmc_update_remote_mode(void)
         clamp_i16(forward_current,
                   -VMC_WHEEL_CURRENT_MAX_DEFAULT,
                   VMC_WHEEL_CURRENT_MAX_DEFAULT);
+  }
+
+  if (remote_control.s[1] == RC_SW_UP) {
+    const int16_t turn_current = clamp_i16(
+        vmc_control.s1_up_wheel_current,
+        (int16_t)-VMC_WHEEL_CURRENT_MAX_DEFAULT,
+        (int16_t)VMC_WHEEL_CURRENT_MAX_DEFAULT);
+    vmc_wheel_control.manual_left_current = (int16_t)-turn_current;
+    vmc_wheel_control.manual_right_current = turn_current;
   }
 }
 
@@ -1617,6 +1680,10 @@ void vmc_control_init(void)
 {
   vmc_control.enabled = 0U;
   vmc_control.target_length = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.s1_up_leg_low = VMC_S1_UP_LEG_LOW_DEFAULT;
+  vmc_control.s1_up_leg_high = VMC_S1_UP_LEG_HIGH_DEFAULT;
+  vmc_control.s1_up_leg_speed = VMC_S1_UP_LEG_SPEED_DEFAULT;
+  vmc_control.s1_up_wheel_current = VMC_S1_UP_WHEEL_CURRENT_DEFAULT;
   vmc_control.ramped_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.length_ramp_rate = VMC_LEG_LENGTH_RAMP_RATE_DEFAULT;
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
@@ -1745,6 +1812,7 @@ void vmc_control_update(void)
   double roll_comp_limit;
   double left_target_length;
   double right_target_length;
+  double length_ramp_rate;
 
   vmc_update_remote_target_length();
   vmc_update_getup_state();
@@ -1780,11 +1848,14 @@ void vmc_control_update(void)
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
     target_length = VMC_GETUP_STAND_LENGTH;
   }
+  length_ramp_rate = (remote_control.valid != 0U &&
+                      remote_control.s[1] == RC_SW_UP)
+                         ? clamp_double(vmc_control.s1_up_leg_speed, 0.001, 1.0)
+                         : clamp_double(vmc_control.length_ramp_rate, 0.0, 1.0);
   ramped_target_length =
       vmc_step_towards(vmc_control.ramped_target_length,
                        target_length,
-                       clamp_double(vmc_control.length_ramp_rate, 0.0, 1.0) *
-                           VMC_CONTROL_DT);
+                       length_ramp_rate * VMC_CONTROL_DT);
   vmc_control.ramped_target_length = (float)ramped_target_length;
 
   roll_comp_limit = clamp_double(vmc_control.roll_comp_limit, 0.0, 0.10);
