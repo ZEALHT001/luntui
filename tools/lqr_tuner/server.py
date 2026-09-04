@@ -180,6 +180,12 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "gimbal_follow_direction": ("VMC_GIMBAL_FOLLOW_DIRECTION_DEFAULT", "float"),
 }
 
+# Parameters used by the web UI but not sent in the runtime balance-parameter
+# payload still have a firmware-side default that can be imported.
+FIRMWARE_SCALAR_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
+    "leg_length": ("VMC_LEG_LENGTH_DEFAULT", "float"),
+}
+
 
 def _rtt_host(data: dict[str, Any]) -> str:
     host = str(data.get("rtt_host") or "").strip()
@@ -227,7 +233,7 @@ def _calc_response(data: dict[str, Any]) -> dict[str, Any]:
 
     k = k_at_length(preset, leg_length)
     lengths, gains, coeffs = fit_schedule(preset, leg_min, leg_max, leg_step, degree)
-    c_source = emit_c(coeffs)
+    c_source = _emit_lqr_c_source(coeffs, preset_name, preset)
 
     flat_col_major = k.reshape(-1, order="F")
     payload = {
@@ -373,6 +379,124 @@ def _write_balance_defaults(params: dict[str, Any]) -> list[str]:
     return changed_macros
 
 
+_C_NUMERIC_LITERAL_RE = re.compile(
+    r"^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?:[fFuUlL]+)?$"
+)
+
+
+def _parse_c_numeric_literal(token: str) -> float:
+    """Parse a simple numeric C literal used by the default-value macros."""
+    value = token.strip()
+    # The defaults are simple literals, but tolerate one or more wrapping
+    # parentheses (for example ``(1.0f)``) and integer/float suffixes.
+    while len(value) >= 2 and value[0] == "(" and value[-1] == ")":
+        value = value[1:-1].strip()
+    if not _C_NUMERIC_LITERAL_RE.fullmatch(value):
+        raise ValueError(f"unsupported C numeric literal: {token}")
+    value = re.sub(r"[fFuUlL]+$", "", value)
+    return float(value)
+
+
+def _read_lqr_weights(lqr_path: Path) -> tuple[list[float] | None, list[float] | None, list[str]]:
+    """Read Q/R metadata written by the tuner from ``vmc_lqr.c`` comments."""
+    if not lqr_path.exists():
+        try:
+            display_path = str(lqr_path.relative_to(ROOT))
+        except ValueError:
+            display_path = str(lqr_path)
+        return None, None, [f"LQR file not found: {display_path}"]
+    source = lqr_path.read_text(encoding="utf-8")
+    values: dict[str, list[float] | None] = {"q": None, "r": None}
+    errors: list[str] = []
+    for name, expected in (("q", 6), ("r", 2)):
+        match = re.search(
+            rf"VMC_LQR_TUNER_{name.upper()}\s*[:=]\s*\[([^\]]*)\]",
+            source,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        tokens = [part.strip() for part in match.group(1).split(",") if part.strip()]
+        if len(tokens) != expected:
+            errors.append(f"VMC_LQR_TUNER_{name.upper()} expects {expected} values, got {len(tokens)}")
+            continue
+        try:
+            values[name] = [_parse_c_numeric_literal(token) for token in tokens]
+        except ValueError as exc:
+            errors.append(f"VMC_LQR_TUNER_{name.upper()}: {exc}")
+    return values["q"], values["r"], errors
+
+
+def _emit_lqr_c_source(coeffs: np.ndarray, preset_name: str, preset: Any) -> str:
+    """Emit K schedule C code with Q/R weights preserved in a comment."""
+    q_values = ", ".join(f"{float(value):.17g}" for value in np.diag(preset.q))
+    r_values = ", ".join(f"{float(value):.17g}" for value in np.diag(preset.r))
+    metadata = "\n".join(
+        [
+            "/* VMC_LQR_TUNER_METADATA",
+            f" * preset: {preset_name}",
+            f" * VMC_LQR_TUNER_Q: [{q_values}]",
+            f" * VMC_LQR_TUNER_R: [{r_values}]",
+            " */",
+            "",
+        ]
+    )
+    return metadata + emit_c(coeffs)
+
+
+def _read_firmware_defaults() -> dict[str, Any]:
+    """Read balance parameter defaults directly from ``vmc_probe.h``.
+
+    Only macros listed in the web-parameter mapping tables are imported.  A
+    missing or non-literal macro is reported to the caller so the UI can still
+    apply all values that were parsed successfully.
+    """
+    header_path = ROOT / "App" / "Inc" / "vmc_probe.h"
+    source = header_path.read_text(encoding="utf-8")
+    # Capture the first token after each #define.  All defaults mapped above
+    # are single numeric literals; comments and trailing tokens are ignored.
+    defines: dict[str, str] = {}
+    for match in re.finditer(r"^\s*#define\s+(?P<macro>\w+)\s+(?P<value>[^\s/]+)", source, re.MULTILINE):
+        defines[match.group("macro")] = match.group("value")
+
+    params: dict[str, float] = {}
+    macro_values: dict[str, float] = {}
+    missing_macros: list[str] = []
+    parse_errors: list[str] = []
+    for key, (macro, _value_type) in {
+        **FIRMWARE_SCALAR_DEFAULT_MACROS,
+        **BALANCE_PARAM_DEFAULT_MACROS,
+    }.items():
+        token = defines.get(macro)
+        if token is None:
+            missing_macros.append(macro)
+            continue
+        try:
+            numeric = _parse_c_numeric_literal(token)
+        except ValueError as exc:
+            parse_errors.append(f"{macro}: {exc}")
+            continue
+        params[key] = numeric
+        macro_values[macro] = numeric
+
+    lqr_path = ROOT / "App" / "Src" / "vmc_lqr.c"
+    q_values, r_values, q_r_errors = _read_lqr_weights(lqr_path)
+    parse_errors.extend(q_r_errors)
+
+    return {
+        "defaults_file": str(header_path.relative_to(ROOT)),
+        "leg_length": params.pop("leg_length", None),
+        "balance_params": params,
+        "lqr_file": str(lqr_path.relative_to(ROOT)),
+        "q": q_values,
+        "r": r_values,
+        "q_r_found": q_values is not None and r_values is not None,
+        "macro_values": macro_values,
+        "missing_macros": missing_macros,
+        "parse_errors": parse_errors,
+    }
+
+
 def _save_firmware_defaults_response(data: dict[str, Any]) -> dict[str, Any]:
     preset_name, preset = _preset_from_request(data)
     leg_min = float(data.get("leg_min", 0.03))
@@ -382,7 +506,7 @@ def _save_firmware_defaults_response(data: dict[str, Any]) -> dict[str, Any]:
     _lengths, _gains, coeffs = fit_schedule(preset, leg_min, leg_max, leg_step, degree)
 
     lqr_path = ROOT / "App" / "Src" / "vmc_lqr.c"
-    c_source = emit_c(coeffs)
+    c_source = _emit_lqr_c_source(coeffs, preset_name, preset)
     lqr_path.write_text(c_source)
 
     params = dict(DEFAULT_BALANCE_PARAMS)
@@ -653,6 +777,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True})
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/api/firmware-defaults":
+            self._send_json(200, {"ok": True, **_read_firmware_defaults()})
+            return
         if self.path == "/api/defaults":
             preset = PRESETS["abk"]
             self._send_json(

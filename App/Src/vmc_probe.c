@@ -19,6 +19,9 @@ static double vmc_lqr_d_theta_lpf;
 static double vmc_lqr_left_d_theta_lpf;
 static double vmc_lqr_right_d_theta_lpf;
 static double vmc_dpitch_lpf;
+static double vmc_speed_dx_prev;
+static double vmc_speed_accel_lpf;
+static uint8_t vmc_speed_accel_initialized;
 static uint32_t vmc_remote_mode_last_ms;
 static uint8_t vmc_remote_source_last;
 static float vmc_yaw_last_wrapped;
@@ -1134,6 +1137,9 @@ void vmc_balance_init(void)
   vmc_balance.disturbance_observer_neutral_time = 0.0f;
   vmc_balance.disturbance_observer_active = 0U;
   vmc_dpitch_lpf = 0.0;
+  vmc_speed_dx_prev = 0.0;
+  vmc_speed_accel_lpf = 0.0;
+  vmc_speed_accel_initialized = 0U;
   vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
   vmc_balance.yaw_hold_active = 0U;
   vmc_balance.gimbal_follow_enable = VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT;
@@ -1211,8 +1217,37 @@ void vmc_balance_update(void)
 
   const double speed_pitch_limit =
       clamp_double(vmc_balance.speed_pitch_limit, 0.0, 0.5);
+  /* Estimate actual body acceleration for braking-only Pitch feedforward.
+   * The previous implementation used dx_target directly, which also tilted
+   * the body during normal cruising.  Only the component opposing the
+   * current measured velocity is retained, so this term is active during
+   * braking and fades out when the chassis settles. */
+  double speed_accel = 0.0;
+  double braking_accel = 0.0;
+  if (vmc_control.enabled != 0U &&
+      vmc_probe_state.feedback_timeout_active == 0U) {
+    if (vmc_speed_accel_initialized == 0U) {
+      vmc_speed_dx_prev = motion->kf_dx;
+      vmc_speed_accel_initialized = 1U;
+    }
+    speed_accel = (motion->kf_dx - vmc_speed_dx_prev) / VMC_CONTROL_DT;
+    vmc_speed_dx_prev = motion->kf_dx;
+    speed_accel = clamp_double(speed_accel, -20.0, 20.0);
+    /* A fixed light LPF suppresses encoder/KF quantization without adding a
+     * user-facing parameter to the existing tuning protocol. */
+    vmc_speed_accel_lpf +=
+        0.20 * (speed_accel - vmc_speed_accel_lpf);
+    if (fabs(motion->kf_dx) > speed_deadband &&
+        motion->kf_dx * vmc_speed_accel_lpf < 0.0) {
+      braking_accel = vmc_speed_accel_lpf;
+    }
+  } else {
+    vmc_speed_dx_prev = motion->kf_dx;
+    vmc_speed_accel_lpf = 0.0;
+    vmc_speed_accel_initialized = 0U;
+  }
   const double speed_pitch_target =
-      clamp_double(dx_target * clamp_double(vmc_balance.speed_pitch_gain, -1.0, 1.0),
+      clamp_double(braking_accel * clamp_double(vmc_balance.speed_pitch_gain, -1.0, 1.0),
                    -speed_pitch_limit,
                    speed_pitch_limit);
   const double speed_pitch_step =

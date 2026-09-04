@@ -116,6 +116,14 @@ function setBalanceParams(params) {
       $(id).value = params[key];
     }
   });
+  // These two calibration values have dedicated controls outside the main
+  // parameter list, but are also firmware defaults and should be imported.
+  if (params.gimbal_follow_front_ecd !== undefined) {
+    $("gimbalFollowFrontEcd").value = params.gimbal_follow_front_ecd;
+  }
+  if (params.gimbal_follow_front_valid !== undefined) {
+    $("gimbalFollowFrontValid").value = params.gimbal_follow_front_valid;
+  }
 }
 
 function paramsRequestBody() {
@@ -253,6 +261,61 @@ async function getDefaults() {
     throw new Error(data.error || `HTTP ${res.status}`);
   }
   return data;
+}
+
+async function getFirmwareDefaults() {
+  const res = await fetch(`${$("apiBase").value}/api/firmware-defaults`);
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function readFirmwareDefaults() {
+  setStatus("读取固件参数中...");
+  try {
+    const data = await getFirmwareDefaults();
+    const params = data.balance_params || {};
+    if (
+      data.leg_length !== null &&
+      data.leg_length !== undefined &&
+      Number.isFinite(Number(data.leg_length))
+    ) {
+      $("legLength").value = data.leg_length;
+    }
+    if (Array.isArray(data.q) && data.q.length === 6) {
+      data.q.forEach((value, index) => {
+        $("q" + index).value = value;
+      });
+    }
+    if (Array.isArray(data.r) && data.r.length === 2) {
+      data.r.forEach((value, index) => {
+        $("r" + index).value = value;
+      });
+    }
+    setBalanceParams(params);
+    const missing = data.missing_macros || [];
+    const parseErrors = data.parse_errors || [];
+    appendLog({
+      loaded: true,
+      defaults_file: data.defaults_file,
+      lqr_file: data.lqr_file,
+      parameter_count: Object.keys(params).length,
+      q_r_found: Boolean(data.q_r_found),
+      missing_macros: missing,
+      parse_errors: parseErrors
+    });
+    if (missing.length || parseErrors.length || !data.q_r_found) {
+      const suffix = data.q_r_found ? "部分缺失" : "未找到Q/R注释";
+      setStatus(`固件参数已加载（${Object.keys(params).length}项，${suffix}）`, false);
+    } else {
+      setStatus(`固件参数已加载（${Object.keys(params).length}项）`);
+    }
+  } catch (error) {
+    appendLog(error.message);
+    setStatus("读取固件参数失败", false);
+  }
 }
 
 async function calculate(sendRtt = false) {
@@ -411,6 +474,7 @@ $("calcBtn").addEventListener("click", () => calculate(false));
 $("sendBtn").addEventListener("click", () => calculate(true));
 $("clearKBtn").addEventListener("click", clearKOverride);
 $("sendParamsBtn").addEventListener("click", () => sendBalanceParams(false));
+$("readFirmwareDefaultsBtn").addEventListener("click", readFirmwareDefaults);
 $("captureGimbalFrontBtn").addEventListener("click", captureGimbalFront);
 $("sendGimbalFrontBtn").addEventListener("click", sendGimbalFrontEcd);
 $("saveParamsBtn").addEventListener("click", saveUiState);

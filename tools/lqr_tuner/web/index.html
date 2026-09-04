@@ -205,10 +205,10 @@
           </label>
         </div>
 
-        <h3>速度 Pitch 前馈</h3>
+        <h3>减速度 Pitch 前馈（仅刹车时生效）</h3>
         <div class="params">
           <label>
-            速度 Pitch 前馈 / speed_pitch_gain
+            减速度 Pitch 增益 / speed_pitch_gain (rad/(m/s²))
             <input id="speedPitchGain" type="number" step="0.01" value="0.0" />
           </label>
           <label>
@@ -375,6 +375,7 @@
         <button id="sendBtn">下发固定 K</button>
         <button id="clearKBtn">恢复固件 K 调度</button>
         <button id="sendParamsBtn">下发平衡参数</button>
+        <button id="readFirmwareDefaultsBtn">读取固件参数</button>
         <button id="saveParamsBtn">保存全部参数</button>
         <button id="writeDefaultsBtn">写入固件默认值</button>
         <label class="check">
