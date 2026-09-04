@@ -8,8 +8,8 @@
 extern "C" {
 #endif
 
-#define VMC_WHEEL_LEFT_ID         0x201U
-#define VMC_WHEEL_RIGHT_ID        0x202U
+#define VMC_WHEEL_LEFT_ID         0x202U
+#define VMC_WHEEL_RIGHT_ID        0x201U
 #define VMC_WHEEL_CMD_ID          0x200U
 #define VMC_WHEEL_CMD_CAN         (&hcan1)
 #define VMC_WHEEL_LEFT_CMD_DIRECTION  -1
@@ -74,10 +74,10 @@ extern "C" {
 #define VMC_BODY_MOTION_X_LIMIT_DEFAULT 100.0f
 
 /* Raw joint positions captured with both legs vertical down at 385 mm. */
-#define VMC_REF_RAW_LEFT_BACK      2.53891087f
-#define VMC_REF_RAW_LEFT_AHEAD    -3.22137070f
-#define VMC_REF_RAW_RIGHT_AHEAD    3.66464424f
-#define VMC_REF_RAW_RIGHT_BACK     2.35885429f
+#define VMC_REF_RAW_LEFT_BACK      2.57171726f
+#define VMC_REF_RAW_LEFT_AHEAD    -3.26028061f
+#define VMC_REF_RAW_RIGHT_AHEAD    -2.49885559f
+#define VMC_REF_RAW_RIGHT_BACK     2.34206867f
 
 /* VMC model angles at the same 385 mm reference pose. */
 #define VMC_REF_MODEL_PHI1         2.20948918f

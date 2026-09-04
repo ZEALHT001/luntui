@@ -432,10 +432,10 @@ static HAL_StatusTypeDef can_send_wheel_current(int16_t left_current,
   header.DLC = 8;
   header.TransmitGlobalTime = DISABLE;
 
-  data[0] = (uint8_t)((uint16_t)left_current >> 8);
-  data[1] = (uint8_t)((uint16_t)left_current & 0xFFU);
-  data[2] = (uint8_t)((uint16_t)right_current >> 8);
-  data[3] = (uint8_t)((uint16_t)right_current & 0xFFU);
+  data[0] = (uint8_t)((uint16_t)right_current >> 8);
+  data[1] = (uint8_t)((uint16_t)right_current & 0xFFU);
+  data[2] = (uint8_t)((uint16_t)left_current >> 8);
+  data[3] = (uint8_t)((uint16_t)left_current & 0xFFU);
 
   return HAL_CAN_AddTxMessage(VMC_WHEEL_CMD_CAN, &header, data, &mailbox);
 }
