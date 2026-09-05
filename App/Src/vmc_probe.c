@@ -2157,22 +2157,16 @@ void vmc_control_update(void)
                           (double)vmc_control.getup_turn_direction *
                               VMC_GETUP_PHI0_STEP;
     } else {
-      /* Fully fallen TURN still uses independent shortest-path corrections,
-       * since the two legs may start on opposite sides. */
-      const double recovery_theta_target =
-          (VMC_GETUP_THETA_MIN_RAD + VMC_GETUP_THETA_MAX_RAD) * 0.5;
-      const double left_theta_error = vmc_rad_format((float)(
-          recovery_theta_target - vmc_probe_state.motion.left_theta));
-      const double right_theta_error = vmc_rad_format((float)(
-          recovery_theta_target - vmc_probe_state.motion.right_theta));
+      /* Restore the original fully-fallen TURN behavior from
+       * d1186266c51e70b405d2a31326b389d67704fa00: both legs follow the same
+       * chassis-level recovery direction.  Independent leg handling is
+       * reserved for the non-fully-fallen LEG_RECOVER path above. */
       left_target_phi0 = vmc_probe_state.left_leg.phi0 +
-                         clamp_double(left_theta_error,
-                                      -VMC_GETUP_PHI0_STEP,
-                                      VMC_GETUP_PHI0_STEP);
+                         (double)vmc_control.getup_turn_direction *
+                             VMC_GETUP_PHI0_STEP;
       right_target_phi0 = vmc_probe_state.right_leg.phi0 +
-                          clamp_double(right_theta_error,
-                                       -VMC_GETUP_PHI0_STEP,
-                                       VMC_GETUP_PHI0_STEP);
+                          (double)vmc_control.getup_turn_direction *
+                              VMC_GETUP_PHI0_STEP;
     }
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
     const double left_theta_error = vmc_rad_format((float)(
