@@ -2144,10 +2144,36 @@ void vmc_control_update(void)
   right_target_phi0 = vmc_control.target_phi0;
   if (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
-    left_target_phi0 = vmc_probe_state.left_leg.phi0 +
-                       (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
-    right_target_phi0 = vmc_probe_state.right_leg.phi0 +
-                        (double)vmc_control.getup_turn_direction * VMC_GETUP_PHI0_STEP;
+    if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
+      /* For an abnormal (not fully fallen) leg pose, deliberately use the
+       * configured reverse direction instead of the shortest wrapped path.
+       * This keeps the link moving away from the ground obstruction; both
+       * legs follow the same safe reverse direction until their independent
+       * theta checks report the 1.1 rad recovery target. */
+      left_target_phi0 = vmc_probe_state.left_leg.phi0 +
+                         (double)vmc_control.getup_turn_direction *
+                             VMC_GETUP_PHI0_STEP;
+      right_target_phi0 = vmc_probe_state.right_leg.phi0 +
+                          (double)vmc_control.getup_turn_direction *
+                              VMC_GETUP_PHI0_STEP;
+    } else {
+      /* Fully fallen TURN still uses independent shortest-path corrections,
+       * since the two legs may start on opposite sides. */
+      const double recovery_theta_target =
+          (VMC_GETUP_THETA_MIN_RAD + VMC_GETUP_THETA_MAX_RAD) * 0.5;
+      const double left_theta_error = vmc_rad_format((float)(
+          recovery_theta_target - vmc_probe_state.motion.left_theta));
+      const double right_theta_error = vmc_rad_format((float)(
+          recovery_theta_target - vmc_probe_state.motion.right_theta));
+      left_target_phi0 = vmc_probe_state.left_leg.phi0 +
+                         clamp_double(left_theta_error,
+                                      -VMC_GETUP_PHI0_STEP,
+                                      VMC_GETUP_PHI0_STEP);
+      right_target_phi0 = vmc_probe_state.right_leg.phi0 +
+                          clamp_double(right_theta_error,
+                                       -VMC_GETUP_PHI0_STEP,
+                                       VMC_GETUP_PHI0_STEP);
+    }
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
     const double left_theta_error = vmc_rad_format((float)(
         vmc_control.getup_shrink_target_theta_left -
