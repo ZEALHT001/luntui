@@ -4,6 +4,7 @@ const stateNames = ["theta", "dtheta", "x", "dx", "phi", "dphi"];
 const inputNames = ["T", "Tp"];
 const qDefaults = [1, 100, 150, 20, 10000, 1];
 const rDefaults = [15, 0.3];
+const kalmanDefaults = { q_v: 0.1, q_a: 0.1, r_wheel: 100, r_imu: 1e12 };
 const balanceParamIds = [
   ["thetaTarget", "theta_target"],
   ["pitchTarget", "pitch_target"],
@@ -15,6 +16,7 @@ const balanceParamIds = [
   ["lqrDthetaDeadband", "lqr_dtheta_deadband"],
   ["lqrDthetaLimit", "lqr_dtheta_limit"],
   ["wheelTorqueLimit", "wheel_torque_limit"],
+  ["wheelCurrentLimit", "wheel_current_limit"],
   ["tpLimit", "tp_limit"],
   ["tpPhiGain", "tp_phi_gain"],
   ["tpXGain", "tp_x_gain"],
@@ -110,6 +112,23 @@ function readBalanceParams() {
   return Object.fromEntries(balanceParamIds.map(([id, key]) => [key, Number($(id).value)]));
 }
 
+function readKalmanParams() {
+  return {
+    q_v: Number($("kalmanQv").value),
+    q_a: Number($("kalmanQa").value),
+    r_wheel: Number($("kalmanRWheel").value),
+    r_imu: Number($("kalmanRImu").value)
+  };
+}
+
+function setKalmanParams(params) {
+  const values = { ...kalmanDefaults, ...(params || {}) };
+  $("kalmanQv").value = values.q_v;
+  $("kalmanQa").value = values.q_a;
+  $("kalmanRWheel").value = values.r_wheel;
+  $("kalmanRImu").value = values.r_imu;
+}
+
 function setBalanceParams(params) {
   balanceParamIds.forEach(([id, key]) => {
     if (params[key] !== undefined) {
@@ -134,6 +153,14 @@ function paramsRequestBody() {
   };
 }
 
+function kalmanRequestBody() {
+  return {
+    kalman_params: readKalmanParams(),
+    dry_run: $("dryRun").checked,
+    ...rttTarget()
+  };
+}
+
 function readUiState() {
   return {
     apiBase: $("apiBase").value,
@@ -146,6 +173,7 @@ function readUiState() {
     q: readWeights("q", 6),
     r: readWeights("r", 2),
     balanceParams: readBalanceParams(),
+    kalmanParams: readKalmanParams(),
     gimbalFollowFrontEcd: Number($("gimbalFollowFrontEcd").value),
     gimbalFollowFrontValid: Number($("gimbalFollowFrontValid").value)
   };
@@ -174,6 +202,9 @@ function applyUiState(state) {
   }
   if (state.balanceParams) {
     setBalanceParams(state.balanceParams);
+  }
+  if (state.kalmanParams) {
+    setKalmanParams(state.kalmanParams);
   }
   if (state.gimbalFollowFrontEcd !== undefined) {
     $("gimbalFollowFrontEcd").value = state.gimbalFollowFrontEcd;
@@ -295,6 +326,7 @@ async function readFirmwareDefaults() {
       });
     }
     setBalanceParams(params);
+    setKalmanParams(data.kalman_params);
     const missing = data.missing_macros || [];
     const parseErrors = data.parse_errors || [];
     appendLog({
@@ -348,6 +380,20 @@ async function sendBalanceParams(silent = false) {
   } catch (error) {
     appendLog(error.message);
     setStatus("参数下发失败", false);
+  }
+}
+
+async function sendKalmanParams(silent = false) {
+  if (!silent) setStatus("卡尔曼参数下发中...");
+  try {
+    const data = await post("/api/send-kalman-params", kalmanRequestBody());
+    $("payload").value = data.kalman_payload;
+    assertRttOk(data.rtt);
+    appendLog(data.rtt);
+    setStatus("卡尔曼参数已下发");
+  } catch (error) {
+    appendLog(error.message);
+    setStatus("卡尔曼参数下发失败", false);
   }
 }
 
@@ -446,6 +492,12 @@ function scheduleLiveParams() {
   liveParamsTimer = setTimeout(() => sendBalanceParams(true), 250);
 }
 
+function scheduleLiveKalmanParams() {
+  if (!$("liveParams").checked) return;
+  clearTimeout(liveParamsTimer);
+  liveParamsTimer = setTimeout(() => sendKalmanParams(true), 250);
+}
+
 async function init() {
   let restored = false;
   try {
@@ -454,12 +506,14 @@ async function init() {
     $("rttHost").value = defaults.rtt_host;
     $("rttPort").value = defaults.rtt_port;
     setBalanceParams(defaults.balance_params);
+    setKalmanParams(defaults.kalman_params);
     renderWeights($("qWeights"), defaults.state_order, defaults.q, "q");
     renderWeights($("rWeights"), defaults.input_order, defaults.r, "r");
     setStatus("默认值已加载");
   } catch (error) {
     renderWeights($("qWeights"), stateNames, qDefaults, "q");
     renderWeights($("rWeights"), inputNames, rDefaults, "r");
+    setKalmanParams(kalmanDefaults);
     appendLog(`defaults fallback: ${error.message}`);
   }
   restored = applyUiState(loadSavedUiState());
@@ -474,6 +528,7 @@ $("calcBtn").addEventListener("click", () => calculate(false));
 $("sendBtn").addEventListener("click", () => calculate(true));
 $("clearKBtn").addEventListener("click", clearKOverride);
 $("sendParamsBtn").addEventListener("click", () => sendBalanceParams(false));
+$("sendKalmanParamsBtn").addEventListener("click", () => sendKalmanParams(false));
 $("readFirmwareDefaultsBtn").addEventListener("click", readFirmwareDefaults);
 $("captureGimbalFrontBtn").addEventListener("click", captureGimbalFront);
 $("sendGimbalFrontBtn").addEventListener("click", sendGimbalFrontEcd);
@@ -482,6 +537,10 @@ $("writeDefaultsBtn").addEventListener("click", writeFirmwareDefaults);
 balanceParamIds.map(([id]) => id).forEach((id) => {
   $(id).addEventListener("input", scheduleLiveParams);
   $(id).addEventListener("change", scheduleLiveParams);
+});
+["kalmanQv", "kalmanQa", "kalmanRWheel", "kalmanRImu"].forEach((id) => {
+  $(id).addEventListener("input", scheduleLiveKalmanParams);
+  $(id).addEventListener("change", scheduleLiveKalmanParams);
 });
 
 init();

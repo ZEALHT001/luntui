@@ -160,6 +160,29 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   float value;
   uint8_t applied = 0U;
 
+  /* The web tuner sends these four values as a separate
+   * chassis_kalman_params message.  Keep the parser here so both the
+   * combined balance payload and the dedicated Kalman payload use the same
+   * validation and runtime storage. */
+  if (vmc_lqr_rtt_parse_named_float(line, "q_v", &value) != 0U) {
+    vmc_balance.kalman_q_v = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0e12f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "q_a", &value) != 0U) {
+    vmc_balance.kalman_q_a = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0e12f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "r_wheel", &value) != 0U) {
+    vmc_balance.kalman_r_wheel =
+        vmc_lqr_rtt_clamp_float(value, 1.0e-9f, 1.0e12f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "r_imu", &value) != 0U) {
+    vmc_balance.kalman_r_imu =
+        vmc_lqr_rtt_clamp_float(value, 1.0e-9f, 1.0e12f);
+    applied = 1U;
+  }
+
   /* theta_target is the wheel-leg theta target; pitch_offset is the legacy
      internal field name kept for backwards-compatible RTT payloads. */
   if (vmc_lqr_rtt_parse_named_float(line, "theta_target", &value) != 0U ||
@@ -208,6 +231,12 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "wheel_torque_limit", &value) != 0U) {
     vmc_balance.wheel_torque_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "wheel_current_limit", &value) != 0U) {
+    vmc_balance.wheel_current_limit =
+        (int16_t)vmc_lqr_rtt_clamp_float(
+            value, 0.0f, (float)VMC_WHEEL_CURRENT_MAX_DEFAULT);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
@@ -518,6 +547,16 @@ static void vmc_lqr_rtt_process_line(char *line)
     return;
   }
 
+  if (strstr(line, "chassis_kalman_params") != NULL) {
+    if (vmc_lqr_rtt_apply_balance_params(line) == 0U) {
+      vmc_lqr_rtt_set_error(VMC_LQR_RTT_ERR_PARAMS);
+      vmc_lqr_rtt_ack("VMC_LQR_RTT ERR PARAMS\n");
+      return;
+    }
+    vmc_lqr_rtt_ack("CHASSIS_KALMAN_PARAMS OK\n");
+    return;
+  }
+
   if (strstr(line, "vmc_lqr_k") == NULL &&
       strstr(line, "LQRK") == NULL) {
     vmc_lqr_rtt_set_error(VMC_LQR_RTT_ERR_TYPE);
@@ -610,6 +649,17 @@ static int vmc_lqr_rtt_append_scaled(char *line, int offset, int max_len, double
                            frac);
 }
 
+/* The fixed-point formatter above intentionally uses three decimals, but a
+ * measurement-noise value such as R_imu may be 1e12.  Do not multiply those
+ * values by 1000 into a 32-bit long; emit the four Kalman parameters using a
+ * compact floating-point representation instead. */
+static int vmc_lqr_rtt_append_float(char *line, int offset, int max_len,
+                                    double value)
+{
+  return offset + snprintf(&line[offset], (size_t)(max_len - offset),
+                           ",%.9g", value);
+}
+
 void vmc_lqr_rtt_telemetry_update(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -649,6 +699,7 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_dx_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_phi_term);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_dphi_term);
+  /* These legacy VOFA channels are now motor-shaft torque (N.m). */
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_torque_raw);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->left_wheel_current_send);
 
@@ -787,6 +838,16 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.getup_shrink_target_theta_right);
+
+  /* VMCVOFA fields 81..84: runtime Kalman Q/R parameters. */
+  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
+                                    (double)b->kalman_q_v);
+  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
+                                    (double)b->kalman_q_a);
+  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
+                                    (double)b->kalman_r_wheel);
+  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
+                                    (double)b->kalman_r_imu);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

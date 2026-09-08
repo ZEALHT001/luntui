@@ -73,6 +73,14 @@ extern "C" {
 #define VMC_BODY_PITCH_RATE_DIRECTION 1.0f
 #define VMC_BODY_MOTION_X_LIMIT_DEFAULT 100.0f
 
+/* Body-motion Kalman filter defaults.  q_v/q_a are the process-noise terms
+ * for velocity and acceleration; r_wheel/r_imu are the wheel-speed and IMU
+ * acceleration measurement-noise terms. */
+#define VMC_BODY_MOTION_KF_Q_V_DEFAULT      0.1f
+#define VMC_BODY_MOTION_KF_Q_A_DEFAULT      0.1f
+#define VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT  100.0f
+#define VMC_BODY_MOTION_KF_R_IMU_DEFAULT    1000000000000.0f
+
 /* Raw joint positions captured with both legs vertical down at 385 mm. */
 #define VMC_REF_RAW_LEFT_BACK      2.57171726f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.26028061f
@@ -139,18 +147,16 @@ extern "C" {
 
 #define VMC_WHEEL_CURRENT_MAX_DEFAULT 16000
 #define VMC_BALANCE_WHEEL_CURRENT_LIMIT_DEFAULT 5000
+/* The LQR wheel input and its runtime limit are 3508 motor-shaft torque (N.m).
+ * The LQR model applies the reduction ratio internally when building B. */
+#define VMC_BALANCE_WHEEL_GEAR_RATIO_DEFAULT 15.7647f
+#define VMC_BALANCE_WHEEL_GEAR_EFFICIENCY_DEFAULT 0.7f
 #define VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT 3.3f
-#define VMC_BALANCE_WHEEL_GEAR_RATIO 15.7647f
-#define VMC_BALANCE_WHEEL_TRANSMISSION_EFFICIENCY 0.7f
 #define VMC_BALANCE_WHEEL_TORQUE_CONSTANT 0.3f
 #define VMC_BALANCE_C620_MAX_CURRENT_A 20.0f
 #define VMC_BALANCE_C620_RAW_MAX 16384.0f
-#define VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT \
-  (VMC_BALANCE_C620_RAW_MAX / \
-   (VMC_BALANCE_WHEEL_GEAR_RATIO * VMC_BALANCE_WHEEL_TRANSMISSION_EFFICIENCY * \
-    VMC_BALANCE_WHEEL_TORQUE_CONSTANT * \
-    VMC_BALANCE_C620_MAX_CURRENT_A))
-#define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 10.0f
+#define VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT 2730.6666f /* motor N.m -> C620 raw */
+#define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_LIMIT_DEFAULT 30.0f
 #define VMC_BALANCE_TP_PHI_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_X_GAIN_DEFAULT 1.0f
@@ -384,9 +390,15 @@ typedef struct {
   int16_t gimbal_follow_current_limit;
   int16_t turn_current_max;
   int16_t wheel_current_limit;
+  /* Legacy member names are kept for RTT/LiveWatch compatibility.  Their
+   * units are 3508 motor-shaft torque (N.m), never wheel/axle torque. */
   float wheel_torque_limit;
   float wheel_torque_to_current;
   float wheel_current_gain;
+  float kalman_q_v;
+  float kalman_q_a;
+  float kalman_r_wheel;
+  float kalman_r_imu;
   float tp_limit;
   float tp_phi_gain;
   float tp_x_gain;
@@ -441,6 +453,7 @@ typedef struct {
   double right_tp_dtheta_term;
   double right_tp_x_term;
   double right_tp_dx_term;
+  /* Legacy field names; all values below are motor-shaft torque in N.m. */
   double wheel_torque_raw;
   double left_wheel_torque_raw;
   double right_wheel_torque_raw;

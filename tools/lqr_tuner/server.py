@@ -54,7 +54,9 @@ DEFAULT_BALANCE_PARAMS = {
     "lqr_dtheta_gain": 1.0,
     "lqr_dtheta_deadband": 0.0,
     "lqr_dtheta_limit": 10.0,
+    # LQR T is 3508 motor-shaft torque (N.m), not wheel/axle torque.
     "wheel_torque_limit": 3.3,
+    "wheel_current_limit": 5000.0,
     "tp_limit": 5.0,
     "tp_phi_gain": 1.0,
     "tp_x_gain": 1.0,
@@ -110,6 +112,12 @@ DEFAULT_BALANCE_PARAMS = {
     "gimbal_follow_current_limit": 1500.0,
     "gimbal_follow_direction": 1.0,
 }
+DEFAULT_KALMAN_PARAMS = {
+    "q_v": 0.1,
+    "q_a": 0.1,
+    "r_wheel": 100.0,
+    "r_imu": 1.0e12,
+}
 
 BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "theta_target": ("VMC_BALANCE_THETA_TARGET_DEFAULT", "float"),
@@ -122,6 +130,7 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "lqr_dtheta_deadband": ("VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT", "float"),
     "lqr_dtheta_limit": ("VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT", "float"),
     "wheel_torque_limit": ("VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT", "float"),
+    "wheel_current_limit": ("VMC_BALANCE_WHEEL_CURRENT_LIMIT_DEFAULT", "int"),
     "tp_limit": ("VMC_BALANCE_TP_LIMIT_DEFAULT", "float"),
     "tp_phi_gain": ("VMC_BALANCE_TP_PHI_GAIN_DEFAULT", "float"),
     "tp_x_gain": ("VMC_BALANCE_TP_X_GAIN_DEFAULT", "float"),
@@ -184,6 +193,13 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
 # payload still have a firmware-side default that can be imported.
 FIRMWARE_SCALAR_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "leg_length": ("VMC_LEG_LENGTH_DEFAULT", "float"),
+}
+
+KALMAN_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
+    "q_v": ("VMC_BODY_MOTION_KF_Q_V_DEFAULT", "float"),
+    "q_a": ("VMC_BODY_MOTION_KF_Q_A_DEFAULT", "float"),
+    "r_wheel": ("VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT", "float"),
+    "r_imu": ("VMC_BODY_MOTION_KF_R_IMU_DEFAULT", "float"),
 }
 
 
@@ -288,6 +304,20 @@ def _balance_params_payload(data: dict[str, Any]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def _kalman_params_payload(data: dict[str, Any]) -> str:
+    params = dict(DEFAULT_KALMAN_PARAMS)
+    params.update(data.get("kalman_params", {}))
+    payload = {"type": "chassis_kalman_params"}
+    for key in DEFAULT_KALMAN_PARAMS:
+        value = float(params[key])
+        if not np.isfinite(value):
+            raise ValueError(f"invalid Kalman parameter: {key}")
+        payload[key] = value
+    if payload["q_v"] < 0 or payload["q_a"] < 0 or payload["r_wheel"] <= 0 or payload["r_imu"] <= 0:
+        raise ValueError("Kalman Q must be >= 0 and R must be > 0")
+    return json.dumps(payload, separators=(",", ":"))
+
+
 def _balance_params_payload_chunks(data: dict[str, Any], max_len: int = 700) -> list[str]:
     params = dict(DEFAULT_BALANCE_PARAMS)
     params.update(data.get("params", {}))
@@ -312,19 +342,34 @@ def _balance_params_payload_chunks(data: dict[str, Any], max_len: int = 700) -> 
 def _send_balance_params_response(data: dict[str, Any]) -> dict[str, Any]:
     payload = _balance_params_payload(data)
     payloads = _balance_params_payload_chunks(data)
+    rtt_results = [
+        send_rtt_line(
+            chunk,
+            host=_rtt_host(data),
+            port=_rtt_port(data),
+            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
+            dry_run=bool(data.get("dry_run", False)),
+        )
+        for chunk in payloads
+    ]
     return {
         "payload": payload,
         "payloads": payloads,
-        "rtt_results": [
-            send_rtt_line(
-                chunk,
-                host=_rtt_host(data),
-                port=_rtt_port(data),
-                timeout_s=float(data.get("rtt_timeout_s", 1.0)),
-                dry_run=bool(data.get("dry_run", False)),
-            )
-            for chunk in payloads
-        ],
+        "rtt_results": rtt_results,
+    }
+
+
+def _send_kalman_params_response(data: dict[str, Any]) -> dict[str, Any]:
+    payload = _kalman_params_payload(data)
+    return {
+        "kalman_payload": payload,
+        "rtt": send_rtt_line(
+            payload,
+            host=_rtt_host(data),
+            port=_rtt_port(data),
+            timeout_s=float(data.get("rtt_timeout_s", 1.0)),
+            dry_run=bool(data.get("dry_run", False)),
+        ),
     }
 
 
@@ -435,6 +480,8 @@ def _emit_lqr_c_source(coeffs: np.ndarray, preset_name: str, preset: Any) -> str
         [
             "/* VMC_LQR_TUNER_METADATA",
             f" * preset: {preset_name}",
+            f" * VMC_LQR_TUNER_WHEEL_GEAR_RATIO: {float(preset.wheel_gear_ratio):.17g}",
+            f" * VMC_LQR_TUNER_WHEEL_GEAR_EFFICIENCY: {float(preset.wheel_gear_efficiency):.17g}",
             f" * VMC_LQR_TUNER_Q: [{q_values}]",
             f" * VMC_LQR_TUNER_R: [{r_values}]",
             " */",
@@ -483,6 +530,20 @@ def _read_firmware_defaults() -> dict[str, Any]:
     q_values, r_values, q_r_errors = _read_lqr_weights(lqr_path)
     parse_errors.extend(q_r_errors)
 
+    kalman_params = dict(DEFAULT_KALMAN_PARAMS)
+    for key, (macro, _value_type) in KALMAN_PARAM_DEFAULT_MACROS.items():
+        token = defines.get(macro)
+        if token is None:
+            missing_macros.append(macro)
+            continue
+        try:
+            numeric = _parse_c_numeric_literal(token)
+        except ValueError as exc:
+            parse_errors.append(f"{macro}: {exc}")
+            continue
+        kalman_params[key] = numeric
+        macro_values[macro] = numeric
+
     return {
         "defaults_file": str(header_path.relative_to(ROOT)),
         "leg_length": params.pop("leg_length", None),
@@ -494,6 +555,7 @@ def _read_firmware_defaults() -> dict[str, Any]:
         "macro_values": macro_values,
         "missing_macros": missing_macros,
         "parse_errors": parse_errors,
+        "kalman_params": kalman_params,
     }
 
 
@@ -622,7 +684,7 @@ class PersistentRttConnection:
                         sock,
                         quiet_window_s=0.05,
                         max_wait_s=0.15,
-                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS"),
+                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS", "CHASSIS_KALMAN_PARAMS"),
                     )
                     sock.sendall(frame.encode("utf-8"))
 
@@ -630,7 +692,7 @@ class PersistentRttConnection:
                         sock,
                         quiet_window_s=0.08,
                         max_wait_s=max(timeout_s, 1.0),
-                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS"),
+                        stop_tokens=("VMC_LQR_RTT", "VMC_BALANCE_PARAMS", "CHASSIS_KALMAN_PARAMS"),
                     )
 
                     return {
@@ -640,7 +702,11 @@ class PersistentRttConnection:
                         "server_banner": banner.strip(),
                         "stale_output": stale_output.strip(),
                         "target_ack": ack.strip(),
-                        "target_applied": "VMC_LQR_RTT OK" in ack or "VMC_BALANCE_PARAMS OK" in ack,
+                        "target_applied": (
+                            "VMC_LQR_RTT OK" in ack
+                            or "VMC_BALANCE_PARAMS OK" in ack
+                            or "CHASSIS_KALMAN_PARAMS OK" in ack
+                        ),
                         "host": host,
                         "port": port,
                         "frame": frame,
@@ -795,6 +861,7 @@ class Handler(BaseHTTPRequestHandler):
                     "rtt_host": DEFAULT_RTT_HOST,
                     "rtt_port": DEFAULT_RTT_PORT,
                     "balance_params": DEFAULT_BALANCE_PARAMS,
+                    "kalman_params": DEFAULT_KALMAN_PARAMS,
                 },
             )
             return
@@ -826,6 +893,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/send-params":
                 self._send_json(200, {"ok": True, **_send_balance_params_response(data)})
+                return
+            if self.path == "/api/send-kalman-params":
+                self._send_json(200, {"ok": True, **_send_kalman_params_response(data)})
                 return
             if self.path == "/api/save-firmware-defaults":
                 self._send_json(200, {"ok": True, **_save_firmware_defaults_response(data)})

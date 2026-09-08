@@ -52,6 +52,29 @@
       </section>
 
       <section class="panel">
+        <h2>底盘速度卡尔曼滤波参数</h2>
+        <p>通过当前 RTT 目标直接下发到运行滤波器的底盘板；不写入 Flash。</p>
+        <div class="params">
+          <label>
+            速度过程噪声 Q_v / q_v
+            <input id="kalmanQv" type="number" step="0.001" min="0" value="0.1" />
+          </label>
+          <label>
+            加速度过程噪声 Q_a / q_a
+            <input id="kalmanQa" type="number" step="0.001" min="0" value="0.1" />
+          </label>
+          <label>
+            轮速测量噪声 R_wheel / r_wheel
+            <input id="kalmanRWheel" type="number" step="0.1" min="0.000001" value="100" />
+          </label>
+          <label>
+            IMU 加速度测量噪声 R_imu / r_imu
+            <input id="kalmanRImu" type="number" step="1" min="0.000001" value="1000000000000" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>实时平衡参数</h2>
         <h3>姿态目标</h3>
         <div class="params">
@@ -96,8 +119,12 @@
             <input id="lqrDthetaLimit" type="number" step="0.1" value="10" />
           </label>
           <label>
-            轮子 T 力矩限幅 / wheel_torque_limit
+            3508 电机轴 T 力矩限幅 / wheel_torque_limit (N·m)
             <input id="wheelTorqueLimit" type="number" step="0.1" min="0" value="3.3" />
+          </label>
+          <label>
+            轮子电流限幅 / wheel_current_limit
+            <input id="wheelCurrentLimit" type="number" step="100" min="0" max="16000" value="5000" />
           </label>
           <label>
             关节 Tp 力矩限幅 / tp_limit
@@ -375,6 +402,7 @@
         <button id="sendBtn">下发固定 K</button>
         <button id="clearKBtn">恢复固件 K 调度</button>
         <button id="sendParamsBtn">下发平衡参数</button>
+        <button id="sendKalmanParamsBtn">下发卡尔曼参数</button>
         <button id="readFirmwareDefaultsBtn">读取固件参数</button>
         <button id="saveParamsBtn">保存全部参数</button>
         <button id="writeDefaultsBtn">写入固件默认值</button>

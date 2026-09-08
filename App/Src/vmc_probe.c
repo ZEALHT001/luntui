@@ -71,11 +71,6 @@ static float clamp_float(float value, float min_value, float max_value)
   return value;
 }
 
-#define VMC_BODY_MOTION_KF_Q_DX 0.1
-#define VMC_BODY_MOTION_KF_Q_ACC 0.1
-#define VMC_BODY_MOTION_KF_R_DX 100.0
-#define VMC_BODY_MOTION_KF_R_ACC 1000000000000.0
-
 static double body_motion_kf_x[2];
 static double body_motion_kf_p[4];
 static uint8_t body_motion_kf_initialized;
@@ -174,6 +169,12 @@ static void vmc_body_motion_kf_reset(void)
 static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
 {
   const double dt = VMC_CONTROL_DT;
+  const double q_v = clamp_double((double)vmc_balance.kalman_q_v, 0.0, 1.0e12);
+  const double q_a = clamp_double((double)vmc_balance.kalman_q_a, 0.0, 1.0e12);
+  const double r_wheel = clamp_double((double)vmc_balance.kalman_r_wheel,
+                                      1.0e-9, 1.0e12);
+  const double r_imu = clamp_double((double)vmc_balance.kalman_r_imu,
+                                    1.0e-9, 1.0e12);
   double x0;
   double x1;
   double p00;
@@ -194,13 +195,13 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
   x0 = body_motion_kf_x[0] + dt * body_motion_kf_x[1];
   x1 = body_motion_kf_x[1];
   p00 = body_motion_kf_p[0] + dt * (body_motion_kf_p[2] + body_motion_kf_p[1]) +
-        dt * dt * body_motion_kf_p[3] + VMC_BODY_MOTION_KF_Q_DX;
+        dt * dt * body_motion_kf_p[3] + q_v;
   p01 = body_motion_kf_p[1] + dt * body_motion_kf_p[3];
   p10 = body_motion_kf_p[2] + dt * body_motion_kf_p[3];
-  p11 = body_motion_kf_p[3] + VMC_BODY_MOTION_KF_Q_ACC;
+  p11 = body_motion_kf_p[3] + q_a;
 
   y = measured_dx - x0;
-  s = p00 + VMC_BODY_MOTION_KF_R_DX;
+  s = p00 + r_wheel;
   k0 = p00 / s;
   k1 = p10 / s;
   hp0 = p00;
@@ -213,7 +214,7 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
   p11 -= k1 * hp1;
 
   y = measured_acc - x1;
-  s = p11 + VMC_BODY_MOTION_KF_R_ACC;
+  s = p11 + r_imu;
   k0 = p01 / s;
   k1 = p11 / s;
   hp0 = p10;
@@ -280,8 +281,11 @@ static void parse_wheel(vmc_wheel_motor_t *motor, const uint8_t data[8])
   motor->ecd = (int16_t)(((uint16_t)data[0] << 8) | data[1]);
   motor->speed_rpm = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
   motor->given_current = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
-  motor->torque = (float)motor->given_current / 16384.0f * 20.0f * 0.3f /
-                  3591.0f * 187.0f * 268.0f / 17.0f;
+  /* C620/M3508 current command: +/-16384 corresponds to +/-20 A and
+   * 0.3 N.m/A.  This is motor-shaft torque, matching the LQR input and the
+   * command-side coefficient VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT (2730.6666).
+   * The reduction ratio is used only inside the LQR dynamics model. */
+  motor->torque = (float)motor->given_current / 16384.0f * 20.0f * 0.3f;
   motor->speed_rads = (float)motor->speed_rpm * VMC_PI / 30.0f / 268.0f * 17.0f;
   update_wheel_angle(motor);
   motor->last_angle = motor->angle;
@@ -1168,6 +1172,10 @@ void vmc_balance_init(void)
   vmc_balance.wheel_torque_limit = VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT;
   vmc_balance.wheel_torque_to_current = VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT;
   vmc_balance.wheel_current_gain = VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT;
+  vmc_balance.kalman_q_v = VMC_BODY_MOTION_KF_Q_V_DEFAULT;
+  vmc_balance.kalman_q_a = VMC_BODY_MOTION_KF_Q_A_DEFAULT;
+  vmc_balance.kalman_r_wheel = VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT;
+  vmc_balance.kalman_r_imu = VMC_BODY_MOTION_KF_R_IMU_DEFAULT;
   vmc_balance.tp_limit = VMC_BALANCE_TP_LIMIT_DEFAULT;
   vmc_balance.tp_phi_gain = VMC_BALANCE_TP_PHI_GAIN_DEFAULT;
   vmc_balance.tp_x_gain = VMC_BALANCE_TP_X_GAIN_DEFAULT;
@@ -1493,16 +1501,19 @@ void vmc_balance_update(void)
         right_tp_phi_term +
         right_tp_dphi_term);
   int16_t wheel_limit = vmc_balance.wheel_current_limit;
-  const double wheel_torque_limit =
+  /* LQR T and its limit are motor-shaft torque.  The generated K matrix was
+   * derived with the gearbox conversion inside the model, so do not apply the
+   * reduction ratio again here. */
+  const double motor_torque_limit =
       (vmc_balance.wheel_torque_limit < 0.0f)
           ? -(double)vmc_balance.wheel_torque_limit
           : (double)vmc_balance.wheel_torque_limit;
   const double wheel_torque_to_current =
       vmc_balance.wheel_torque_to_current * vmc_balance.wheel_current_gain;
   const double left_wheel_limited =
-      clamp_double(left_wheel_raw, -wheel_torque_limit, wheel_torque_limit);
+      clamp_double(left_wheel_raw, -motor_torque_limit, motor_torque_limit);
   const double right_wheel_limited =
-      clamp_double(right_wheel_raw, -wheel_torque_limit, wheel_torque_limit);
+      clamp_double(right_wheel_raw, -motor_torque_limit, motor_torque_limit);
   float tp_limit = vmc_balance.tp_limit;
   int16_t left_current;
   int16_t right_current;
