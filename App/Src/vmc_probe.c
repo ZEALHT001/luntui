@@ -284,7 +284,7 @@ static void parse_wheel(vmc_wheel_motor_t *motor, const uint8_t data[8])
   /* C620/M3508 current command: +/-16384 corresponds to +/-20 A and
    * 0.3 N.m/A.  This is motor-shaft torque, matching the LQR input and the
    * command-side coefficient VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT (2730.6666).
-   * The reduction ratio is used only inside the LQR dynamics model. */
+   * The LQR model already reflects the drivetrain relationship. */
   motor->torque = (float)motor->given_current / 16384.0f * 20.0f * 0.3f;
   motor->speed_rads = (float)motor->speed_rpm * VMC_PI / 30.0f / 268.0f * 17.0f;
   update_wheel_angle(motor);
@@ -1501,9 +1501,8 @@ void vmc_balance_update(void)
         right_tp_phi_term +
         right_tp_dphi_term);
   int16_t wheel_limit = vmc_balance.wheel_current_limit;
-  /* LQR T and its limit are motor-shaft torque.  The generated K matrix was
-   * derived with the gearbox conversion inside the model, so do not apply the
-   * reduction ratio again here. */
+  /* LQR T and its limit are motor-shaft torque.  The model already reflects
+   * the drivetrain relationship, so do not apply another ratio here. */
   const double motor_torque_limit =
       (vmc_balance.wheel_torque_limit < 0.0f)
           ? -(double)vmc_balance.wheel_torque_limit

@@ -480,8 +480,6 @@ def _emit_lqr_c_source(coeffs: np.ndarray, preset_name: str, preset: Any) -> str
         [
             "/* VMC_LQR_TUNER_METADATA",
             f" * preset: {preset_name}",
-            f" * VMC_LQR_TUNER_WHEEL_GEAR_RATIO: {float(preset.wheel_gear_ratio):.17g}",
-            f" * VMC_LQR_TUNER_WHEEL_GEAR_EFFICIENCY: {float(preset.wheel_gear_efficiency):.17g}",
             f" * VMC_LQR_TUNER_Q: [{q_values}]",
             f" * VMC_LQR_TUNER_R: [{r_values}]",
             " */",

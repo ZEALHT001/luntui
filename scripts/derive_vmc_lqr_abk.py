@@ -16,13 +16,11 @@ State order:
   [theta, theta_dot, x, x_dot, phi, phi_dot]
 
 Input order:
-  [T_motor, Tp]
+  [T, Tp]
 
-The first input is the 3508 motor-shaft torque.  The wheel-leg equations use
-the equivalent wheel/axle torque after the reduction stage, so the model
-converts it with ``gear_ratio * gear_efficiency`` before applying it to the
-wheel and body equations.  This keeps the generated K matrix, runtime torque
-limit, feedback torque and C620 current conversion in the same units.
+The wheel-leg model already includes the drivetrain relationship used by the
+firmware gain schedule.  Apply T directly here; multiplying it by the gearbox
+ratio and efficiency again produces a different controller.
 
 Flat C output order matches Matlab Coder's column-major array:
   [K(1,1), K(2,1), K(1,2), K(2,2), ..., K(1,6), K(2,6)]
@@ -52,8 +50,6 @@ class AbkPreset:
     q: np.ndarray
     r: np.ndarray
     dt: float
-    wheel_gear_ratio: float
-    wheel_gear_efficiency: float
     # ABK/ABK2 use "-L*(phi2*cos(phi)-phi1^2*sin(phi))" in Nm, not "-l*...".
     use_leg_half_length_for_body_x_pitch_arm: bool = True
     gravity: float = 9.8
@@ -81,8 +77,6 @@ PRESETS: dict[str, AbkPreset] = {
         q=np.diag([1.0, 100.0, 150.0, 20.0, 10000.0, 1.0]),
         r=np.diag([15.0, 0.3]),
         dt=0.001,
-        wheel_gear_ratio=15.7647,
-        wheel_gear_efficiency=0.7,
     ),
     "abk2": AbkPreset(
         wheel_radius=0.09,
@@ -96,8 +90,6 @@ PRESETS: dict[str, AbkPreset] = {
         q=np.diag([1.0, 1.0, 500.0, 1000.0, 20000.0, 1.0]),
         r=np.diag([1.0, 1.0]),
         dt=0.005,
-        wheel_gear_ratio=15.7647,
-        wheel_gear_efficiency=0.7,
     ),
 }
 
@@ -120,11 +112,7 @@ def residual(
 ) -> np.ndarray:
     theta, theta_dot, _x, _x_dot, phi, phi_dot = state
     theta_dd, x_dd, phi_dd = acc
-    motor_torque, hip_torque = control
-    # The rigid-body equations are written at the wheel/axle side.  LQR's
-    # commanded input, however, is deliberately the motor-shaft torque so it
-    # can be sent directly through the 3508 torque-to-current conversion.
-    torque = motor_torque * p.wheel_gear_ratio * p.wheel_gear_efficiency
+    torque, hip_torque = control
 
     l_leg = leg_length / 2.0
     lm = leg_length / 2.0

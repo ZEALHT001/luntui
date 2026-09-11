@@ -12,6 +12,10 @@ python3 aboard/tools/lqr_tuner/server.py --host 127.0.0.1 --port 8765
 The backend uses the existing `aboard/scripts/derive_vmc_lqr_abk.py` model and
 requires `numpy` and `scipy`.
 
+The model already includes the drivetrain relationship used by the firmware
+gain schedule. The tuner therefore applies the LQR wheel input directly and
+must not multiply it by the gearbox ratio or efficiency again.
+
 ## Start Frontend
 
 ```sh
@@ -50,3 +54,9 @@ or:
 
 Useful Live Watch fields are under `vmc_probe_state.lqr`: `rtt_override_active`,
 `rtt_update_count`, `rtt_error_count`, `rtt_last_error`, and `rtt_last_update_ms`.
+
+Run the model/firmware consistency regression from `aboard/` with:
+
+```sh
+python3 -m unittest tools/lqr_tuner/test_model_consistency.py -v
+```
