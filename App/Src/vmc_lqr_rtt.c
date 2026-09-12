@@ -239,6 +239,30 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
             value, 0.0f, (float)VMC_WHEEL_CURRENT_MAX_DEFAULT);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_detect_enable", &value) != 0U) {
+    vmc_balance.airborne_detect_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_wheel_speed_threshold", &value) != 0U) {
+    vmc_balance.airborne_wheel_speed_threshold =
+        vmc_lqr_rtt_clamp_float(value, 0.1f, 30.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_joint_torque_threshold", &value) != 0U) {
+    vmc_balance.airborne_joint_torque_threshold =
+        vmc_lqr_rtt_clamp_float(value, 0.1f, 54.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_confirm_ms", &value) != 0U) {
+    vmc_balance.airborne_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_release_ms", &value) != 0U) {
+    vmc_balance.airborne_release_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
     vmc_balance.tp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_DM_J8009_TMAX);
     applied = 1U;
@@ -848,6 +872,19 @@ void vmc_lqr_rtt_telemetry_update(void)
                                     (double)b->kalman_r_wheel);
   offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
                                     (double)b->kalman_r_imu);
+  /* VMCVOFA fields 85..90: airborne detector diagnostics. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_active);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_candidate);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_wheel_speed);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_joint_torque);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_candidate_ms);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_probe_state.airborne_release_candidate_ms);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

@@ -27,6 +27,7 @@ static uint8_t vmc_remote_source_last;
 static float vmc_yaw_last_wrapped;
 static float vmc_yaw_unwrapped;
 static uint8_t vmc_yaw_unwrap_initialized;
+static uint32_t vmc_airborne_last_update_ms;
 /* A fall detected while the robot was enabled requires an explicit emergency
  * stop followed by S1=3 before control can be enabled again. */
 static uint8_t vmc_fall_rearm_required;
@@ -43,6 +44,7 @@ static void vmc_update_getup_state(void);
 static void vmc_update_remote_mode(void);
 static void vmc_update_body_state(void);
 static void vmc_update_motion_state(void);
+static void vmc_update_airborne_state(void);
 static void vmc_update_lqr_gain(void);
 static uint8_t vmc_safety_allows_output(void);
 static int16_t vmc_update_yaw_hold_current(void);
@@ -1078,9 +1080,103 @@ static uint8_t vmc_safety_allows_output(void)
 {
   return (vmc_fall_rearm_required == 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
+          vmc_probe_state.airborne_active == 0U &&
           remote_control_allows_joint_enable() != 0U)
              ? 1U
              : 0U;
+}
+
+/* Detect the characteristic unloaded-wheel condition when the chassis is
+ * lifted: the wheels are spinning, but all four joint torque sensors report
+ * very little load.  Once confirmed, latch the condition until joint load
+ * recovers so the wheels cannot repeatedly restart while still in the air. */
+static void vmc_update_airborne_state(void)
+{
+  const uint32_t now = HAL_GetTick();
+  uint32_t dt_ms = 0U;
+  const float left_wheel_speed = fabsf(vmc_probe_state.wheel_left.speed_rads);
+  const float right_wheel_speed = fabsf(vmc_probe_state.wheel_right.speed_rads);
+  const float wheel_speed = (left_wheel_speed > right_wheel_speed)
+                                ? left_wheel_speed
+                                : right_wheel_speed;
+  const float joint_torque =
+      (fabsf(vmc_probe_state.joint_left_ahead.torque) +
+       fabsf(vmc_probe_state.joint_left_back.torque) +
+       fabsf(vmc_probe_state.joint_right_ahead.torque) +
+       fabsf(vmc_probe_state.joint_right_back.torque)) * 0.25f;
+  const float wheel_speed_threshold =
+      clamp_float(vmc_balance.airborne_wheel_speed_threshold, 0.1f, 30.0f);
+  const float joint_torque_threshold =
+      clamp_float(vmc_balance.airborne_joint_torque_threshold, 0.1f, 54.0f);
+  uint32_t confirm_ms = vmc_balance.airborne_confirm_ms;
+  uint32_t release_ms = vmc_balance.airborne_release_ms;
+  const uint8_t detector_ready =
+      (vmc_balance.airborne_detect_enable != 0U &&
+       vmc_control.enabled != 0U &&
+       vmc_balance.wheel_output_enable != 0U &&
+       vmc_probe_state.feedback_timeout_active == 0U &&
+       vmc_getup_is_active() == 0U &&
+       remote_control_allows_joint_enable() != 0U)
+          ? 1U
+          : 0U;
+
+  if (vmc_airborne_last_update_ms != 0U) {
+    dt_ms = now - vmc_airborne_last_update_ms;
+    if (dt_ms > 100U) {
+      dt_ms = 100U;
+    }
+  }
+  vmc_airborne_last_update_ms = now;
+  if (confirm_ms > 10000U) {
+    confirm_ms = 10000U;
+  }
+  if (release_ms > 10000U) {
+    release_ms = 10000U;
+  }
+
+  vmc_probe_state.airborne_wheel_speed = wheel_speed;
+  vmc_probe_state.airborne_joint_torque = joint_torque;
+
+  if (detector_ready == 0U) {
+    vmc_probe_state.airborne_active = 0U;
+    vmc_probe_state.airborne_candidate = 0U;
+    vmc_probe_state.airborne_candidate_ms = 0U;
+    vmc_probe_state.airborne_release_candidate_ms = 0U;
+    return;
+  }
+
+  if (vmc_probe_state.airborne_active != 0U) {
+    const float release_torque_threshold = joint_torque_threshold * 1.5f;
+    if (joint_torque >= release_torque_threshold) {
+      if (vmc_probe_state.airborne_release_candidate_ms < release_ms) {
+        vmc_probe_state.airborne_release_candidate_ms += dt_ms;
+      }
+      if (vmc_probe_state.airborne_release_candidate_ms >= release_ms) {
+        vmc_probe_state.airborne_active = 0U;
+        vmc_probe_state.airborne_candidate = 0U;
+        vmc_probe_state.airborne_candidate_ms = 0U;
+        vmc_probe_state.airborne_release_candidate_ms = 0U;
+      }
+    } else {
+      vmc_probe_state.airborne_release_candidate_ms = 0U;
+    }
+    return;
+  }
+
+  if (wheel_speed >= wheel_speed_threshold &&
+      joint_torque <= joint_torque_threshold) {
+    vmc_probe_state.airborne_candidate = 1U;
+    if (vmc_probe_state.airborne_candidate_ms < confirm_ms) {
+      vmc_probe_state.airborne_candidate_ms += dt_ms;
+    }
+    if (vmc_probe_state.airborne_candidate_ms >= confirm_ms) {
+      vmc_probe_state.airborne_active = 1U;
+      vmc_probe_state.airborne_release_candidate_ms = 0U;
+    }
+  } else {
+    vmc_probe_state.airborne_candidate = 0U;
+    vmc_probe_state.airborne_candidate_ms = 0U;
+  }
 }
 
 void vmc_balance_init(void)
@@ -1172,6 +1268,13 @@ void vmc_balance_init(void)
   vmc_balance.wheel_torque_limit = VMC_BALANCE_WHEEL_TORQUE_LIMIT_DEFAULT;
   vmc_balance.wheel_torque_to_current = VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT;
   vmc_balance.wheel_current_gain = VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT;
+  vmc_balance.airborne_detect_enable = VMC_AIRBORNE_DETECT_ENABLE_DEFAULT;
+  vmc_balance.airborne_wheel_speed_threshold =
+      VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT;
+  vmc_balance.airborne_joint_torque_threshold =
+      VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT;
+  vmc_balance.airborne_confirm_ms = VMC_AIRBORNE_CONFIRM_MS_DEFAULT;
+  vmc_balance.airborne_release_ms = VMC_AIRBORNE_RELEASE_MS_DEFAULT;
   vmc_balance.kalman_q_v = VMC_BODY_MOTION_KF_Q_V_DEFAULT;
   vmc_balance.kalman_q_a = VMC_BODY_MOTION_KF_Q_A_DEFAULT;
   vmc_balance.kalman_r_wheel = VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT;
@@ -1180,6 +1283,7 @@ void vmc_balance_init(void)
   vmc_balance.tp_phi_gain = VMC_BALANCE_TP_PHI_GAIN_DEFAULT;
   vmc_balance.tp_x_gain = VMC_BALANCE_TP_X_GAIN_DEFAULT;
   vmc_probe_state.balance = vmc_balance;
+  vmc_airborne_last_update_ms = 0U;
 }
 
 void vmc_balance_update(void)
@@ -2242,6 +2346,7 @@ void vmc_wheel_control_update(void)
   if (vmc_wheel_control.enabled != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_balance.wheel_output_user_enable != 0U &&
+      vmc_probe_state.airborne_active == 0U &&
       vmc_probe_state.feedback_timeout_active == 0U &&
       remote_control_allows_joint_enable() != 0U) {
     left_current = clamp_i16(vmc_wheel_control.left_current,
@@ -2300,6 +2405,7 @@ void vmc_probe_task(void const *argument)
     vmc_update_body_state();
     vmc_update_leg_state();
     vmc_update_motion_state();
+    vmc_update_airborne_state();
     vmc_lqr_rtt_update();
     vmc_update_lqr_gain();
     vmc_balance_update();

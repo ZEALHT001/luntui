@@ -68,6 +68,14 @@ extern "C" {
 #define VMC_CONTROL_DT            0.001f
 #define VMC_FEEDBACK_TIMEOUT_MS   100U
 #define VMC_WHEEL_RADIUS          0.065f
+#define VMC_AIRBORNE_DETECT_ENABLE_DEFAULT 1U
+/* An unloaded wheel accelerates quickly while the joints carry almost no
+ * load.  Keep the thresholds conservative so normal balancing corrections do
+ * not trip the latch. */
+#define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
+#define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 2.0f
+#define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 100U
+#define VMC_AIRBORNE_RELEASE_MS_DEFAULT 500U
 #define VMC_PHI0_VERTICAL_RAD     1.5707963267948966f
 #define VMC_BODY_PITCH_DIRECTION  1.0f
 #define VMC_BODY_PITCH_RATE_DIRECTION 1.0f
@@ -396,6 +404,11 @@ typedef struct {
   float wheel_torque_limit;
   float wheel_torque_to_current;
   float wheel_current_gain;
+  uint8_t airborne_detect_enable;
+  float airborne_wheel_speed_threshold;
+  float airborne_joint_torque_threshold;
+  uint32_t airborne_confirm_ms;
+  uint32_t airborne_release_ms;
   float kalman_q_v;
   float kalman_q_a;
   float kalman_r_wheel;
@@ -557,6 +570,12 @@ typedef struct {
   uint8_t phi0_protect_source;
   uint8_t feedback_timeout_active;
   uint8_t feedback_timeout_source;
+  uint8_t airborne_active;
+  uint8_t airborne_candidate;
+  uint32_t airborne_candidate_ms;
+  uint32_t airborne_release_candidate_ms;
+  float airborne_wheel_speed;
+  float airborne_joint_torque;
 } vmc_probe_state_t;
 
 extern volatile vmc_probe_state_t vmc_probe_state;
