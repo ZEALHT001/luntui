@@ -27,6 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "tf02_pro.h"
 
 /* USER CODE END Includes */
 
@@ -103,6 +104,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_UART8_Init();
   /* USER CODE BEGIN 2 */
+  tf02_pro_init();
 
   /* USER CODE END 2 */
 

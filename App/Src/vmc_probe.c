@@ -3,6 +3,7 @@
 #include "board_comm.h"
 #include "hi12_imu.h"
 #include "remote_control.h"
+#include "tf02_pro.h"
 #include "vmc_lqr.h"
 #include "vmc_lqr_rtt.h"
 #include "vmc_math.h"
@@ -2400,6 +2401,7 @@ void vmc_probe_task(void const *argument)
 
   for (;;) {
     hi12_imu_update();
+    tf02_pro_update();
     remote_control_update_source();
     vmc_update_remote_mode();
     vmc_update_body_state();
