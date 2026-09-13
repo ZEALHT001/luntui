@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-#define TF02_PRO_UART (&huart7)
+#define TF02_PRO_UART (&huart3)
 
 volatile uint16_t tf02_distance_cm;
 volatile uint16_t tf02_strength;

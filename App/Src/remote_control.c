@@ -155,7 +155,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     remote_control_restart_rx();
   } else if (huart == &huart6) {
     hi12_imu_on_uart_rx_event(huart, Size);
-  } else if (huart == &huart7) {
+  } else if (huart == &huart3) {
     tf02_pro_on_uart_rx_event(huart, Size);
   }
 }
@@ -168,7 +168,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     remote_control_restart_rx();
   } else if (huart == &huart6) {
     hi12_imu_init();
-  } else if (huart == &huart7) {
+  } else if (huart == &huart3) {
     tf02_pro_on_uart_error(huart);
   }
 }
