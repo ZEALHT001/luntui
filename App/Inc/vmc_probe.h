@@ -57,9 +57,25 @@ extern "C" {
 #define VMC_LEG_TARGET_MID        0.230f
 #define VMC_LEG_TARGET_LONG       0.280f
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.5f
-#define VMC_S1_UP_LEG_LOW_DEFAULT 0.16f
-#define VMC_S1_UP_LEG_HIGH_DEFAULT 0.36f
-#define VMC_S1_UP_LEG_SPEED_DEFAULT 0.5f
+#define VMC_JUMP_ENABLE_DEFAULT   1U
+#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.180f
+#define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.320f
+#define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.180f
+#define VMC_JUMP_LAND_LENGTH_DEFAULT     0.230f
+#define VMC_JUMP_LENGTH_KP_DEFAULT       3000.0f
+#define VMC_JUMP_LENGTH_KD_DEFAULT       180.0f
+#define VMC_JUMP_FORCE_MAX_DEFAULT       350.0f
+#define VMC_JUMP_SUPPORT_FORCE_DEFAULT   0.0f
+#define VMC_JUMP_COMPRESS_TIMEOUT_MS_DEFAULT 180U
+#define VMC_JUMP_EXTEND_TIMEOUT_MS_DEFAULT   120U
+#define VMC_JUMP_RETRACT_TIMEOUT_MS_DEFAULT  140U
+#define VMC_JUMP_LAND_TIMEOUT_MS_DEFAULT     600U
+#define VMC_JUMP_COOLDOWN_MS_DEFAULT         1500U
+#define VMC_JUMP_TOTAL_TIMEOUT_MS_DEFAULT    1200U
+#define VMC_JUMP_ATTITUDE_LIMIT_DEFAULT      0.35f
+#define VMC_JUMP_LAND_TORQUE_THRESHOLD_DEFAULT 3.0f
+#define VMC_JUMP_LAND_CONFIRM_MS_DEFAULT     80U
+#define VMC_JUMP_LENGTH_READY_TOL            0.015f
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -122,6 +138,21 @@ extern "C" {
 #define VMC_GETUP_STATE_SHRINK     2U
 #define VMC_GETUP_STATE_READY      3U
 #define VMC_GETUP_STATE_LEG_RECOVER 4U
+
+#define VMC_JUMP_STAGE_IDLE        0U
+#define VMC_JUMP_STAGE_COMPRESS    1U
+#define VMC_JUMP_STAGE_EXTEND      2U
+#define VMC_JUMP_STAGE_RETRACT     3U
+#define VMC_JUMP_STAGE_LAND        4U
+#define VMC_JUMP_STAGE_FINISHED    5U
+#define VMC_JUMP_STAGE_ABORT       6U
+
+#define VMC_JUMP_ABORT_NONE        0U
+#define VMC_JUMP_ABORT_REMOTE      1U
+#define VMC_JUMP_ABORT_FEEDBACK    2U
+#define VMC_JUMP_ABORT_GETUP       3U
+#define VMC_JUMP_ABORT_ATTITUDE    4U
+#define VMC_JUMP_ABORT_TIMEOUT     5U
 
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
@@ -217,7 +248,6 @@ extern "C" {
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 2.0f
-#define VMC_S1_UP_YAW_TARGET_RATE_MAX_DEFAULT 6.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 5000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 500.0f
@@ -285,9 +315,35 @@ typedef struct {
 typedef struct {
   uint8_t enabled;
   float target_length;
-  float s1_up_leg_low;
-  float s1_up_leg_high;
-  float s1_up_leg_speed;
+  uint8_t jump_enable;
+  uint8_t jump_stage;
+  uint8_t jump_armed;
+  uint8_t jump_abort_reason;
+  uint32_t jump_stage_start_ms;
+  uint32_t jump_start_ms;
+  uint32_t jump_last_finish_ms;
+  uint32_t jump_stage_ms;
+  uint32_t jump_land_contact_ms;
+  uint32_t jump_trigger_count;
+  uint32_t jump_abort_count;
+  float jump_target_length;
+  float jump_compress_length;
+  float jump_extend_length;
+  float jump_retract_length;
+  float jump_land_length;
+  float jump_kp_length;
+  float jump_kd_length;
+  float jump_max_force;
+  float jump_support_force;
+  uint32_t jump_compress_timeout_ms;
+  uint32_t jump_extend_timeout_ms;
+  uint32_t jump_retract_timeout_ms;
+  uint32_t jump_land_timeout_ms;
+  uint32_t jump_cooldown_ms;
+  uint32_t jump_total_timeout_ms;
+  float jump_attitude_limit;
+  float jump_land_torque_threshold;
+  uint32_t jump_land_confirm_ms;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;
@@ -389,7 +445,6 @@ typedef struct {
   float yaw_hold_kd;
   float yaw_hold_deadband;
   float yaw_target_rate_max;
-  float s1_up_yaw_target_rate_max;
   int16_t yaw_hold_current_limit;
   uint16_t gimbal_follow_front_ecd;
   float gimbal_follow_kp;

@@ -290,18 +290,86 @@
             腿长斜坡 / length_ramp_rate
             <input id="lengthRampRate" type="number" step="0.01" value="0.2" />
           </label>
+        </div>
+
+        <h3>跳跃参数（S1=1）</h3>
+        <div class="params">
           <label>
-            S1=1 最低腿长 / s1_up_leg_low (m)
-            <input id="s1UpLegLow" type="number" step="0.005" min="0.12" max="0.385" value="0.18" />
+            跳跃使能 / jump_enable
+            <input id="jumpEnable" type="number" step="1" min="0" max="1" value="1" />
           </label>
           <label>
-            S1=1 最高腿长 / s1_up_leg_high (m)
-            <input id="s1UpLegHigh" type="number" step="0.005" min="0.12" max="0.385" value="0.28" />
+            压腿腿长 / jump_compress_length (m)
+            <input id="jumpCompressLength" type="number" step="0.005" min="0.12" max="0.385" value="0.18" />
           </label>
           <label>
-            S1=1 腿长变化速度 / s1_up_leg_speed (m/s)
-            <input id="s1UpLegSpeed" type="number" step="0.01" min="0.001" max="1" value="0.05" />
+            伸腿腿长 / jump_extend_length (m)
+            <input id="jumpExtendLength" type="number" step="0.005" min="0.12" max="0.385" value="0.32" />
           </label>
+          <label>
+            收腿腿长 / jump_retract_length (m)
+            <input id="jumpRetractLength" type="number" step="0.005" min="0.12" max="0.385" value="0.18" />
+          </label>
+          <label>
+            落地腿长 / jump_land_length (m)
+            <input id="jumpLandLength" type="number" step="0.005" min="0.12" max="0.385" value="0.23" />
+          </label>
+          <label>
+            跳跃 KP / jump_kp_length
+            <input id="jumpKpLength" type="number" step="1" min="0" max="5000" value="3000" />
+          </label>
+          <label>
+            跳跃 KD / jump_kd_length
+            <input id="jumpKdLength" type="number" step="1" min="0" max="1000" value="180" />
+          </label>
+          <label>
+            跳跃最大力 / jump_max_force
+            <input id="jumpMaxForce" type="number" step="1" min="0" max="500" value="350" />
+          </label>
+          <label>
+            跳跃支撑力 / jump_support_force
+            <input id="jumpSupportForce" type="number" step="1" min="-120" max="120" value="0" />
+          </label>
+          <label>
+            压腿超时 / jump_compress_timeout_ms
+            <input id="jumpCompressTimeoutMs" type="number" step="10" min="1" max="2000" value="180" />
+          </label>
+          <label>
+            伸腿超时 / jump_extend_timeout_ms
+            <input id="jumpExtendTimeoutMs" type="number" step="10" min="1" max="2000" value="120" />
+          </label>
+          <label>
+            收腿超时 / jump_retract_timeout_ms
+            <input id="jumpRetractTimeoutMs" type="number" step="10" min="1" max="2000" value="140" />
+          </label>
+          <label>
+            落地超时 / jump_land_timeout_ms
+            <input id="jumpLandTimeoutMs" type="number" step="10" min="1" max="3000" value="600" />
+          </label>
+          <label>
+            再触发冷却 / jump_cooldown_ms
+            <input id="jumpCooldownMs" type="number" step="50" min="0" max="5000" value="1500" />
+          </label>
+          <label>
+            总超时 / jump_total_timeout_ms
+            <input id="jumpTotalTimeoutMs" type="number" step="50" min="100" max="5000" value="1200" />
+          </label>
+          <label>
+            姿态保护 / jump_attitude_limit (rad)
+            <input id="jumpAttitudeLimit" type="number" step="0.01" min="0.05" max="1" value="0.35" />
+          </label>
+          <label>
+            落地扭矩阈值 / jump_land_torque_threshold
+            <input id="jumpLandTorqueThreshold" type="number" step="0.1" min="0.1" max="54" value="3.0" />
+          </label>
+          <label>
+            落地确认 / jump_land_confirm_ms
+            <input id="jumpLandConfirmMs" type="number" step="10" min="0" max="1000" value="80" />
+          </label>
+        </div>
+
+        <h3>Roll 补偿</h3>
+        <div class="params">
           <label>
             Roll 补偿使能 / roll_comp_enable
             <input id="rollCompEnable" type="number" step="1" min="0" max="1" value="1" />
@@ -361,10 +429,6 @@
           <label>
             遥控 Yaw 目标速度 / yaw_target_rate_max (rad/s)
             <input id="yawTargetRateMax" type="number" step="0.1" value="2" />
-          </label>
-          <label>
-            S1=1 Yaw 目标速度 / s1_up_yaw_target_rate_max (rad/s)
-            <input id="s1UpYawTargetRateMax" type="number" step="0.1" min="0" max="10" value="4" />
           </label>
           <label>
             Yaw 电流限幅 / yaw_hold_current_limit

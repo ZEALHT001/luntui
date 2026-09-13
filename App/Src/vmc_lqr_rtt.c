@@ -403,18 +403,92 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.length_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_low", &value) != 0U) {
-    vmc_control.s1_up_leg_low =
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_enable", &value) != 0U) {
+    vmc_control.jump_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_compress_length", &value) != 0U) {
+    vmc_control.jump_compress_length =
         vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_high", &value) != 0U) {
-    vmc_control.s1_up_leg_high =
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_extend_length", &value) != 0U) {
+    vmc_control.jump_extend_length =
         vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_leg_speed", &value) != 0U) {
-    vmc_control.s1_up_leg_speed = vmc_lqr_rtt_clamp_float(value, 0.001f, 1.0f);
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_retract_length", &value) != 0U) {
+    vmc_control.jump_retract_length =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_land_length", &value) != 0U) {
+    vmc_control.jump_land_length =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_kp_length", &value) != 0U) {
+    vmc_control.jump_kp_length = vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_kd_length", &value) != 0U) {
+    vmc_control.jump_kd_length = vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_max_force", &value) != 0U) {
+    vmc_control.jump_max_force =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_LEG_FORCE_MAX_DEFAULT);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_support_force", &value) != 0U) {
+    vmc_control.jump_support_force =
+        vmc_lqr_rtt_clamp_float(value,
+                                -VMC_LEG_SUPPORT_FORCE_MAX,
+                                VMC_LEG_SUPPORT_FORCE_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_compress_timeout_ms", &value) != 0U) {
+    vmc_control.jump_compress_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 2000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_extend_timeout_ms", &value) != 0U) {
+    vmc_control.jump_extend_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 2000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_retract_timeout_ms", &value) != 0U) {
+    vmc_control.jump_retract_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 2000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_land_timeout_ms", &value) != 0U) {
+    vmc_control.jump_land_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 3000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_cooldown_ms", &value) != 0U) {
+    vmc_control.jump_cooldown_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_total_timeout_ms", &value) != 0U) {
+    vmc_control.jump_total_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 100.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_attitude_limit", &value) != 0U) {
+    vmc_control.jump_attitude_limit = vmc_lqr_rtt_clamp_float(value, 0.05f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_land_torque_threshold", &value) != 0U) {
+    vmc_control.jump_land_torque_threshold =
+        vmc_lqr_rtt_clamp_float(value, 0.1f, VMC_DM_J8009_TMAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_land_confirm_ms", &value) != 0U) {
+    vmc_control.jump_land_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_enable", &value) != 0U) {
@@ -473,11 +547,6 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_target_rate_max", &value) != 0U ||
       vmc_lqr_rtt_parse_named_float(line, "turn_yaw_rate_max", &value) != 0U) {
     vmc_balance.yaw_target_rate_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "s1_up_yaw_target_rate_max", &value) != 0U) {
-    vmc_balance.s1_up_yaw_target_rate_max =
-        vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_current_limit", &value) != 0U) {
@@ -885,6 +954,24 @@ void vmc_lqr_rtt_telemetry_update(void)
                                      (double)vmc_probe_state.airborne_candidate_ms);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      (double)vmc_probe_state.airborne_release_candidate_ms);
+
+  /* VMCVOFA fields 91..98: jump state diagnostics. */
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_stage);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_armed);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_abort_reason);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_target_length);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_stage_ms);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_land_contact_ms);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_trigger_count);
+  offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
+                                     (double)vmc_control.jump_abort_count);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
