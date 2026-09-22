@@ -106,10 +106,10 @@ extern "C" {
 #define VMC_BODY_MOTION_KF_R_IMU_DEFAULT    1000000000000.0f
 
 /* Raw joint positions captured with both legs vertical down at 385 mm. */
-#define VMC_REF_RAW_LEFT_BACK      2.57171726f
-#define VMC_REF_RAW_LEFT_AHEAD    -3.26028061f
-#define VMC_REF_RAW_RIGHT_AHEAD    -2.49885559f
-#define VMC_REF_RAW_RIGHT_BACK     2.34206867f
+#define VMC_REF_RAW_LEFT_BACK      2.51313968f
+#define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
+#define VMC_REF_RAW_RIGHT_AHEAD    -2.53776646f
+#define VMC_REF_RAW_RIGHT_BACK     0.432402611f
 
 /* VMC model angles at the same 385 mm reference pose. */
 #define VMC_REF_MODEL_PHI1         2.20948918f
