@@ -23,6 +23,11 @@
 #define VMC_LQR_RTT_ERR_K_COUNT   3U
 #define VMC_LQR_RTT_ERR_PARAMS    4U
 
+/* Bumped whenever the VMCVOFA layout or the encoding of an existing field
+ * changes.  Field count alone is not enough: Q/R switched from a three-decimal
+ * to a nine-decimal fixed point without adding or removing any field. */
+#define VMC_LQR_RTT_SCHEMA_VERSION 3U
+
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
 static uint8_t lqr_rtt_discard_until_newline;
@@ -742,15 +747,88 @@ static int vmc_lqr_rtt_append_scaled(char *line, int offset, int max_len, double
                            frac);
 }
 
-/* The fixed-point formatter above intentionally uses three decimals, but a
- * measurement-noise value such as R_imu may be 1e12.  Do not multiply those
- * values by 1000 into a 32-bit long; emit the four Kalman parameters using a
- * compact floating-point representation instead. */
-static int vmc_lqr_rtt_append_float(char *line, int offset, int max_len,
-                                    double value)
+static int vmc_lqr_rtt_append_u32(char *line, int offset, int max_len,
+                                  uint32_t value)
 {
-  return offset + snprintf(&line[offset], (size_t)(max_len - offset),
-                           ",%.9g", value);
+  return offset + snprintf(&line[offset],
+                           (size_t)(max_len - offset),
+                           ",%lu",
+                           (unsigned long)value);
+}
+
+/* Frame age in milliseconds, or -1.0 when no frame has arrived yet.
+ *
+ * The producer timestamps are written from CAN/UART callbacks while "now" is
+ * sampled at the top of the telemetry function.  A tick can therefore land
+ * between the two reads and make the stored timestamp newer than "now"; the
+ * unsigned subtraction then wraps to about 2^32, which overflows the 32-bit
+ * scaler in vmc_lqr_rtt_append_scaled and reports a nonsense age.  Clamp that
+ * case to zero: the frame arrived within the current tick. */
+static double vmc_lqr_rtt_frame_age_ms(uint32_t now, uint32_t last_ms)
+{
+  if (last_ms == 0U) {
+    return -1.0;
+  }
+  if (last_ms >= now) {
+    return 0.0;
+  }
+  return (double)(now - last_ms);
+}
+
+/* Q/R span a huge dynamic range: a physically calibrated r_wheel is on the
+ * order of 1e-4 m2/s2 while the legacy defaults were on the order of 1e2, and
+ * the three-decimal wire format rounds the small end to zero.  Q/R therefore
+ * use a nine-decimal fixed point.  newlib-nano has no "%lld", so the integer
+ * part is split into two 32-bit chunks. */
+#define VMC_LQR_RTT_QR_SCALE 1000000000LL
+
+static int vmc_lqr_rtt_append_qr(char *line, int offset, int max_len,
+                                 double value)
+{
+  long long scaled;
+  unsigned long long magnitude;
+  unsigned long long whole;
+  unsigned long long frac;
+  unsigned long long whole_high;
+  unsigned long long whole_low;
+  int negative;
+  int written;
+
+  if (value > 9.0e9) {
+    value = 9.0e9;
+  } else if (value < -9.0e9) {
+    value = -9.0e9;
+  }
+  scaled = (long long)(value * (double)VMC_LQR_RTT_QR_SCALE);
+  negative = (scaled < 0LL || (value < 0.0 && scaled == 0LL)) ? 1 : 0;
+
+  if (scaled < 0LL) {
+    magnitude = (unsigned long long)(-(scaled + 1LL)) + 1ULL;
+  } else {
+    magnitude = (unsigned long long)scaled;
+  }
+
+  whole = magnitude / (unsigned long long)VMC_LQR_RTT_QR_SCALE;
+  frac = magnitude % (unsigned long long)VMC_LQR_RTT_QR_SCALE;
+  whole_high = whole / 1000000000ULL;
+  whole_low = whole % 1000000000ULL;
+
+  written = snprintf(&line[offset], (size_t)(max_len - offset),
+                     negative != 0 ? ",-" : ",");
+  offset += written;
+  if (whole_high != 0ULL) {
+    written = snprintf(&line[offset], (size_t)(max_len - offset),
+                       "%lu%09lu.%09lu",
+                       (unsigned long)whole_high,
+                       (unsigned long)whole_low,
+                       (unsigned long)frac);
+  } else {
+    written = snprintf(&line[offset], (size_t)(max_len - offset),
+                       "%lu.%09lu",
+                       (unsigned long)whole_low,
+                       (unsigned long)frac);
+  }
+  return offset + written;
 }
 
 void vmc_lqr_rtt_telemetry_update(void)
@@ -836,14 +914,10 @@ void vmc_lqr_rtt_telemetry_update(void)
                                      (double)remote_control_source);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
-      board_comm_state.rc_last_rx_ms == 0U
-          ? -1.0
-          : (double)(now - board_comm_state.rc_last_rx_ms));
+      vmc_lqr_rtt_frame_age_ms(now, board_comm_state.rc_last_rx_ms));
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
-      board_comm_state.state_last_rx_ms == 0U
-          ? -1.0
-          : (double)(now - board_comm_state.state_last_rx_ms));
+      vmc_lqr_rtt_frame_age_ms(now, board_comm_state.state_last_rx_ms));
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      (double)remote_control.ch[0]);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
@@ -932,15 +1006,16 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line),
       (double)vmc_control.getup_shrink_target_theta_right);
 
-  /* VMCVOFA fields 81..84: runtime Kalman Q/R parameters. */
-  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
-                                    (double)b->kalman_q_v);
-  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
-                                    (double)b->kalman_q_a);
-  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
-                                    (double)b->kalman_r_wheel);
-  offset = vmc_lqr_rtt_append_float(line, offset, (int)sizeof(line),
-                                    (double)b->kalman_r_imu);
+  /* VMCVOFA fields 81..84: runtime Kalman Q/R parameters.  These use the
+   * nine-decimal fixed point above because the calibrated values are small. */
+  offset = vmc_lqr_rtt_append_qr(line, offset, (int)sizeof(line),
+                                 (double)b->kalman_q_v);
+  offset = vmc_lqr_rtt_append_qr(line, offset, (int)sizeof(line),
+                                 (double)b->kalman_q_a);
+  offset = vmc_lqr_rtt_append_qr(line, offset, (int)sizeof(line),
+                                 (double)b->kalman_r_wheel);
+  offset = vmc_lqr_rtt_append_qr(line, offset, (int)sizeof(line),
+                                 (double)b->kalman_r_imu);
   /* VMCVOFA fields 85..90: airborne detector diagnostics. */
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      (double)vmc_probe_state.airborne_active);
@@ -972,6 +1047,62 @@ void vmc_lqr_rtt_telemetry_update(void)
                                      (double)vmc_control.jump_trigger_count);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line),
                                      (double)vmc_control.jump_abort_count);
+
+  /* VMCVOFA fields 99..105: MCU timebase and body-motion estimator
+   * diagnostics.  These are appended after the legacy 0..98 block so old
+   * parsers keep their original field indices. */
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line), now);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_wheel_measurement);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_accel_measurement);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_innovation_v);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_innovation_a);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_slip);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_slip_metric);
+
+  /* VMCVOFA field 106: resolved accelerometer sign convention (+1/-1), or 0
+   * while gravity compensation is still calibrating.  While it is 0 the
+   * acceleration measurement is withheld from the estimator. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.gravity_sign);
+  /* VMCVOFA fields 107..108: raw and gravity-compensated body-X acceleration
+   * in g.  Watching these together shows whether the compensation removes a
+   * real gravity projection or accidentally cancels the measurement. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.ax);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.ax_lin);
+  /* VMCVOFA field 109: accelerometer corrections applied so far.  Convert the
+   * delta between two frames to Hz to confirm the IMU fusion rate. */
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  m->kf_accel_update_count);
+  /* VMCVOFA fields 110..114: operator command and the speed loop it drives.
+   * ch[3] is the forward/back stick (the only channel that matters for
+   * longitudinal tracking); ch[0] and ch[2] above are yaw and turn.
+   * speed_target is the requested velocity, speed_target_ramped the value
+   * actually handed to the LQR after the ramp limit, and dx_target/dx_error
+   * show whether the position loop is contributing. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)remote_control.ch[3]);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->speed_target);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->speed_target_ramped);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), b->dx_target);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), b->dx_error);
+  /* VMCVOFA field 115: telemetry schema version. */
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  VMC_LQR_RTT_SCHEMA_VERSION);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

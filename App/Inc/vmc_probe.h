@@ -97,13 +97,51 @@ extern "C" {
 #define VMC_BODY_PITCH_RATE_DIRECTION 1.0f
 #define VMC_BODY_MOTION_X_LIMIT_DEFAULT 100.0f
 
+/* Standard gravity, used to turn the HI12 acceleration (unit g) into m/s2 for
+ * the body-motion estimator. */
+#define VMC_GRAVITY_ACCEL 9.80665f
+/* Gravity-compensation sign resolution.
+ *
+ * The protocol documents acc_b as unit G but not its sign, and the two
+ * conventions in the wild (body-Z up vs body-Z down) need opposite
+ * corrections.  Rather than assume one, the sign is measured: the raw
+ * reading's component along the attitude-derived gravity direction averages
+ * to +1 g or -1 g.  The gravity contribution keeps that sign even while the
+ * vehicle moves, so a slow average converges regardless of motion. */
+#define VMC_GRAVITY_SIGN_ALPHA  0.002f
+#define VMC_GRAVITY_SIGN_MARGIN 0.5f
+
 /* Body-motion Kalman filter defaults.  q_v/q_a are the process-noise terms
  * for velocity and acceleration; r_wheel/r_imu are the wheel-speed and IMU
- * acceleration measurement-noise terms. */
-#define VMC_BODY_MOTION_KF_Q_V_DEFAULT      0.1f
-#define VMC_BODY_MOTION_KF_Q_A_DEFAULT      0.1f
-#define VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT  100.0f
-#define VMC_BODY_MOTION_KF_R_IMU_DEFAULT    1000000000000.0f
+ * acceleration measurement-noise terms.
+ *
+ * R is calibrated from the measured sensor noise, not chosen as a tuning
+ * knob, so that Q and R stay independently meaningful.  Feeding a rescaled
+ * Q/R pair would leave the filter gain unchanged and make the two knobs
+ * degenerate.  Measured on the vehicle:
+ *   wheel velocity measurement variance  1.12e-4 (m/s)^2
+ *   IMU linear acceleration variance      8.34e-3 (m/s2)^2
+ *
+ * The accelerometer is gated to its own 200 Hz frame rate, so r_imu is the
+ * weight per IMU sample rather than per 1 kHz control cycle.
+ *
+ * q_v sets the wheel-channel bandwidth; q_a sets the IMU weight.  A q_v sweep
+ * measured on the vehicle gave:
+ *   q_v       tau_wheel   NIS_v   high-frequency noise passed
+ *   1.12e-7    29.0 ms     9.4    0.26x
+ *   4.0e-7     16.8 ms     4.3    0.41x   <- most consistent
+ *   1.0e-6     11.0 ms     4.8    0.62x
+ *   4.0e-6      5.8 ms  1771      0.94x   <- control loop oscillated
+ * The default is the most statistically consistent setting that stayed
+ * stable.  Raising q_v further removes almost all smoothing and destabilises
+ * the velocity feedback loop. */
+#define VMC_BODY_MOTION_KF_Q_V_DEFAULT      4.0e-7f
+#define VMC_BODY_MOTION_KF_Q_A_DEFAULT      2.0721e-5f
+#define VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT  1.1176e-4f
+#define VMC_BODY_MOTION_KF_R_IMU_DEFAULT    8.3363e-3f
+/* Diagnostic threshold for wheel-speed runaway relative to the previous
+ * fused velocity, in m/s.  This mirrors USTB/Nanhang condition B. */
+#define VMC_BODY_MOTION_KF_SLIP_VEL_DIFF_DEFAULT 1.2f
 
 /* Raw joint positions captured with both legs vertical down at 385 mm. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
@@ -546,9 +584,16 @@ typedef struct {
   float wx;
   float wy;
   float wz;
+  /* HI12 acc_b raw reading, unit g (not m/s2). */
   float ax;
   float ay;
   float az;
+  /* Same reading with the gravity reaction removed, unit g. */
+  float ax_lin;
+  float ay_lin;
+  float az_lin;
+  /* Resolved accelerometer sign convention: 0 = not yet known, else +1/-1. */
+  int8_t gravity_sign;
   uint8_t imu_connected;
   uint8_t imu_valid;
 } vmc_body_state_t;
@@ -569,7 +614,28 @@ typedef struct {
   double left_body_dx;
   double right_body_dx;
   double d_x_raw;
+  /* Gravity-compensated body-X acceleration in m/s2, fed to the estimator. */
   double dd_x;
+  /* Diagnostics for the body-motion Kalman filter.  kf_wheel_measurement and
+   * kf_accel_measurement are the measurement values available to the
+   * estimator.  kf_accel_measurement is recomputed every control cycle from
+   * the newest HI12 frame and reads zero only while body.gravity_sign is
+   * still 0 (the accelerometer is withheld from the update).  The innovations
+   * are evaluated before each corresponding correction step. */
+  double kf_wheel_measurement;
+  double kf_accel_measurement;
+  double kf_innovation_v;
+  double kf_innovation_a;
+  /* Accelerometer corrections actually applied.  Telemetry is emitted at
+   * 50 Hz while the accelerometer runs at 200 Hz and both are locked to the
+   * 1 kHz control tick, so the 20 ms telemetry period can alias against the
+   * 5 ms IMU period.  This counter proves the fusion rate independently. */
+  uint32_t kf_accel_update_count;
+  /* Diagnostic slip-gate condition B: wheel speed runaway relative to the
+   * previous fused velocity.  It is telemetry only until a gate policy is
+   * merged into this branch. */
+  double kf_slip;
+  double kf_slip_metric;
   double kf_x;
   double kf_dx;
   double kf_acc;

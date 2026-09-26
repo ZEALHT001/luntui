@@ -13,7 +13,9 @@ extern "C" {
 #define HI12_IMU_DEG_TO_RAD 0.01745329251994329577f
 
 typedef struct {
-  float acc_mss[3];
+  /* HI12 acc_b is reported in g, not m/s2.  Consuming code must scale by
+   * VMC_GRAVITY_ACCEL before treating it as an SI acceleration. */
+  float acc_g[3];
   float gyro_dps[3];
   float gyro_radps[3];
   float angle_deg[3];

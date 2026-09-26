@@ -30,6 +30,14 @@ static float vmc_yaw_unwrapped;
 static uint8_t vmc_yaw_unwrap_initialized;
 static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
+/* Gravity-compensation sign calibration; see VMC_GRAVITY_SIGN_ALPHA. */
+static float vmc_gravity_dot_lpf;
+static int8_t vmc_gravity_sign;
+/* The accelerometer runs at 200 Hz while this task runs at 1 kHz.  Feeding the
+ * same frame into five consecutive updates would make r_imu effectively five
+ * times stronger than configured, so the acceleration update is gated on a new
+ * HI12 frame. */
+static uint32_t vmc_last_imu_rx_count;
 /* A fall detected while the robot was enabled requires an explicit emergency
  * stop followed by S1=3 before control can be enabled again. */
 static uint8_t vmc_fall_rearm_required;
@@ -51,6 +59,7 @@ static uint8_t vmc_getup_pose_ready(void);
 static void vmc_update_getup_state(void);
 static void vmc_update_remote_mode(void);
 static void vmc_update_body_state(void);
+static void vmc_update_gravity_compensation(void);
 static void vmc_update_motion_state(void);
 static void vmc_update_airborne_state(void);
 static void vmc_update_lqr_gain(void);
@@ -59,7 +68,8 @@ static int16_t vmc_update_yaw_hold_current(void);
 static int16_t vmc_update_gimbal_follow_current(void);
 static void vmc_balance_apply_wheel_output(void);
 static void vmc_body_motion_kf_reset(void);
-static void vmc_body_motion_kf_update(double measured_dx, double measured_acc);
+static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
+                                      uint8_t acceleration_valid);
 static HAL_StatusTypeDef can_send_wheel_current(int16_t left_current,
                                                 int16_t right_current);
 
@@ -185,9 +195,16 @@ static void vmc_body_motion_kf_reset(void)
   vmc_probe_state.motion.kf_x = 0.0;
   vmc_probe_state.motion.kf_dx = 0.0;
   vmc_probe_state.motion.kf_acc = 0.0;
+  vmc_probe_state.motion.kf_wheel_measurement = 0.0;
+  vmc_probe_state.motion.kf_accel_measurement = 0.0;
+  vmc_probe_state.motion.kf_innovation_v = 0.0;
+  vmc_probe_state.motion.kf_innovation_a = 0.0;
+  vmc_probe_state.motion.kf_slip = 0.0;
+  vmc_probe_state.motion.kf_slip_metric = 0.0;
 }
 
-static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
+static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
+                                      uint8_t acceleration_valid)
 {
   const double dt = VMC_CONTROL_DT;
   const double q_v = clamp_double((double)vmc_balance.kalman_q_v, 0.0, 1.0e12);
@@ -208,12 +225,31 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
   double k1;
   double hp0;
   double hp1;
+  const double previous_velocity = body_motion_kf_x[0];
 
   if (body_motion_kf_initialized == 0U) {
     vmc_body_motion_kf_reset();
   }
 
-  x0 = body_motion_kf_x[0] + dt * body_motion_kf_x[1];
+  vmc_probe_state.motion.kf_wheel_measurement = measured_dx;
+  /* Report the measurement the estimator has available.  This is recomputed
+   * every control cycle from the newest HI12 frame, so it must not be zeroed
+   * on cycles where no new frame arrived: that would make the 50 Hz telemetry
+   * under-report the accelerometer purely because of sampling phase. */
+  vmc_probe_state.motion.kf_accel_measurement =
+      (vmc_probe_state.body.gravity_sign != 0) ? measured_acc : 0.0;
+  if (acceleration_valid != 0U) {
+    vmc_probe_state.motion.kf_accel_update_count++;
+  }
+  vmc_probe_state.motion.kf_slip_metric =
+      fabs(measured_dx) - fabs(previous_velocity);
+  vmc_probe_state.motion.kf_slip =
+      (vmc_probe_state.motion.kf_slip_metric >=
+       (double)VMC_BODY_MOTION_KF_SLIP_VEL_DIFF_DEFAULT)
+          ? 1.0
+          : 0.0;
+
+  x0 = previous_velocity + dt * body_motion_kf_x[1];
   x1 = body_motion_kf_x[1];
   p00 = body_motion_kf_p[0] + dt * (body_motion_kf_p[2] + body_motion_kf_p[1]) +
         dt * dt * body_motion_kf_p[3] + q_v;
@@ -222,6 +258,7 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
   p11 = body_motion_kf_p[3] + q_a;
 
   y = measured_dx - x0;
+  vmc_probe_state.motion.kf_innovation_v = y;
   s = p00 + r_wheel;
   k0 = p00 / s;
   k1 = p10 / s;
@@ -234,18 +271,21 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc)
   p10 -= k1 * hp0;
   p11 -= k1 * hp1;
 
-  y = measured_acc - x1;
-  s = p11 + r_imu;
-  k0 = p01 / s;
-  k1 = p11 / s;
-  hp0 = p10;
-  hp1 = p11;
-  x0 += k0 * y;
-  x1 += k1 * y;
-  p00 -= k0 * hp0;
-  p01 -= k0 * hp1;
-  p10 -= k1 * hp0;
-  p11 -= k1 * hp1;
+  if (acceleration_valid != 0U) {
+    y = measured_acc - x1;
+    vmc_probe_state.motion.kf_innovation_a = y;
+    s = p11 + r_imu;
+    k0 = p01 / s;
+    k1 = p11 / s;
+    hp0 = p10;
+    hp1 = p11;
+    x0 += k0 * y;
+    x1 += k1 * y;
+    p00 -= k0 * hp0;
+    p01 -= k0 * hp1;
+    p10 -= k1 * hp0;
+    p11 -= k1 * hp1;
+  }
 
   body_motion_kf_x[0] = x0;
   body_motion_kf_x[1] = x1;
@@ -1288,11 +1328,78 @@ static void vmc_update_body_state(void)
   vmc_probe_state.body.wx = pitch_rate;
   vmc_probe_state.body.wy = hi12_imu.gyro_radps[1];
   vmc_probe_state.body.wz = hi12_imu.gyro_radps[2];
-  vmc_probe_state.body.ax = hi12_imu.acc_mss[0];
-  vmc_probe_state.body.ay = hi12_imu.acc_mss[1];
-  vmc_probe_state.body.az = hi12_imu.acc_mss[2];
+  vmc_probe_state.body.ax = hi12_imu.acc_g[0];
+  vmc_probe_state.body.ay = hi12_imu.acc_g[1];
+  vmc_probe_state.body.az = hi12_imu.acc_g[2];
   vmc_probe_state.body.imu_connected = hi12_imu.connected;
   vmc_probe_state.body.imu_valid = hi12_imu.valid;
+}
+
+/* Remove the gravity reaction from the body-frame accelerometer reading.
+ *
+ * The HI12 publishes acc_b in g with an undocumented sign convention, so the
+ * direction of gravity is taken from the attitude quaternion and the sign is
+ * measured instead of assumed: the raw reading's projection onto that
+ * direction averages to +1 g or -1 g, and the gravity term keeps that sign
+ * even while the vehicle moves.  Until the average resolves, no compensation
+ * is applied and gravity_sign stays 0 so consumers can withhold the sample. */
+static void vmc_update_gravity_compensation(void)
+{
+  const float w = hi12_imu.quaternion[0];
+  const float qx = hi12_imu.quaternion[1];
+  const float qy = hi12_imu.quaternion[2];
+  const float qz = hi12_imu.quaternion[3];
+  const float norm_squared = w * w + qx * qx + qy * qy + qz * qz;
+  float g_unit_x = 0.0f;
+  float g_unit_y = 0.0f;
+  float g_unit_z = 0.0f;
+
+  if (hi12_imu.valid == 0U || norm_squared <= 1.0e-6f) {
+    /* No trustworthy attitude: restart calibration and do not compensate. */
+    vmc_gravity_dot_lpf = 0.0f;
+    vmc_gravity_sign = 0;
+  } else {
+    /* Normalise first so the rotation-matrix rows stay unit length even if the
+     * module reports a slightly scaled quaternion. */
+    const float inv_norm = 1.0f / sqrtf(norm_squared);
+    const float nw = w * inv_norm;
+    const float nx = qx * inv_norm;
+    const float ny = qy * inv_norm;
+    const float nz = qz * inv_norm;
+
+    /* World +Z axis expressed in the body frame (third row of R). */
+    g_unit_x = 2.0f * (nx * nz - nw * ny);
+    g_unit_y = 2.0f * (ny * nz + nw * nx);
+    g_unit_z = 1.0f - 2.0f * (nx * nx + ny * ny);
+
+    if (vmc_gravity_sign == 0) {
+      const float dot = vmc_probe_state.body.ax * g_unit_x +
+                        vmc_probe_state.body.ay * g_unit_y +
+                        vmc_probe_state.body.az * g_unit_z;
+
+      vmc_gravity_dot_lpf +=
+          VMC_GRAVITY_SIGN_ALPHA * (dot - vmc_gravity_dot_lpf);
+      if (fabsf(vmc_gravity_dot_lpf) >= VMC_GRAVITY_SIGN_MARGIN) {
+        vmc_gravity_sign = (vmc_gravity_dot_lpf >= 0.0f) ? 1 : -1;
+      } else {
+        /* Unresolved: leave g_unit at zero so nothing is subtracted. */
+        g_unit_x = 0.0f;
+        g_unit_y = 0.0f;
+        g_unit_z = 0.0f;
+      }
+    }
+  }
+
+  if (vmc_gravity_sign < 0) {
+    g_unit_x = -g_unit_x;
+    g_unit_y = -g_unit_y;
+    g_unit_z = -g_unit_z;
+  }
+
+  vmc_probe_state.body.ax_lin = vmc_probe_state.body.ax - g_unit_x;
+  vmc_probe_state.body.ay_lin = vmc_probe_state.body.ay - g_unit_y;
+  vmc_probe_state.body.az_lin = vmc_probe_state.body.az - g_unit_z;
+  vmc_probe_state.body.gravity_sign = vmc_gravity_sign;
 }
 
 static void vmc_update_motion_state(void)
@@ -1341,13 +1448,25 @@ static void vmc_update_motion_state(void)
       vmc_probe_state.right_leg.d_length * sin(right_theta);
   vmc_probe_state.motion.d_x_raw =
       (vmc_probe_state.motion.left_body_dx + vmc_probe_state.motion.right_body_dx) * 0.5;
-  vmc_probe_state.motion.dd_x = vmc_probe_state.body.ax;
+  /* Gravity-compensated body-X linear acceleration in m/s2. */
+  vmc_probe_state.motion.dd_x =
+      (double)vmc_probe_state.body.ax_lin * (double)VMC_GRAVITY_ACCEL;
 
   if (vmc_control.enabled == 0U || vmc_probe_state.feedback_timeout_active != 0U) {
     vmc_body_motion_kf_reset();
+    vmc_last_imu_rx_count = hi12_imu.rx_count;
   } else {
+    const uint8_t acceleration_valid =
+        (hi12_imu.rx_count != vmc_last_imu_rx_count &&
+         vmc_probe_state.body.imu_valid != 0U &&
+         vmc_probe_state.body.gravity_sign != 0)
+            ? 1U
+            : 0U;
+
+    vmc_last_imu_rx_count = hi12_imu.rx_count;
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
-                              vmc_probe_state.motion.dd_x);
+                              vmc_probe_state.motion.dd_x,
+                              acceleration_valid);
   }
 }
 
@@ -2772,6 +2891,7 @@ void vmc_probe_task(void const *argument)
     remote_control_update_source();
     vmc_update_remote_mode();
     vmc_update_body_state();
+    vmc_update_gravity_compensation();
     vmc_update_leg_state();
     vmc_update_motion_state();
     vmc_jump_update();

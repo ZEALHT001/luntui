@@ -97,9 +97,10 @@ static void hi12_parse_frame(const uint8_t *data, uint32_t len)
 
   const uint8_t *payload = frame + 6U;
 
-  hi12_imu.acc_mss[0] = hi12_read_float(payload + 12U);
-  hi12_imu.acc_mss[1] = hi12_read_float(payload + 16U);
-  hi12_imu.acc_mss[2] = hi12_read_float(payload + 20U);
+  /* acc_b: 3 x float, unit g. */
+  hi12_imu.acc_g[0] = hi12_read_float(payload + 12U);
+  hi12_imu.acc_g[1] = hi12_read_float(payload + 16U);
+  hi12_imu.acc_g[2] = hi12_read_float(payload + 20U);
 
   hi12_imu.gyro_dps[0] = hi12_read_float(payload + 24U);
   hi12_imu.gyro_dps[1] = hi12_read_float(payload + 28U);
