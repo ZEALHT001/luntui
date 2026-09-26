@@ -920,6 +920,40 @@ static float vmc_average_joint_torque_abs(void)
          0.25f;
 }
 
+/* Weakest and strongest leg load.  The airborne latch asks whether *every*
+ * leg is unloaded, so the average is not enough: one slipping side can drag
+ * the mean below the threshold while the other side still carries the body.
+ * "All four unloaded" is max <= threshold, and max also says whether the body
+ * has been picked up again (release). */
+static void vmc_joint_torque_abs_extremes(float *minimum, float *maximum)
+{
+  float values[4];
+  float lo;
+  float hi;
+  uint8_t i;
+
+  values[0] = fabsf(vmc_probe_state.joint_left_ahead.torque);
+  values[1] = fabsf(vmc_probe_state.joint_left_back.torque);
+  values[2] = fabsf(vmc_probe_state.joint_right_ahead.torque);
+  values[3] = fabsf(vmc_probe_state.joint_right_back.torque);
+  lo = values[0];
+  hi = values[0];
+  for (i = 1U; i < 4U; i++) {
+    if (values[i] < lo) {
+      lo = values[i];
+    }
+    if (values[i] > hi) {
+      hi = values[i];
+    }
+  }
+  if (minimum != 0) {
+    *minimum = lo;
+  }
+  if (maximum != 0) {
+    *maximum = hi;
+  }
+}
+
 static uint8_t vmc_jump_is_active(void)
 {
   return (vmc_control.jump_stage == VMC_JUMP_STAGE_COMPRESS ||
@@ -970,6 +1004,7 @@ static void vmc_clear_airborne_latch(void)
   vmc_probe_state.airborne_candidate = 0U;
   vmc_probe_state.airborne_candidate_ms = 0U;
   vmc_probe_state.airborne_release_candidate_ms = 0U;
+  vmc_probe_state.airborne_pitch_reference_valid = 0U;
 }
 
 static double vmc_jump_stage_target_length(void)
@@ -1810,10 +1845,17 @@ static uint8_t vmc_safety_allows_output(void)
              : 0U;
 }
 
-/* Detect the characteristic unloaded-wheel condition when the chassis is
- * lifted: the wheels are spinning, but all four joint torque sensors report
- * very little load.  Once confirmed, latch the condition until joint load
- * recovers so the wheels cannot repeatedly restart while still in the air. */
+/* Detect "the whole machine is off the ground": the wheels are spinning, all
+ * four leg joints are unloaded at once, and the body is not being swung
+ * around.  Once confirmed, latch the condition until leg load recovers so the
+ * wheels cannot repeatedly restart while still in the air.
+ *
+ * The reachable-but-supported case - a wheel spinning on a low-friction
+ * surface while the body still rests on its legs - is handled by the slip
+ * gate in the body-motion estimator, not here.  A supported machine keeps at
+ * least one joint loaded, which is why the test is on the strongest joint
+ * instead of the mean, and why the attitude guard is on top: while the body is
+ * being carried or thrown by the pilot its pitch leaves the reference. */
 static void vmc_update_airborne_state(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -1824,12 +1866,24 @@ static void vmc_update_airborne_state(void)
                                 ? left_wheel_speed
                                 : right_wheel_speed;
   const float joint_torque = vmc_average_joint_torque_abs();
+  float joint_torque_min;
+  float joint_torque_max;
+  const float body_pitch = vmc_probe_state.body.pitch;
+  const float pitch_rate = fabsf(vmc_probe_state.body.pitch_rate);
   const float wheel_speed_threshold =
       clamp_float(vmc_balance.airborne_wheel_speed_threshold, 0.1f, 30.0f);
   const float joint_torque_threshold =
       clamp_float(vmc_balance.airborne_joint_torque_threshold, 0.1f, 54.0f);
+  const float pitch_dev_max =
+      clamp_float(vmc_balance.airborne_pitch_dev_max, 0.01f, 3.0f);
+  const float pitch_rate_max =
+      clamp_float(vmc_balance.airborne_pitch_rate_max, 0.1f, 30.0f);
   uint32_t confirm_ms = vmc_balance.airborne_confirm_ms;
   uint32_t release_ms = vmc_balance.airborne_release_ms;
+  uint8_t wheels_fast;
+  uint8_t joints_unloaded;
+  uint8_t attitude_quiet;
+  uint8_t entry_ready;
   const uint8_t detector_ready =
       (vmc_balance.airborne_detect_enable != 0U &&
        vmc_control.enabled != 0U &&
@@ -1840,6 +1894,8 @@ static void vmc_update_airborne_state(void)
        remote_control_allows_joint_enable() != 0U)
           ? 1U
           : 0U;
+
+  vmc_joint_torque_abs_extremes(&joint_torque_min, &joint_torque_max);
 
   if (vmc_airborne_last_update_ms != 0U) {
     dt_ms = now - vmc_airborne_last_update_ms;
@@ -1857,12 +1913,50 @@ static void vmc_update_airborne_state(void)
 
   vmc_probe_state.airborne_wheel_speed = wheel_speed;
   vmc_probe_state.airborne_joint_torque = joint_torque;
+  vmc_probe_state.airborne_joint_torque_min = joint_torque_min;
+  vmc_probe_state.airborne_joint_torque_max = joint_torque_max;
+
+  /* Arm the attitude reference the moment the wheels start spinning on
+   * unloaded legs and keep it briefly after that stops holding, so the latch
+   * still has to happen while the body is where it just was rather than
+   * re-arming the reference on the cycle that trips the latch. */
+  wheels_fast = (wheel_speed >= wheel_speed_threshold) ? 1U : 0U;
+  joints_unloaded = (joint_torque_max <= joint_torque_threshold) ? 1U : 0U;
+  if (wheels_fast != 0U && joints_unloaded != 0U && detector_ready != 0U) {
+    if (vmc_probe_state.airborne_pitch_reference_valid == 0U) {
+      vmc_probe_state.airborne_pitch_reference = body_pitch;
+    }
+    vmc_probe_state.airborne_pitch_reference_valid = 1U;
+    vmc_probe_state.airborne_pitch_reference_hold_ms =
+        VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT;
+  } else if (vmc_probe_state.airborne_pitch_reference_valid != 0U) {
+    if (vmc_probe_state.airborne_pitch_reference_hold_ms > dt_ms) {
+      vmc_probe_state.airborne_pitch_reference_hold_ms -= dt_ms;
+    } else {
+      vmc_probe_state.airborne_pitch_reference_valid = 0U;
+      vmc_probe_state.airborne_pitch_reference_hold_ms = 0U;
+    }
+  } else {
+    vmc_probe_state.airborne_pitch_reference_hold_ms = 0U;
+  }
+  attitude_quiet =
+      (pitch_rate <= pitch_rate_max &&
+       (vmc_probe_state.airborne_pitch_reference_valid == 0U ||
+        fabsf(body_pitch - vmc_probe_state.airborne_pitch_reference) <=
+            pitch_dev_max))
+          ? 1U
+          : 0U;
+  entry_ready =
+      (wheels_fast != 0U && joints_unloaded != 0U && attitude_quiet != 0U)
+          ? 1U
+          : 0U;
 
   if (vmc_jump_joint_lqr_active() != 0U) {
     vmc_probe_state.airborne_active = 1U;
     vmc_probe_state.airborne_candidate = 0U;
     vmc_probe_state.airborne_candidate_ms = 0U;
     vmc_probe_state.airborne_release_candidate_ms = 0U;
+    vmc_probe_state.airborne_pitch_reference_valid = 0U;
     return;
   }
 
@@ -1871,12 +1965,13 @@ static void vmc_update_airborne_state(void)
     vmc_probe_state.airborne_candidate = 0U;
     vmc_probe_state.airborne_candidate_ms = 0U;
     vmc_probe_state.airborne_release_candidate_ms = 0U;
+    vmc_probe_state.airborne_pitch_reference_valid = 0U;
     return;
   }
 
   if (vmc_probe_state.airborne_active != 0U) {
     const float release_torque_threshold = joint_torque_threshold * 1.5f;
-    if (joint_torque >= release_torque_threshold) {
+    if (joint_torque_max >= release_torque_threshold) {
       if (vmc_probe_state.airborne_release_candidate_ms < release_ms) {
         vmc_probe_state.airborne_release_candidate_ms += dt_ms;
       }
@@ -1885,6 +1980,7 @@ static void vmc_update_airborne_state(void)
         vmc_probe_state.airborne_candidate = 0U;
         vmc_probe_state.airborne_candidate_ms = 0U;
         vmc_probe_state.airborne_release_candidate_ms = 0U;
+        vmc_probe_state.airborne_pitch_reference_valid = 0U;
       }
     } else {
       vmc_probe_state.airborne_release_candidate_ms = 0U;
@@ -1892,8 +1988,7 @@ static void vmc_update_airborne_state(void)
     return;
   }
 
-  if (wheel_speed >= wheel_speed_threshold &&
-      joint_torque <= joint_torque_threshold) {
+  if (entry_ready != 0U) {
     vmc_probe_state.airborne_candidate = 1U;
     if (vmc_probe_state.airborne_candidate_ms < confirm_ms) {
       vmc_probe_state.airborne_candidate_ms += dt_ms;
@@ -2002,6 +2097,8 @@ void vmc_balance_init(void)
       VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT;
   vmc_balance.airborne_confirm_ms = VMC_AIRBORNE_CONFIRM_MS_DEFAULT;
   vmc_balance.airborne_release_ms = VMC_AIRBORNE_RELEASE_MS_DEFAULT;
+  vmc_balance.airborne_pitch_dev_max = VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT;
+  vmc_balance.airborne_pitch_rate_max = VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT;
   vmc_balance.kalman_q_v = VMC_BODY_MOTION_KF_Q_V_DEFAULT;
   vmc_balance.kalman_q_a = VMC_BODY_MOTION_KF_Q_A_DEFAULT;
   vmc_balance.kalman_r_wheel = VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT;

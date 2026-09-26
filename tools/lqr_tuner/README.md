@@ -65,6 +65,23 @@ diagnostics below:
 | 113 | `dx_target` used by the position loop | value multiplied by 1000 |
 | 114 | `dx_error` of the speed loop | value multiplied by 1000 |
 | 115 | telemetry schema version | integer |
+| 116..117 | slip-gate latch state, left and right | `0` or `1` |
+| 118..119 | raw per-wheel speed fed to condition C | value multiplied by 1000 |
+| 120 | condition-C acceleration threshold | value multiplied by 1000 |
+| 121 | slip gate enabled at runtime | `0` or `1` |
+| 122..124 | body roll, body pitch, virtual-leg theta | value multiplied by 1000 |
+| 125 | body roll rate (`gyro[1]`) | value multiplied by 1000 |
+| 126..127 | weakest and strongest leg joint load | value multiplied by 1000 |
+| 128 | pitch captured when the airborne latch armed | value multiplied by 1000, `-999` when unarmed |
+| 129 | body pitch rate consumed by the controller | value multiplied by 1000 |
+
+Fields 126..129 exist because `airborne_joint_torque` (field 88) is the *mean*
+of the four leg loads, and the mean cannot answer the question the latch asks.
+"Whole machine off the ground" means every leg is unloaded at once - that is
+`max <= threshold` on fields 126/127 - while a machine that is merely slipping
+still has one side carrying the body.  Field 128 is the attitude reference the
+pitch guard compares against, so the guard's decision can be reproduced from
+the recording.
 
 All channels use integer ASCII output, so the firmware does not depend on
 newlib-nano floating-point `printf` support.

@@ -92,6 +92,25 @@ extern "C" {
 #define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 2.0f
 #define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 1U
 #define VMC_AIRBORNE_RELEASE_MS_DEFAULT 1U
+/* "Whole machine off the ground" also has to look still, so the latch cannot
+ * sit on a body the pilot is carrying or throwing.  Measured on the recorded
+ * runs: pitch moved by at most 0.012 rad in the 200 ms before every latch
+ * onset (bench lift, landing and low-friction driving alike), so the guard is
+ * deliberately loose and does not sharpen the trigger.  It is there for the
+ * swing that is not in the recordings yet - a tumbling body moves several
+ * tenths of a rad over that span. */
+#define VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT 0.20f
+#define VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT 4.0f
+/* How long the armed pitch reference survives after the wheel-speed condition
+ * stops holding.  Without this the reference would be re-armed on the very
+ * cycle that triggers the latch, and the comparison would always read zero.
+ * 200 ms covers several control-confirmation windows so a body that swings
+ * away inside that span still blocks the latch. */
+#define VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT 200U
+/* Telemetry sentinel for "no attitude reference armed".  It has to be outside
+ * the reachable pitch range so a recording cannot confuse an unarmed guard
+ * with a reference captured at zero pitch. */
+#define VMC_AIRBORNE_PITCH_REFERENCE_NONE (-999.0f)
 #define VMC_PHI0_VERTICAL_RAD     1.5707963267948966f
 #define VMC_BODY_PITCH_DIRECTION  1.0f
 #define VMC_BODY_PITCH_RATE_DIRECTION 1.0f
@@ -567,6 +586,8 @@ typedef struct {
   float airborne_joint_torque_threshold;
   uint32_t airborne_confirm_ms;
   uint32_t airborne_release_ms;
+  float airborne_pitch_dev_max;
+  float airborne_pitch_rate_max;
   float kalman_q_v;
   float kalman_q_a;
   float kalman_r_wheel;
@@ -775,6 +796,16 @@ typedef struct {
   uint32_t airborne_release_candidate_ms;
   float airborne_wheel_speed;
   float airborne_joint_torque;
+  /* The same "all four unloaded" test now needs the weakest and the strongest
+   * joint, not their mean.  Keeping the mean for compatibility with older
+   * recordings, the extremes are what decide the latch. */
+  float airborne_joint_torque_min;
+  float airborne_joint_torque_max;
+  /* Pitch captured when the wheel-speed condition first armed.  The latch
+   * requires the body not to have swung away from that value. */
+  float airborne_pitch_reference;
+  uint8_t airborne_pitch_reference_valid;
+  uint32_t airborne_pitch_reference_hold_ms;
 } vmc_probe_state_t;
 
 extern volatile vmc_probe_state_t vmc_probe_state;

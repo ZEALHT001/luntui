@@ -161,6 +161,35 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_vmcvoa_line("VMCVOFA,1,2,3")
 
+    def test_airborne_latch_channels_parse(self) -> None:
+        """Schema 6 records the joint-load extremes behind the airborne latch."""
+        line = format_line()
+        fields = line.split(",")
+        fields[1 + FORMAT_PROFILE.channels["airborne_joint_torque_min"]] = "0.4"
+        fields[1 + FORMAT_PROFILE.channels["airborne_joint_torque_max"]] = "1.9"
+        fields[1 + FORMAT_PROFILE.channels["airborne_pitch_reference"]] = "-0.03"
+        fields[1 + FORMAT_PROFILE.channels["pitch_rate"]] = "0.75"
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.airborne_joint_torque_min, 0.4)
+        self.assertAlmostEqual(sample.airborne_joint_torque_max, 1.9)
+        self.assertAlmostEqual(sample.airborne_pitch_reference, -0.03)
+        self.assertAlmostEqual(sample.pitch_rate, 0.75)
+
+    def test_v9_layout_still_parses(self) -> None:
+        """The 126-field layout (schema 5) predates the airborne-latch inputs."""
+        fields = [0.001] * 126
+        fields[4] = 1.0
+        fields[115] = 5.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v9")
+        self.assertAlmostEqual(sample.schema_version, 5.0)
+        self.assertFalse(math.isfinite(sample.airborne_joint_torque_min))
+
     def test_raw_text_replay_assigns_20ms_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.log"

@@ -26,7 +26,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 5U
+#define VMC_LQR_RTT_SCHEMA_VERSION 6U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -297,6 +297,16 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "airborne_release_ms", &value) != 0U) {
     vmc_balance.airborne_release_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_pitch_dev_max", &value) != 0U) {
+    vmc_balance.airborne_pitch_dev_max =
+        vmc_lqr_rtt_clamp_float(value, 0.01f, 3.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_pitch_rate_max", &value) != 0U) {
+    vmc_balance.airborne_pitch_rate_max =
+        vmc_lqr_rtt_clamp_float(value, 0.1f, 30.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
@@ -1166,6 +1176,27 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line), b->lqr_theta);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_probe_state.body.wy);
+
+  /* VMCVOFA fields 126..129: airborne-latch inputs and the pitch channel the
+   * guard uses.  The latch needs all four legs unloaded at once, so the
+   * weakest and strongest joint loads are recorded instead of the mean, and
+   * the attitude reference shows what "the body did not move much" was
+   * measured against.  body->wy above shares an axis with the roll rate on
+   * this IMU mounting; the pitch rate the controller actually consumes is
+   * field 129. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_joint_torque_min);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_joint_torque_max);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (vmc_probe_state.airborne_pitch_reference_valid != 0U)
+          ? (double)vmc_probe_state.airborne_pitch_reference
+          : (double)VMC_AIRBORNE_PITCH_REFERENCE_NONE);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_probe_state.body.pitch_rate);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

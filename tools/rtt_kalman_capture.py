@@ -192,8 +192,9 @@ FORMAT_V8_PROFILE = Profile(
     },
 )
 
-FORMAT_PROFILE = Profile(
-    name="format",
+# Layout with slip-gate diagnostics, attitude and roll rate (schema 5).
+FORMAT_V9_PROFILE = Profile(
+    name="format-v9",
     field_count=126,
     channels={
         **FORMAT_V8_PROFILE.channels,
@@ -201,6 +202,22 @@ FORMAT_PROFILE = Profile(
         "pitch": 123,
         "lqr_theta": 124,
         "roll_rate": 125,
+    },
+)
+
+# Airborne-latch inputs added (schema 6): the weakest and strongest joint loads
+# replace the mean, plus the attitude reference the pitch guard uses and the
+# pitch rate the controller consumes.  The airborne decision is only
+# reproducible offline if all four values are recorded.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=130,
+    channels={
+        **FORMAT_V9_PROFILE.channels,
+        "airborne_joint_torque_min": 126,
+        "airborne_joint_torque_max": 127,
+        "airborne_pitch_reference": 128,
+        "pitch_rate": 129,
     },
 )
 
@@ -219,6 +236,7 @@ PROFILES = {
     "format-v6": FORMAT_V6_PROFILE,
     "format-v7": FORMAT_V7_PROFILE,
     "format-v8": FORMAT_V8_PROFILE,
+    "format-v9": FORMAT_V9_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -229,6 +247,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V6_PROFILE,
     FORMAT_V7_PROFILE,
     FORMAT_V8_PROFILE,
+    FORMAT_V9_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -240,6 +259,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V6_PROFILE.field_count: FORMAT_V6_PROFILE,
     FORMAT_V7_PROFILE.field_count: FORMAT_V7_PROFILE,
     FORMAT_V8_PROFILE.field_count: FORMAT_V8_PROFILE,
+    FORMAT_V9_PROFILE.field_count: FORMAT_V9_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -267,6 +287,11 @@ CSV_FIELDS = [
     "state_age_ms",
     "airborne_active",
     "airborne_candidate",
+    "airborne_wheel_speed",
+    "airborne_joint_torque",
+    "airborne_joint_torque_min",
+    "airborne_joint_torque_max",
+    "airborne_pitch_reference",
     "jump_stage",
     "jump_abort_reason",
     "gravity_sign",
@@ -294,6 +319,7 @@ CSV_FIELDS = [
     "pitch",
     "lqr_theta",
     "roll_rate",
+    "pitch_rate",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -337,6 +363,9 @@ class KalmanSample:
     airborne_candidate: float = INVALID_VALUE
     airborne_wheel_speed: float = INVALID_VALUE
     airborne_joint_torque: float = INVALID_VALUE
+    airborne_joint_torque_min: float = INVALID_VALUE
+    airborne_joint_torque_max: float = INVALID_VALUE
+    airborne_pitch_reference: float = INVALID_VALUE
     jump_stage: float = INVALID_VALUE
     jump_abort_reason: float = INVALID_VALUE
     gravity_sign: float = INVALID_VALUE
@@ -364,6 +393,7 @@ class KalmanSample:
     pitch: float = INVALID_VALUE
     lqr_theta: float = INVALID_VALUE
     roll_rate: float = INVALID_VALUE
+    pitch_rate: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -637,6 +667,9 @@ def parse_vmcvoa_line(
         airborne_candidate=channel("airborne_candidate"),
         airborne_wheel_speed=channel("airborne_wheel_speed"),
         airborne_joint_torque=channel("airborne_joint_torque"),
+        airborne_joint_torque_min=channel("airborne_joint_torque_min"),
+        airborne_joint_torque_max=channel("airborne_joint_torque_max"),
+        airborne_pitch_reference=channel("airborne_pitch_reference"),
         jump_stage=channel("jump_stage"),
         jump_abort_reason=channel("jump_abort_reason"),
         gravity_sign=channel("gravity_sign"),
@@ -664,6 +697,7 @@ def parse_vmcvoa_line(
         pitch=channel("pitch"),
         lqr_theta=channel("lqr_theta"),
         roll_rate=channel("roll_rate"),
+        pitch_rate=channel("pitch_rate"),
     )
     return profile, sample
 
@@ -1255,10 +1289,21 @@ class FlagWatcher:
             airborne = sample.airborne_active > 0.5
             if airborne != self.airborne:
                 self.airborne = airborne
-                print(
-                    f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE "
-                    f"{'ACTIVE - wheel output gated' if airborne else 'released'}"
-                )
+                if airborne:
+                    # The joint-load extremes are what the latch keys on; the
+                    # mean alone cannot show that one leg still carried the
+                    # body, which is the supported-but-slipping case.
+                    print(
+                        f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE ACTIVE - wheel "
+                        f"output gated (wheel="
+                        f"{format_value(sample.airborne_wheel_speed, 2)} rad/s, "
+                        f"joint load min="
+                        f"{format_value(sample.airborne_joint_torque_min, 2)} "
+                        f"max={format_value(sample.airborne_joint_torque_max, 2)} "
+                        f"Nm, pitch={format_value(sample.pitch, 3)} rad)"
+                    )
+                else:
+                    print(f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE released")
         if _finite(sample.kf_slip):
             slip = sample.kf_slip > 0.5
             if slip and not self.slip:
@@ -1416,6 +1461,21 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 state_age_ms=_safe_float(row.get("state_age_ms", "")),
                 airborne_active=_safe_float(row.get("airborne_active", "")),
                 airborne_candidate=_safe_float(row.get("airborne_candidate", "")),
+                airborne_wheel_speed=_safe_float(
+                    row.get("airborne_wheel_speed", "")
+                ),
+                airborne_joint_torque=_safe_float(
+                    row.get("airborne_joint_torque", "")
+                ),
+                airborne_joint_torque_min=_safe_float(
+                    row.get("airborne_joint_torque_min", "")
+                ),
+                airborne_joint_torque_max=_safe_float(
+                    row.get("airborne_joint_torque_max", "")
+                ),
+                airborne_pitch_reference=_safe_float(
+                    row.get("airborne_pitch_reference", "")
+                ),
                 jump_stage=_safe_float(row.get("jump_stage", "")),
                 jump_abort_reason=_safe_float(
                     row.get("jump_abort_reason", "")
@@ -1461,6 +1521,7 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 pitch=_safe_float(row.get("pitch", "")),
                 lqr_theta=_safe_float(row.get("lqr_theta", "")),
                 roll_rate=_safe_float(row.get("roll_rate", "")),
+                pitch_rate=_safe_float(row.get("pitch_rate", "")),
             )
 
 
