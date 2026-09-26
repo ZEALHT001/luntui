@@ -162,37 +162,52 @@ FORMAT_V6_PROFILE = Profile(
     },
 )
 
-FORMAT_PROFILE = Profile(
-    name="format",
+# Schema version field added (value 3 at the time).
+FORMAT_V7_PROFILE = Profile(
+    name="format-v7",
     field_count=116,
     channels={
-        **FORMAT_V6_PROFILE.channels,
+        **FORMAT_V5_PROFILE.channels,
+        "stick_forward": 110,
+        "speed_target": 111,
+        "speed_target_ramped": 112,
+        "dx_target": 113,
+        "dx_error": 114,
         "schema_version": 115,
     },
 )
 
-# The liuche development line appends richer KF diagnostics.  Q/R are not in
-# that telemetry variant, but the raw measurements are useful when the changes
-# are eventually merged into format.
-LIUCHE_PROFILE = Profile(
-    name="liuche",
+# Slip-gate diagnostics added (schema 4).
+FORMAT_V8_PROFILE = Profile(
+    name="format-v8",
     field_count=122,
     channels={
-        "kf_x": 4,
-        "kf_dx": 5,
-        "left_wheel_current": 60,
-        "right_wheel_current": 61,
-        "q_v": -1,
-        "q_a": -1,
-        "r_wheel": -1,
-        "r_imu": -1,
-        "kf_acc": 110,
-        "d_x_raw": 111,
-        "dd_x": 112,
-        "kf_slip": 113,
-        "kf_slip_metric": 114,
+        **FORMAT_V7_PROFILE.channels,
+        "kf_slip_left": 116,
+        "kf_slip_right": 117,
+        "kf_wheel_left_raw": 118,
+        "kf_wheel_right_raw": 119,
+        "slip_accel_threshold": 120,
+        "slip_enable": 121,
     },
 )
+
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=126,
+    channels={
+        **FORMAT_V8_PROFILE.channels,
+        "roll": 122,
+        "pitch": 123,
+        "lqr_theta": 124,
+        "roll_rate": 125,
+    },
+)
+
+# NOTE: the liuche development line has its own VMCVOFA layout.  A profile for
+# it was previously guessed here from that branch's source and was wrong, as
+# well as colliding with a format field count.  Do not reintroduce a layout
+# without deriving every index from the branch that emits it.
 
 PROFILES = {
     "format": FORMAT_PROFILE,
@@ -202,7 +217,8 @@ PROFILES = {
     "format-v4": FORMAT_V4_PROFILE,
     "format-v5": FORMAT_V5_PROFILE,
     "format-v6": FORMAT_V6_PROFILE,
-    "liuche": LIUCHE_PROFILE,
+    "format-v7": FORMAT_V7_PROFILE,
+    "format-v8": FORMAT_V8_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -211,6 +227,8 @@ FORMAT_LAYOUTS = (
     FORMAT_V4_PROFILE,
     FORMAT_V5_PROFILE,
     FORMAT_V6_PROFILE,
+    FORMAT_V7_PROFILE,
+    FORMAT_V8_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -220,8 +238,9 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V4_PROFILE.field_count: FORMAT_V4_PROFILE,
     FORMAT_V5_PROFILE.field_count: FORMAT_V5_PROFILE,
     FORMAT_V6_PROFILE.field_count: FORMAT_V6_PROFILE,
+    FORMAT_V7_PROFILE.field_count: FORMAT_V7_PROFILE,
+    FORMAT_V8_PROFILE.field_count: FORMAT_V8_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
-    LIUCHE_PROFILE.field_count: LIUCHE_PROFILE,
 }
 
 CSV_FIELDS = [
@@ -265,6 +284,16 @@ CSV_FIELDS = [
     "dist_obs_neutral_time",
     "dist_obs_pitch_comp",
     "dist_obs_theta_comp",
+    "kf_slip_left",
+    "kf_slip_right",
+    "kf_wheel_left_raw",
+    "kf_wheel_right_raw",
+    "slip_accel_threshold",
+    "slip_enable",
+    "roll",
+    "pitch",
+    "lqr_theta",
+    "roll_rate",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -325,6 +354,16 @@ class KalmanSample:
     dist_obs_neutral_time: float = INVALID_VALUE
     dist_obs_pitch_comp: float = INVALID_VALUE
     dist_obs_theta_comp: float = INVALID_VALUE
+    kf_slip_left: float = INVALID_VALUE
+    kf_slip_right: float = INVALID_VALUE
+    kf_wheel_left_raw: float = INVALID_VALUE
+    kf_wheel_right_raw: float = INVALID_VALUE
+    slip_accel_threshold: float = INVALID_VALUE
+    slip_enable: float = INVALID_VALUE
+    roll: float = INVALID_VALUE
+    pitch: float = INVALID_VALUE
+    lqr_theta: float = INVALID_VALUE
+    roll_rate: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -531,7 +570,7 @@ def select_profile(field_count: int, requested: str) -> Profile:
         if selected is None:
             raise ValueError(
                 f"unknown VMCVOFA field count {field_count}; "
-                "use --profile format, format-v1, format-v2, or liuche"
+                "pass the matching --profile (format, format-v1..v7)"
             )
         return selected
     if requested == "format":
@@ -615,6 +654,16 @@ def parse_vmcvoa_line(
         dist_obs_neutral_time=channel("dist_obs_neutral_time"),
         dist_obs_pitch_comp=channel("dist_obs_pitch_comp"),
         dist_obs_theta_comp=channel("dist_obs_theta_comp"),
+        kf_slip_left=channel("kf_slip_left"),
+        kf_slip_right=channel("kf_slip_right"),
+        kf_wheel_left_raw=channel("kf_wheel_left_raw"),
+        kf_wheel_right_raw=channel("kf_wheel_right_raw"),
+        slip_accel_threshold=channel("slip_accel_threshold"),
+        slip_enable=channel("slip_enable"),
+        roll=channel("roll"),
+        pitch=channel("pitch"),
+        lqr_theta=channel("lqr_theta"),
+        roll_rate=channel("roll_rate"),
     )
     return profile, sample
 
@@ -1015,24 +1064,30 @@ class TcpRttReader:
 
 class JLinkSubprocessReader:
     def __init__(self, device: str, speed: int, writable: bool = False) -> None:
+        self.device = device
+        self.speed = speed
+        self.writable = writable
+        self.restarts = 0
+        self._spawn()
+
+    def _spawn(self) -> None:
         command = [
             find_pylink_python(),
             str(Path(__file__).resolve()),
             "--jlink-helper",
             "--device",
-            device,
+            self.device,
             "--speed",
-            str(speed),
+            str(self.speed),
         ]
-        if writable:
+        if self.writable:
             command.append("--jlink-write")
         self.process = subprocess.Popen(
             command,
-            stdin=subprocess.PIPE if writable else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if self.writable else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self.writable = writable
         self.buffer = bytearray()
         self.stderr_buffer = bytearray()
         self._wait_until_ready()
@@ -1072,6 +1127,26 @@ class JLinkSubprocessReader:
 
     def read_lines(self) -> list[str]:
         if self.process.poll() is not None:
+            # The helper exits on any transient SWD/RTT error.  Without this
+            # check the parent simply stops receiving data and eventually times
+            # out, with no hint that the J-Link side died.  Report it and
+            # reconnect: a momentary glitch - easily provoked while the robot
+            # is driving - must not end a long capture.
+            reason = self._read_error_tail()
+            self.restarts += 1
+            print(
+                f"J-Link helper exited ({reason or 'no message'}); "
+                f"reconnecting (restart #{self.restarts})",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                self.close(keep_streams=True)
+                self._spawn()
+            except Exception as exc:  # noqa: BLE001 - surfaced to the caller
+                raise RuntimeError(
+                    f"J-Link helper died and could not reconnect: {exc}"
+                ) from exc
             return []
         readable, _, _ = select.select([self.process.stdout], [], [], 0.0)
         if readable:
@@ -1085,7 +1160,7 @@ class JLinkSubprocessReader:
             lines.append(line.decode("utf-8", errors="replace").strip())
         return lines
 
-    def close(self) -> None:
+    def close(self, keep_streams: bool = False) -> None:
         process = getattr(self, "process", None)
         if process is None:
             return
@@ -1096,11 +1171,12 @@ class JLinkSubprocessReader:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=1.0)
-        for stream in (process.stdout, process.stderr):
-            try:
-                stream.close()
-            except OSError:
-                pass
+        if not keep_streams:
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
     def send(self, line: str) -> None:
         if not self.writable or self.process.stdin is None:
@@ -1187,8 +1263,10 @@ class FlagWatcher:
             slip = sample.kf_slip > 0.5
             if slip and not self.slip:
                 print(
-                    f"  [FLAG {elapsed_s:7.2f}s] SLIP condition B "
-                    f"metric={format_value(sample.kf_slip_metric, 3)} m/s"
+                    f"  [FLAG {elapsed_s:7.2f}s] SLIP gate latched "
+                    f"(condition C={format_value(sample.kf_slip_metric, 2)} m/s2, "
+                    f"L={format_value(sample.kf_slip_left, 0)} "
+                    f"R={format_value(sample.kf_slip_right, 0)})"
                 )
             self.slip = slip
         if _finite(sample.jump_stage) and sample.jump_stage != self.jump_stage:
@@ -1367,6 +1445,22 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 dist_obs_theta_comp=_safe_float(
                     row.get("dist_obs_theta_comp", "")
                 ),
+                kf_slip_left=_safe_float(row.get("kf_slip_left", "")),
+                kf_slip_right=_safe_float(row.get("kf_slip_right", "")),
+                kf_wheel_left_raw=_safe_float(
+                    row.get("kf_wheel_left_raw", "")
+                ),
+                kf_wheel_right_raw=_safe_float(
+                    row.get("kf_wheel_right_raw", "")
+                ),
+                slip_accel_threshold=_safe_float(
+                    row.get("slip_accel_threshold", "")
+                ),
+                slip_enable=_safe_float(row.get("slip_enable", "")),
+                roll=_safe_float(row.get("roll", "")),
+                pitch=_safe_float(row.get("pitch", "")),
+                lqr_theta=_safe_float(row.get("lqr_theta", "")),
+                roll_rate=_safe_float(row.get("roll_rate", "")),
             )
 
 
@@ -1671,6 +1765,7 @@ def capture_live(
     window_s: float,
     hop_s: float,
     startup_stabilize_s: float,
+    rx_timeout_s: float,
     stop_requested: Callable[[], bool] | None,
     console: InteractiveConsole | None,
     scheduled_sends: list[tuple[float, str]] | None,
@@ -1800,8 +1895,11 @@ def capture_live(
                         print(f"    {finding}")
                     next_progress += hop_s
 
-            if now - last_rx > 3.0 and now - start > 1.0:
-                raise TimeoutError("no VMCVOFA telemetry received for 3 seconds")
+            if now - last_rx > rx_timeout_s and now - start > 1.0:
+                raise TimeoutError(
+                    "no VMCVOFA telemetry received for "
+                    f"{rx_timeout_s:.0f} seconds"
+                )
             time.sleep(0.002)
     except KeyboardInterrupt:
         ended_early = True
@@ -1876,6 +1974,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rx-timeout",
+        type=float,
+        default=10.0,
+        help=(
+            "abort if no telemetry arrives for this many seconds "
+            "(default: 10; a longer value tolerates brief J-Link stalls)"
+        ),
+    )
+    parser.add_argument(
         "--stop-key",
         default=DEFAULT_STOP_KEY,
         metavar="KEY",
@@ -1916,7 +2023,8 @@ def build_parser() -> argparse.ArgumentParser:
             "format-v4",
             "format-v5",
             "format-v6",
-            "liuche",
+            "format-v7",
+            "format-v8",
         ),
         default=DEFAULT_PROFILE,
         help="VMCVOFA layout; auto detects by field count",
@@ -2052,6 +2160,7 @@ def main(argv: list[str] | None = None) -> int:
                     window_s=args.window,
                     hop_s=args.hop,
                     startup_stabilize_s=args.startup_stabilize,
+                    rx_timeout_s=args.rx_timeout,
                     stop_requested=stop_key.stop_requested,
                     console=console,
                     scheduled_sends=scheduled_sends,
@@ -2141,15 +2250,40 @@ def run_jlink_helper(device: str, speed: int, writable: bool = False) -> int:
     io_lock = threading.Lock()
 
     def stdin_pump() -> None:
+        """Forward typed lines to the RTT down channel.
+
+        Do not give up on the first failure.  The host can send before pylink's
+        RTT handle is fully usable, and a silent return here loses every later
+        command while the parent still reports the send as successful.  Retry
+        briefly, then report the error so the failure is visible instead of
+        looking like a firmware-side parse problem.
+        """
+        failures = 0
         for raw in sys.stdin.buffer:
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if not line:
                 continue
-            try:
-                with io_lock:
-                    jlink.rtt_write(0, (line + "\n").encode("utf-8"))
-            except Exception:
-                return
+            payload = (line + "\n").encode("utf-8")
+            for attempt in range(25):
+                try:
+                    with io_lock:
+                        jlink.rtt_write(0, payload)
+                    break
+                except Exception as exc:  # noqa: BLE001 - report and retry
+                    failures += 1
+                    if attempt == 0:
+                        print(
+                            f"RTT write failed ({exc}); retrying",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    time.sleep(0.02)
+            else:
+                print(
+                    f"RTT write abandoned after {failures} failures",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     try:
         jlink.open()

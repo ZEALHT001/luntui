@@ -60,6 +60,15 @@ def format_line(**updates: float) -> str:
     fields[FORMAT_PROFILE.channels["gravity_sign"]] = updates.get(
         "gravity_sign", 1.0
     )
+    fields[FORMAT_PROFILE.channels["slip_accel_threshold"]] = updates.get(
+        "slip_accel_threshold", 20.0
+    )
+    fields[FORMAT_PROFILE.channels["slip_enable"]] = updates.get(
+        "slip_enable", 1.0
+    )
+    fields[FORMAT_PROFILE.channels["schema_version"]] = updates.get(
+        "schema_version", 5.0
+    )
     return "VMCVOFA," + ",".join(str(value) for value in fields)
 
 
@@ -98,6 +107,29 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(profile.name, "format-v2")
         self.assertAlmostEqual(sample.kf_x, 1.5)
         self.assertFalse(math.isfinite(sample.gravity_sign))
+
+    def test_slip_gate_channels_parse(self) -> None:
+        line = format_line(schema_version=4.0)
+        fields = line.split(",")
+        fields[1 + FORMAT_PROFILE.channels["kf_slip_left"]] = "1.0"
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.schema_version, 4.0)
+        self.assertAlmostEqual(sample.kf_slip_left, 1.0)
+
+    def test_v7_layout_still_parses(self) -> None:
+        """The 116-field layout (schema 3) predates the slip diagnostics."""
+        fields = [0.001] * 116
+        fields[4] = 1.0
+        fields[115] = 3.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v7")
+        self.assertAlmostEqual(sample.schema_version, 3.0)
+        self.assertFalse(math.isfinite(sample.kf_slip_left))
 
     def test_small_qr_values_survive_the_wire_format(self) -> None:
         """Calibrated Q/R are ~1e-7..1e-4 and must not round to zero."""
@@ -300,6 +332,7 @@ class AnalysisTests(unittest.TestCase):
             window_s=5.0,
             hop_s=1.0,
             startup_stabilize_s=0.0,
+            rx_timeout_s=10.0,
             stop_requested=stop_requested,
             console=None,
             scheduled_sends=None,
@@ -334,6 +367,7 @@ class AnalysisTests(unittest.TestCase):
             window_s=5.0,
             hop_s=1.0,
             startup_stabilize_s=0.0,
+            rx_timeout_s=10.0,
             stop_requested=None,
             console=None,
             scheduled_sends=[(0.0, "FIRST"), (0.0, "SECOND")],
