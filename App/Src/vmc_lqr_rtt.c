@@ -26,7 +26,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 3U
+#define VMC_LQR_RTT_SCHEMA_VERSION 5U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -185,6 +185,37 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "r_imu", &value) != 0U) {
     vmc_balance.kalman_r_imu =
         vmc_lqr_rtt_clamp_float(value, 1.0e-9f, 1.0e12f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_enable", &value) != 0U) {
+    vmc_balance.kalman_slip_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_accel", &value) != 0U) {
+    vmc_balance.kalman_slip_accel = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0e4f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_vel_diff", &value) != 0U) {
+    vmc_balance.kalman_slip_vel_diff =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0e3f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_yaw_track", &value) != 0U) {
+    vmc_balance.kalman_slip_yaw_track = vmc_lqr_rtt_clamp_float(value, 0.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_yaw", &value) != 0U) {
+    vmc_balance.kalman_slip_yaw = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0e3f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_hold_ms", &value) != 0U) {
+    vmc_balance.kalman_slip_hold_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_confirm_ms", &value) != 0U) {
+    vmc_balance.kalman_slip_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
     applied = 1U;
   }
 
@@ -1103,6 +1134,38 @@ void vmc_lqr_rtt_telemetry_update(void)
   /* VMCVOFA field 115: telemetry schema version. */
   offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
                                   VMC_LQR_RTT_SCHEMA_VERSION);
+  /* VMCVOFA fields 116..121: slip-gate inputs and per-side state.  The raw
+   * per-wheel speeds are what condition C differentiates, so recording them
+   * makes the trigger threshold verifiable offline. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_slip_left);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_slip_right);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_wheel_left_raw);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), m->kf_wheel_right_raw);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->kalman_slip_accel);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->kalman_slip_enable);
+  /* VMCVOFA fields 122..125: body attitude and roll rate.
+   *
+   * These were missing from the telemetry, which made an earlier lift/drop
+   * analysis misread an attitude-holding artifact as a control-loop
+   * instability: a machine held away from its balance pose while the wheels
+   * are unloaded cannot correct the error, so the controller keeps commanding
+   * torque and any roll error becomes differential wheel torque.  Without
+   * pitch/roll in the recording that is indistinguishable from an oscillation
+   * fault. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_probe_state.body.roll);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_probe_state.body.pitch);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), b->lqr_theta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_probe_state.body.wy);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

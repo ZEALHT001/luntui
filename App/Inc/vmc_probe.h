@@ -143,6 +143,71 @@ extern "C" {
  * fused velocity, in m/s.  This mirrors USTB/Nanhang condition B. */
 #define VMC_BODY_MOTION_KF_SLIP_VEL_DIFF_DEFAULT 1.2f
 
+/* Slip gating, following the USTB/Nanhang sliding-observation scheme.  The
+ * upstream formulation is `slip = (A OR B) AND C`; this implementation
+ * triggers on C alone, with A and B wired as optional extra triggers:
+ *
+ *   A: the wheel-derived yaw rate disagrees with the IMU yaw rate
+ *   B: a wheel's speed disagrees with the estimated body speed
+ *   C: a wheel is accelerating harder than the body
+ *
+ * C is the detector and triggers on its own; A and B are optional extra
+ * triggers.  Framing C behind them does not work: B compares a wheel against a
+ * velocity fused from that same wheel, so it is self-limiting - the filter has
+ * already followed the slipping wheel and the gap stays small.  Measured on
+ * the vehicle, a landing transient drove C to 56 m/s2 while the B gap never
+ * exceeded 0.76 m/s against its 1.2 m/s threshold, so the latch never engaged.
+ *
+ * C must use the RAW wheel speed.  Differentiating the leg-corrected body
+ * speed instead turns commanded leg swing and leg-length servo motion into
+ * apparent wheel acceleration, that is, into false slip.
+ *
+ * A clamped velocity measurement alone cannot reject a slipping wheel: the
+ * filter follows whatever it is fed, so a slaved metric is self-limiting and
+ * only ever reports a fraction of the true error.  While a latch is active the
+ * wheel measurement is therefore replaced by the filter's own prediction (the
+ * velocity innovation collapses) and r_wheel is widened so the estimate coasts
+ * on the inertial prediction instead of chasing the spinning wheel.
+ *
+ * Each side latches independently.  Release needs the metric to fall to
+ * RELEASE_RATIO of the trigger level AND the minimum hold to elapse.  The
+ * optional timeout is only a safety net. */
+/* Disabled by default.  The mechanism works and its inputs are verified, but
+ * no test has yet demonstrated a benefit, and one showed a cost: during a
+ * lift/drop the excursion is brief, so replacing the wheel measurement with
+ * the prediction freezes the estimate at its last value while the wheel has
+ * already returned to zero.  Replayed on that recording the hard gate gave
+ * peak 1.54 / rms 0.351 against 1.49 / 0.280 ungated.  Gating suits a
+ * sustained slide - a wheel spinning while the body stays put - where coasting
+ * is the correct response; enable it for that case only, and re-validate
+ * before making it the default.  Note also that the airborne detector cuts
+ * wheel torque on the same evidence, so a low-friction surface can trip that
+ * protection first. */
+#define VMC_BODY_MOTION_KF_SLIP_ENABLE_DEFAULT    0U
+/* Condition C threshold in m/s2.  Measured on the vehicle: a landing transient
+ * that spun the wheel from 0 to 2.9 m/s in ~200 ms produced a condition-C
+ * magnitude well above this, while steady driving stays far below it. */
+#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     20.0f
+/* Condition A: wheel track in metres and yaw-rate threshold in rad/s.  The
+ * track width has not been measured, so A stays disabled until yaw_track is
+ * set to a real value. */
+#define VMC_BODY_MOTION_KF_SLIP_YAW_TRACK_DEFAULT 0.0f
+#define VMC_BODY_MOTION_KF_SLIP_YAW_DEFAULT       0.9f
+/* Safety-net release for a latch whose metric sits inside the hysteresis band,
+ * in ms. 0 never force-releases. */
+#define VMC_BODY_MOTION_KF_SLIP_HOLD_MS_DEFAULT   200U
+/* Trigger confirmation time in ms.
+ *
+ * Condition C differentiates the wheel speed, so any short mechanical
+ * transient - a landing impact, an encoder glitch, a single-sample current
+ * step - shows up in it as an isolated spike rather than a sustained level.
+ * Measured on the vehicle those transients produced contiguous runs of only
+ * 1-2 telemetry frames (20-40 ms) above threshold, while a genuine slide
+ * persists for hundreds of milliseconds.  Requiring the metric to stay above
+ * the threshold rejects the spikes without meaningfully delaying a real
+ * detection. */
+#define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 60U
+
 /* Raw joint positions captured with both legs vertical down at 385 mm. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
@@ -506,6 +571,13 @@ typedef struct {
   float kalman_q_a;
   float kalman_r_wheel;
   float kalman_r_imu;
+  uint8_t kalman_slip_enable;
+  float kalman_slip_accel;
+  float kalman_slip_vel_diff;
+  float kalman_slip_yaw_track;
+  float kalman_slip_yaw;
+  uint32_t kalman_slip_hold_ms;
+  uint32_t kalman_slip_confirm_ms;
   float tp_limit;
   float tp_phi_gain;
   float tp_x_gain;
@@ -631,11 +703,17 @@ typedef struct {
    * 1 kHz control tick, so the 20 ms telemetry period can alias against the
    * 5 ms IMU period.  This counter proves the fusion rate independently. */
   uint32_t kf_accel_update_count;
-  /* Diagnostic slip-gate condition B: wheel speed runaway relative to the
-   * previous fused velocity.  It is telemetry only until a gate policy is
-   * merged into this branch. */
+  /* Slip-gate diagnostics.  kf_slip is 1 while either side's wheel
+   * measurement is being rejected in favour of the prediction; the per-side
+   * flags and the raw wheel speeds let the gate's inputs be verified from a
+   * recording.  kf_slip_metric is the larger side's condition-C magnitude in
+   * m/s2: |wheel acceleration| - |IMU body acceleration|. */
   double kf_slip;
   double kf_slip_metric;
+  double kf_slip_left;
+  double kf_slip_right;
+  double kf_wheel_left_raw;
+  double kf_wheel_right_raw;
   double kf_x;
   double kf_dx;
   double kf_acc;

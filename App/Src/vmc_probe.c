@@ -69,7 +69,8 @@ static int16_t vmc_update_gimbal_follow_current(void);
 static void vmc_balance_apply_wheel_output(void);
 static void vmc_body_motion_kf_reset(void);
 static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
-                                      uint8_t acceleration_valid);
+                                      uint8_t acceleration_valid,
+                                      uint8_t slip_active);
 static HAL_StatusTypeDef can_send_wheel_current(int16_t left_current,
                                                 int16_t right_current);
 
@@ -106,6 +107,42 @@ static double body_motion_kf_x[2];
 static double body_motion_kf_p[4];
 static uint8_t body_motion_kf_initialized;
 
+/* Slip gate for the two-state estimator.
+ *
+ * Condition C differentiates the wheel speed and compares it against the IMU
+ * body acceleration, so both signals are low-passed first; the C620 reports
+ * wheel speed as an integer RPM, which makes a raw sample-to-sample difference
+ * far too coarse to threshold directly.  Each side latches on its own. */
+#define VMC_BODY_MOTION_KF_SLIP_WHEEL_ALPHA 0.20
+#define VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA 0.20
+/* Release hysteresis and minimum hold.  Releasing on "the wheel speed fell
+ * back below the value recorded on entry" only holds for an accelerating
+ * slip; a decelerating or locked wheel drops below that value on the very
+ * next sample, so the latch flapped at sampling rate and re-admitted the
+ * slipping wheel every few milliseconds. */
+#define VMC_BODY_MOTION_KF_SLIP_RELEASE_RATIO 0.5
+#define VMC_BODY_MOTION_KF_SLIP_MIN_HOLD_MS   50U
+/* Weight changes while a latch is active.  The wheel measurement is replaced
+ * by the prediction, so this mostly bounds how much the near-zero innovation
+ * may still move the state; widening r_wheel keeps the wheel from regaining
+ * authority through the covariance. */
+#define VMC_BODY_MOTION_KF_SLIP_Q_V_SCALE     0.1
+#define VMC_BODY_MOTION_KF_SLIP_Q_A_SCALE     2.0
+#define VMC_BODY_MOTION_KF_SLIP_R_WHEEL_SCALE 90.0
+
+static double body_motion_kf_slip_left_raw_lpf;
+static double body_motion_kf_slip_right_raw_lpf;
+static double body_motion_kf_slip_left_accel_lpf;
+static double body_motion_kf_slip_right_accel_lpf;
+static double body_motion_kf_slip_imu_accel_lpf;
+static uint32_t body_motion_kf_slip_left_ms;
+static uint32_t body_motion_kf_slip_right_ms;
+static uint32_t body_motion_kf_slip_left_above_ms;
+static uint32_t body_motion_kf_slip_right_above_ms;
+static uint8_t body_motion_kf_slip_left;
+static uint8_t body_motion_kf_slip_right;
+static uint8_t body_motion_kf_slip_initialized;
+
 static double clamp_double(double value, double min_value, double max_value)
 {
   if (value > max_value) {
@@ -115,6 +152,221 @@ static double clamp_double(double value, double min_value, double max_value)
     return min_value;
   }
   return value;
+}
+
+static void vmc_body_motion_kf_slip_reset(double wheel_left_raw_speed,
+                                          double wheel_right_raw_speed,
+                                          double imu_accel)
+{
+  body_motion_kf_slip_left_raw_lpf = wheel_left_raw_speed;
+  body_motion_kf_slip_right_raw_lpf = wheel_right_raw_speed;
+  body_motion_kf_slip_left_accel_lpf = 0.0;
+  body_motion_kf_slip_right_accel_lpf = 0.0;
+  body_motion_kf_slip_imu_accel_lpf = imu_accel;
+  body_motion_kf_slip_left_ms = 0U;
+  body_motion_kf_slip_right_ms = 0U;
+  body_motion_kf_slip_left_above_ms = 0U;
+  body_motion_kf_slip_right_above_ms = 0U;
+  body_motion_kf_slip_left = 0U;
+  body_motion_kf_slip_right = 0U;
+  body_motion_kf_slip_initialized = 1U;
+}
+
+/* One side's latch.  Returns 1 while that side's wheel measurement should be
+ * rejected.
+ *
+ * The metric must stay above the threshold for `confirm_ms` before the latch
+ * engages.  Condition C differentiates the wheel speed, so the leg/frame
+ * assembly's anti-phase left/right oscillation also produces large values;
+ * that mode appears as isolated 20-40 ms spikes, whereas a real slide persists.
+ * Confirmation is what tells them apart. */
+static uint8_t vmc_body_motion_kf_slip_latch_update(uint8_t *latch,
+                                                    uint32_t *latch_ms,
+                                                    uint32_t *above_ms,
+                                                    double metric,
+                                                    double threshold,
+                                                    double release_threshold,
+                                                    uint32_t dt_ms,
+                                                    uint32_t confirm_ms,
+                                                    uint32_t now,
+                                                    uint32_t min_hold_ms,
+                                                    uint32_t hold_ms)
+{
+  uint32_t latched_ms;
+
+  if (metric >= threshold) {
+    if (*above_ms < confirm_ms) {
+      *above_ms += dt_ms;
+    }
+    if (*latch == 0U && *above_ms >= confirm_ms) {
+      *latch = 1U;
+      *latch_ms = now;
+    }
+    return *latch;
+  }
+
+  *above_ms = 0U;
+  if (*latch == 0U) {
+    return 0U;
+  }
+
+  /* Never release before the minimum hold: the metric can dip between two
+   * samples of a genuine slide. */
+  latched_ms = now - *latch_ms;
+  if (latched_ms < min_hold_ms) {
+    return 1U;
+  }
+  if (metric < release_threshold ||
+      (hold_ms != 0U && latched_ms >= hold_ms)) {
+    *latch = 0U;
+    return 0U;
+  }
+  return 1U;
+}
+
+/*
+ * Slip detector, following the USTB/Nanhang structure:
+ *
+ *   slip = (condition A OR condition B) AND condition C
+ *
+ * Returns 1 while either side is latched.  metric_out receives the larger of
+ * the two sides' condition-C magnitude, in m/s2.
+ */
+static uint8_t vmc_body_motion_kf_slip_gate(double wheel_left_body_speed,
+                                            double wheel_right_body_speed,
+                                            double wheel_left_raw_speed,
+                                            double wheel_right_raw_speed,
+                                            double imu_accel,
+                                            double body_speed,
+                                            double yaw_rate_imu,
+                                            uint8_t accel_valid,
+                                            double dt,
+                                            double *metric_out)
+{
+  const double accel_threshold =
+      clamp_double((double)vmc_balance.kalman_slip_accel, 0.0, 1.0e4);
+  const double velocity_threshold =
+      clamp_double((double)vmc_balance.kalman_slip_vel_diff, 0.0, 1.0e3);
+  const double yaw_track =
+      clamp_double((double)vmc_balance.kalman_slip_yaw_track, 0.0, 2.0);
+  const double yaw_threshold =
+      clamp_double((double)vmc_balance.kalman_slip_yaw, 0.0, 1.0e3);
+  const uint32_t hold_ms =
+      clamp_u32(vmc_balance.kalman_slip_hold_ms, 0U, 5000U);
+  const uint32_t confirm_ms =
+      clamp_u32(vmc_balance.kalman_slip_confirm_ms, 0U, 1000U);
+  const uint32_t now = HAL_GetTick();
+  const double wheel_left_previous = body_motion_kf_slip_left_raw_lpf;
+  const double wheel_right_previous = body_motion_kf_slip_right_raw_lpf;
+  double metric_left;
+  double metric_right;
+  uint8_t frame = 0U;
+
+  if (metric_out != NULL) {
+    *metric_out = 0.0;
+  }
+  if (dt <= 0.0 || metric_out == NULL) {
+    return 0U;
+  }
+
+  /* Condition C only ever looks at the raw wheel speed. */
+  body_motion_kf_slip_left_raw_lpf +=
+      VMC_BODY_MOTION_KF_SLIP_WHEEL_ALPHA *
+      (wheel_left_raw_speed - body_motion_kf_slip_left_raw_lpf);
+  body_motion_kf_slip_right_raw_lpf +=
+      VMC_BODY_MOTION_KF_SLIP_WHEEL_ALPHA *
+      (wheel_right_raw_speed - body_motion_kf_slip_right_raw_lpf);
+  /* The wheel differentiator runs on every control cycle so its dt is the 1 ms
+   * control period, which is what makes the threshold a real m/s2 figure.  The
+   * IMU term is only refreshed when a new frame arrived; holding it in between
+   * keeps one accel sample from being counted five times, which is the same
+   * aliasing the estimator's own gate exists to avoid. */
+  if (accel_valid != 0U) {
+    body_motion_kf_slip_imu_accel_lpf +=
+        VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA *
+        (imu_accel - body_motion_kf_slip_imu_accel_lpf);
+  }
+  body_motion_kf_slip_left_accel_lpf +=
+      VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA *
+      (((body_motion_kf_slip_left_raw_lpf - wheel_left_previous) / dt) -
+       body_motion_kf_slip_left_accel_lpf);
+  body_motion_kf_slip_right_accel_lpf +=
+      VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA *
+      (((body_motion_kf_slip_right_raw_lpf - wheel_right_previous) / dt) -
+       body_motion_kf_slip_right_accel_lpf);
+
+  /* Condition C: a wheel accelerating harder than the body is the core slip
+   * signature.  Magnitudes are compared so the check does not depend on the
+   * sign convention of either channel. */
+  metric_left = fabs(body_motion_kf_slip_left_accel_lpf) -
+                fabs(body_motion_kf_slip_imu_accel_lpf);
+  metric_right = fabs(body_motion_kf_slip_right_accel_lpf) -
+                 fabs(body_motion_kf_slip_imu_accel_lpf);
+  *metric_out = (metric_left > metric_right) ? metric_left : metric_right;
+
+  /* Condition A: the wheel-derived yaw rate disagrees with the IMU yaw rate.
+   * Only usable once the wheel track has been measured. */
+  if (yaw_track > 0.0 && yaw_threshold > 0.0) {
+    const double yaw_rate_est =
+        (wheel_right_body_speed - wheel_left_body_speed) / yaw_track;
+    if (fabs(fabs(yaw_rate_est) - fabs(yaw_rate_imu)) >= yaw_threshold) {
+      frame = 1U;
+    }
+  }
+  /* Condition B: a wheel runs away from the estimated body speed. */
+  if (velocity_threshold > 0.0 &&
+      (fabs(wheel_left_body_speed) - fabs(body_speed) >= velocity_threshold ||
+       fabs(wheel_right_body_speed) - fabs(body_speed) >= velocity_threshold)) {
+    frame = 1U;
+  }
+
+  if (accel_threshold <= 0.0) {
+    body_motion_kf_slip_left = 0U;
+    body_motion_kf_slip_right = 0U;
+    return 0U;
+  }
+
+  /* This runs on every control cycle; only the IMU term above is gated.  The
+   * confirmation accumulator therefore advances by the control period. */
+  const uint32_t gate_dt_ms =
+      (uint32_t)clamp_double(dt * 1000.0, 1.0, 100.0);
+
+  /* Condition C triggers on its own.  Framing it behind A or B was measured to
+   * never fire: condition B compares a wheel against a fused velocity that is
+   * itself derived from that wheel, so it is self-limiting - the filter has
+   * already followed the slipping wheel and the gap stays small.  Measured on
+   * the vehicle, a landing transient drove condition C to 56 m/s2 while the
+  * B gap never exceeded 0.76 m/s against a 1.2 m/s threshold, so the latch
+  * stayed open through the whole event.  Condition C is already a differencing
+  * test (wheel acceleration minus body acceleration), so it does not need
+  * them; A and B remain wired as optional extra triggers for the case where a
+  * measured wheel track enables A.
+   *
+   * `frame` therefore only ever adds a trigger, never suppresses one. */
+  if (frame != 0U) {
+    metric_left += accel_threshold;
+    metric_right += accel_threshold;
+  }
+
+  {
+    const double release_threshold =
+        accel_threshold * VMC_BODY_MOTION_KF_SLIP_RELEASE_RATIO;
+
+    (void)vmc_body_motion_kf_slip_latch_update(
+        &body_motion_kf_slip_left, &body_motion_kf_slip_left_ms,
+        &body_motion_kf_slip_left_above_ms, metric_left,
+        accel_threshold, release_threshold, gate_dt_ms, confirm_ms, now,
+        VMC_BODY_MOTION_KF_SLIP_MIN_HOLD_MS, hold_ms);
+    (void)vmc_body_motion_kf_slip_latch_update(
+        &body_motion_kf_slip_right, &body_motion_kf_slip_right_ms,
+        &body_motion_kf_slip_right_above_ms, metric_right,
+        accel_threshold, release_threshold, gate_dt_ms, confirm_ms, now,
+        VMC_BODY_MOTION_KF_SLIP_MIN_HOLD_MS, hold_ms);
+  }
+
+  return (body_motion_kf_slip_left != 0U || body_motion_kf_slip_right != 0U)
+             ? 1U
+             : 0U;
 }
 
 static double apply_soft_deadband(double value, double deadband)
@@ -201,18 +453,24 @@ static void vmc_body_motion_kf_reset(void)
   vmc_probe_state.motion.kf_innovation_a = 0.0;
   vmc_probe_state.motion.kf_slip = 0.0;
   vmc_probe_state.motion.kf_slip_metric = 0.0;
+  vmc_probe_state.motion.kf_slip_left = 0.0;
+  vmc_probe_state.motion.kf_slip_right = 0.0;
+  vmc_probe_state.motion.kf_wheel_left_raw = 0.0;
+  vmc_probe_state.motion.kf_wheel_right_raw = 0.0;
 }
 
 static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
-                                      uint8_t acceleration_valid)
+                                      uint8_t acceleration_valid,
+                                      uint8_t slip_active)
 {
   const double dt = VMC_CONTROL_DT;
-  const double q_v = clamp_double((double)vmc_balance.kalman_q_v, 0.0, 1.0e12);
-  const double q_a = clamp_double((double)vmc_balance.kalman_q_a, 0.0, 1.0e12);
-  const double r_wheel = clamp_double((double)vmc_balance.kalman_r_wheel,
-                                      1.0e-9, 1.0e12);
+  double q_v = clamp_double((double)vmc_balance.kalman_q_v, 0.0, 1.0e12);
+  double q_a = clamp_double((double)vmc_balance.kalman_q_a, 0.0, 1.0e12);
+  double r_wheel = clamp_double((double)vmc_balance.kalman_r_wheel,
+                                1.0e-9, 1.0e12);
   const double r_imu = clamp_double((double)vmc_balance.kalman_r_imu,
                                     1.0e-9, 1.0e12);
+  double velocity_measurement = measured_dx;
   double x0;
   double x1;
   double p00;
@@ -231,6 +489,21 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
     vmc_body_motion_kf_reset();
   }
 
+  if (slip_active != 0U) {
+    /* Reject the slipping wheel.  Feeding the filter its own velocity back
+     * collapses the velocity innovation, and the widened weights let the
+     * estimate coast on the inertial prediction.  Zeroing the innovation is
+     * what actually rejects the measurement; the rescaling keeps the wheel
+     * from regaining authority through the covariance. */
+    q_v *= VMC_BODY_MOTION_KF_SLIP_Q_V_SCALE;
+    q_a *= VMC_BODY_MOTION_KF_SLIP_Q_A_SCALE;
+    r_wheel *= VMC_BODY_MOTION_KF_SLIP_R_WHEEL_SCALE;
+    velocity_measurement = body_motion_kf_x[0];
+  }
+
+  /* Report the raw wheel measurement, not the gated one.  kf_slip says whether
+   * it was rejected; keeping the raw value here is what makes the gate's
+   * threshold verifiable from a recording. */
   vmc_probe_state.motion.kf_wheel_measurement = measured_dx;
   /* Report the measurement the estimator has available.  This is recomputed
    * every control cycle from the newest HI12 frame, so it must not be zeroed
@@ -241,13 +514,6 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
   if (acceleration_valid != 0U) {
     vmc_probe_state.motion.kf_accel_update_count++;
   }
-  vmc_probe_state.motion.kf_slip_metric =
-      fabs(measured_dx) - fabs(previous_velocity);
-  vmc_probe_state.motion.kf_slip =
-      (vmc_probe_state.motion.kf_slip_metric >=
-       (double)VMC_BODY_MOTION_KF_SLIP_VEL_DIFF_DEFAULT)
-          ? 1.0
-          : 0.0;
 
   x0 = previous_velocity + dt * body_motion_kf_x[1];
   x1 = body_motion_kf_x[1];
@@ -257,7 +523,7 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
   p10 = body_motion_kf_p[2] + dt * body_motion_kf_p[3];
   p11 = body_motion_kf_p[3] + q_a;
 
-  y = measured_dx - x0;
+  y = velocity_measurement - x0;
   vmc_probe_state.motion.kf_innovation_v = y;
   s = p00 + r_wheel;
   k0 = p00 / s;
@@ -1454,6 +1720,8 @@ static void vmc_update_motion_state(void)
 
   if (vmc_control.enabled == 0U || vmc_probe_state.feedback_timeout_active != 0U) {
     vmc_body_motion_kf_reset();
+    vmc_body_motion_kf_slip_reset(0.0, 0.0, 0.0);
+    body_motion_kf_slip_initialized = 0U;
     vmc_last_imu_rx_count = hi12_imu.rx_count;
   } else {
     const uint8_t acceleration_valid =
@@ -1462,11 +1730,53 @@ static void vmc_update_motion_state(void)
          vmc_probe_state.body.gravity_sign != 0)
             ? 1U
             : 0U;
+    /* Raw per-wheel body speed in m/s.  Condition C must differentiate these
+     * rather than left_body_dx/right_body_dx, which additionally carry the
+     * leg swing and leg-length servo terms; differentiating those turns
+     * commanded leg motion into apparent wheel acceleration. */
+    const double wheel_left_raw =
+        (double)vmc_probe_state.wheel_left.speed_rads * (double)VMC_WHEEL_RADIUS;
+    const double wheel_right_raw =
+        (double)vmc_probe_state.wheel_right.speed_rads * (double)VMC_WHEEL_RADIUS;
+    double slip_metric = 0.0;
+    uint8_t slip_active = 0U;
 
     vmc_last_imu_rx_count = hi12_imu.rx_count;
+    if (vmc_balance.kalman_slip_enable != 0U) {
+      if (body_motion_kf_slip_initialized == 0U) {
+        vmc_body_motion_kf_slip_reset(wheel_left_raw, wheel_right_raw,
+                                      vmc_probe_state.motion.dd_x);
+      }
+      slip_active = vmc_body_motion_kf_slip_gate(
+          vmc_probe_state.motion.left_body_dx,
+          vmc_probe_state.motion.right_body_dx,
+          wheel_left_raw,
+          wheel_right_raw,
+          vmc_probe_state.motion.dd_x,
+          /* The previous fused velocity is the body-speed reference used by
+           * condition B, matching the USTB d_x. */
+          body_motion_kf_x[0],
+          (double)vmc_probe_state.body.wz,
+          acceleration_valid,
+          VMC_CONTROL_DT,
+          &slip_metric);
+    } else {
+      vmc_body_motion_kf_slip_reset(wheel_left_raw, wheel_right_raw,
+                                    vmc_probe_state.motion.dd_x);
+    }
+    vmc_probe_state.motion.kf_slip = (slip_active != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.kf_slip_metric = slip_metric;
+    vmc_probe_state.motion.kf_slip_left =
+        (body_motion_kf_slip_left != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.kf_slip_right =
+        (body_motion_kf_slip_right != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.kf_wheel_left_raw = wheel_left_raw;
+    vmc_probe_state.motion.kf_wheel_right_raw = wheel_right_raw;
+
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
                               vmc_probe_state.motion.dd_x,
-                              acceleration_valid);
+                              acceleration_valid,
+                              slip_active);
   }
 }
 
@@ -1696,6 +2006,15 @@ void vmc_balance_init(void)
   vmc_balance.kalman_q_a = VMC_BODY_MOTION_KF_Q_A_DEFAULT;
   vmc_balance.kalman_r_wheel = VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT;
   vmc_balance.kalman_r_imu = VMC_BODY_MOTION_KF_R_IMU_DEFAULT;
+  vmc_balance.kalman_slip_enable = VMC_BODY_MOTION_KF_SLIP_ENABLE_DEFAULT;
+  vmc_balance.kalman_slip_accel = VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT;
+  vmc_balance.kalman_slip_vel_diff = VMC_BODY_MOTION_KF_SLIP_VEL_DIFF_DEFAULT;
+  vmc_balance.kalman_slip_yaw_track = VMC_BODY_MOTION_KF_SLIP_YAW_TRACK_DEFAULT;
+  vmc_balance.kalman_slip_yaw = VMC_BODY_MOTION_KF_SLIP_YAW_DEFAULT;
+  vmc_balance.kalman_slip_hold_ms = VMC_BODY_MOTION_KF_SLIP_HOLD_MS_DEFAULT;
+  vmc_balance.kalman_slip_confirm_ms =
+      VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT;
+  body_motion_kf_slip_initialized = 0U;
   vmc_balance.tp_limit = VMC_BALANCE_TP_LIMIT_DEFAULT;
   vmc_balance.tp_phi_gain = VMC_BALANCE_TP_PHI_GAIN_DEFAULT;
   vmc_balance.tp_x_gain = VMC_BALANCE_TP_X_GAIN_DEFAULT;
