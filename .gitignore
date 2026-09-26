@@ -57,6 +57,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Local logs and temporary files
+logs/
 *.log
 *.tmp
 *.bak
