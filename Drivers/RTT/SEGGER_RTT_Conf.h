@@ -87,7 +87,12 @@ Revision: $Rev: 24316 $
 #endif
 
 #ifndef   BUFFER_SIZE_UP
-  #define BUFFER_SIZE_UP                            (16384) // Size of the buffer for terminal output of target, up to host (Default: 1k)
+  // VMCVOFA emits roughly 10 kB/s at its 50 Hz telemetry rate.  The upstream
+  // default of 16 kB therefore only absorbs about 1.6 s of host stalls; a
+  // brief J-Link or USB hiccup then overflows the buffer and silently drops
+  // telemetry, which looks like a gap in the recording.  64 kB gives ~6 s of
+  // margin at a cost of 48 kB of RAM, which this target has spare.
+  #define BUFFER_SIZE_UP                            (65536) // Size of the buffer for terminal output of target, up to host (Default: 1k)
 #endif
 
 #ifndef   BUFFER_SIZE_DOWN
