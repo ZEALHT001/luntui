@@ -1806,7 +1806,23 @@ def control_loop_rate_hz(samples: list[KalmanSample]) -> float:
     return (usable[-1].loop_count - usable[0].loop_count) / elapsed_s
 
 
-def median_loop_dt_us(samples: list[KalmanSample]) -> float:
+def mean_loop_period_us(samples: list[KalmanSample]) -> float:
+    """True mean control period, from the iteration counter.
+
+    Note this is NOT the mean of the sampled ``loop_dt_us`` values.  Telemetry
+    is emitted once every ~9 iterations and the transmitting iteration is
+    systematically the shortest, so the sampled mean (~2000 us) understates the
+    real mean (~2222 us).  Only the counter gives the true average.
+    """
+    rate = control_loop_rate_hz(samples)
+    return (1.0e6 / rate) if _finite(rate) and rate > 0.0 else INVALID_VALUE
+
+
+def sampled_loop_period_us(samples: list[KalmanSample]) -> float:
+    """Median of the periods the telemetry actually carried, for reference only.
+
+    Biased low: see mean_loop_period_us.
+    """
     values = [
         sample.loop_dt_us
         for sample in samples
@@ -1856,7 +1872,8 @@ def render_report(
         f"- Samples: `{len(samples)}`",
         f"- Median sample rate excluding gaps: `{overall_rate:.2f} Hz`",
         f"- Measured control loop: `{format_value(control_loop_rate_hz(samples), 0)} Hz`",
-        f"- Median measured control period: `{format_value(median_loop_dt_us(samples), 0)} us`",
+        f"- Mean control period: `{format_value(mean_loop_period_us(samples), 0)} us`",
+        f"- Sampled control period (median, biased low): `{format_value(sampled_loop_period_us(samples), 0)} us`",
         f"- Overall verdict: `{status}`",
         "",
         "## Runtime Q/R",

@@ -97,6 +97,17 @@ iteration counter, so dividing its change by the change in field 99 gives the
 true average rate over any window - host timestamps cannot, because RTT
 batching quantises them.
 
+Do not read field 134 as a representative sample of the loop.  Telemetry is
+emitted once every ~9 iterations, and the transmitting iteration is
+systematically the shortest: field 134 reads ~2000 us while the true mean over
+all iterations is 2222 us (450.0 Hz).  Use field 135 for any rate or duration,
+never field 134 alone.  This bit the analysis once - comparing the mean of the
+sampled periods against the true mean looked like a 10% under-count, and led to
+a wrong conclusion that the DWT timebase was dropping sleep time.  The check
+that settles it is the telescoping identity: the firmware integrates
+`kf_x += kf_dx * dt`, so `kf_x / integral(kf_dx dt)` computed on the MCU
+timebase must come out 1.000; it does, at RMSE < 1 mm.
+
 Fields 126..129 exist because the airborne latch needs to be reproducible
 offline.  Recording `20260927_173327` shows why the latch keys on the *mean*
 leg load (field 88) and not on the strongest leg (field 127): held in the air

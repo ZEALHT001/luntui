@@ -85,8 +85,8 @@ extern "C" {
  *
  * The loop is NOT fixed-rate.  osDelay(1) only sets a floor, so the real
  * period is "however long the loop body takes, plus the sleep".  Measured on
- * the vehicle with the DWT cycle counter the loop ran at roughly 450 Hz, i.e.
- * about 2.2 ms, so every term that had assumed 1 ms was off by that factor.
+ * the vehicle the loop ran at 450 Hz, i.e. 2.22 ms, so every term that had
+ * assumed 1 ms was off by that factor.
  *
  * Measured period is therefore what actually feeds the controller: the Kalman
  * prediction and its position integration, slip condition C's differentiator,

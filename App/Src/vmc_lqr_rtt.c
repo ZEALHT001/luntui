@@ -1230,10 +1230,11 @@ void vmc_lqr_rtt_telemetry_update(void)
       (double)vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT]);
 
   /* VMCVOFA fields 134..135: measured control-loop timing.  The loop is not
-   * fixed-rate, so its period is measured with the DWT cycle counter and fed
-   * to every time-based term.  These two fields are what make that visible
-   * from a recording: loop_dt_us is the instantaneous period, and loop_count
-   * gives the true average rate over any window. */
+   * fixed-rate, so its period is measured against TIM1 (the HAL tick source,
+   * which keeps counting while the core sleeps) and fed to every time-based
+   * term.  These two fields make that visible from a recording: loop_dt_us is
+   * the instantaneous period, and loop_count gives the true average rate over
+   * any window. */
   offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
                                   vmc_probe_state.loop_dt_us);
   offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),

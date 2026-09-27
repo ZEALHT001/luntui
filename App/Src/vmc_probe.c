@@ -38,12 +38,18 @@ static int8_t vmc_gravity_sign;
  * update is gated on a new HI12 frame. */
 static uint32_t vmc_last_imu_rx_count;
 /* Control-loop timing.  See VMC_CONTROL_DT: the loop is not fixed-rate, so the
- * period is measured each cycle and fed to every time-based term.  DWT->CYCCNT
- * counts CPU cycles at SystemCoreClock (180 MHz here) and resolves the period
- * far better than HAL_GetTick's 1 ms tick. */
-static uint32_t vmc_loop_cycles_last;
+ * period is measured each cycle and fed to every time-based term.
+ *
+ * The timebase is TIM1, which the firmware already uses as the HAL tick source:
+ * its counter clock is 1 MHz with a 1 ms period, so TIM1->CNT is the number of
+ * microseconds into the current millisecond.  Deriving the period from the same
+ * timer as the tick means dt can never disagree with the recorded MCU
+ * timestamps by construction, and the prescaler is computed from the same clock
+ * configuration, so a mis-set SystemCoreClock cannot make the two diverge.
+ * DWT->CYCCNT would also work (it was verified to telescope to the same elapsed
+ * time) but depends on the debug block and on SystemCoreClock. */
+static uint32_t vmc_loop_us_last;
 static float vmc_loop_dt_s;
-static uint8_t vmc_loop_dt_use_dwt;
 /* A fall detected while the robot was enabled requires an explicit emergency
  * stop followed by S1=3 before control can be enabled again. */
 static uint8_t vmc_fall_rearm_required;
@@ -3421,14 +3427,29 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   }
 }
 
+/* Microsecond timebase built from the HAL tick plus TIM1's sub-millisecond
+ * counter.  The tick is only re-read to confirm the millisecond did not roll
+ * over between the two reads; if it did, the pair is inconsistent and is
+ * retried.  Without that check the function could pair a stale tick with a
+ * fresh counter and under-report by a whole millisecond. */
+static uint32_t vmc_loop_now_us(void)
+{
+  uint32_t tick;
+  uint32_t counter;
+  uint32_t tick_after;
+
+  do {
+    tick = HAL_GetTick();
+    counter = TIM1->CNT;
+    tick_after = HAL_GetTick();
+  } while (tick != tick_after);
+
+  return tick * 1000U + counter;
+}
+
 static void vmc_loop_timing_init(void)
 {
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0U;
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-  vmc_loop_dt_use_dwt =
-      ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0U) ? 1U : 0U;
-  vmc_loop_cycles_last = DWT->CYCCNT;
+  vmc_loop_us_last = vmc_loop_now_us();
   vmc_loop_dt_s = VMC_CONTROL_DT;
   vmc_probe_state.loop_dt_s = vmc_loop_dt_s;
   vmc_probe_state.loop_dt_us = (uint32_t)(VMC_CONTROL_DT * 1.0e6f);
@@ -3445,22 +3466,17 @@ static double vmc_loop_dt(void)
 /* Call once per control cycle, before anything that needs dt. */
 static void vmc_loop_timing_update(void)
 {
-  const uint32_t cycles = DWT->CYCCNT;
-  const uint32_t delta = cycles - vmc_loop_cycles_last;
+  const uint32_t now_us = vmc_loop_now_us();
+  const uint32_t delta_us = now_us - vmc_loop_us_last;
+  float dt = (float)delta_us * 1.0e-6f;
 
-  vmc_loop_cycles_last = cycles;
-  if (vmc_loop_dt_use_dwt == 0U || SystemCoreClock == 0U) {
-    vmc_loop_dt_s = VMC_CONTROL_DT;
-  } else {
-    float dt = (float)delta / (float)SystemCoreClock;
-
-    if (dt < VMC_LOOP_DT_MIN) {
-      dt = VMC_LOOP_DT_MIN;
-    } else if (dt > VMC_LOOP_DT_MAX) {
-      dt = VMC_LOOP_DT_MAX;
-    }
-    vmc_loop_dt_s = dt;
+  vmc_loop_us_last = now_us;
+  if (dt < VMC_LOOP_DT_MIN) {
+    dt = VMC_LOOP_DT_MIN;
+  } else if (dt > VMC_LOOP_DT_MAX) {
+    dt = VMC_LOOP_DT_MAX;
   }
+  vmc_loop_dt_s = dt;
   vmc_probe_state.loop_dt_s = vmc_loop_dt_s;
   vmc_probe_state.loop_dt_us = (uint32_t)(vmc_loop_dt_s * 1.0e6f + 0.5f);
   vmc_probe_state.loop_count++;
