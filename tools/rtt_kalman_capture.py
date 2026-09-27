@@ -42,6 +42,10 @@ DEFAULT_PROFILE = "auto"
 TELEMETRY_PERIOD_S = 0.020
 INVALID_VALUE = float("nan")
 DEFAULT_STOP_KEY = "q"
+# How long to wait for the J-Link helper to report ready.  Generous on purpose:
+# a probe left in a stale state by an unclean exit can take tens of seconds to
+# re-enumerate, and timing out early just costs another attempt.
+JLINK_READY_TIMEOUT_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -1189,7 +1193,10 @@ class JLinkSubprocessReader:
         self._wait_until_ready()
 
     def _wait_until_ready(self) -> None:
-        deadline = time.monotonic() + 15.0
+        # A J-Link that was not cleanly closed can take tens of seconds to
+        # re-enumerate; a probe that then connected fine still failed here
+        # twice at 15 s and cost a whole capture attempt each time.
+        deadline = time.monotonic() + JLINK_READY_TIMEOUT_S
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 error = self._read_error_tail()
@@ -1208,7 +1215,8 @@ class JLinkSubprocessReader:
         error = self._read_error_tail()
         self.close()
         raise TimeoutError(
-            "J-Link helper did not become ready within 15 seconds"
+            f"J-Link helper did not become ready within "
+            f"{JLINK_READY_TIMEOUT_S:.0f} seconds"
             + (f": {error}" if error else "")
         )
 
