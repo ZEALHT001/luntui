@@ -209,8 +209,9 @@ FORMAT_V9_PROFILE = Profile(
 # replace the mean, plus the attitude reference the pitch guard uses and the
 # pitch rate the controller consumes.  The airborne decision is only
 # reproducible offline if all four values are recorded.
-FORMAT_PROFILE = Profile(
-    name="format",
+# Layout with the airborne-latch inputs (schema 6).
+FORMAT_V10_PROFILE = Profile(
+    name="format-v10",
     field_count=130,
     channels={
         **FORMAT_V9_PROFILE.channels,
@@ -218,6 +219,21 @@ FORMAT_PROFILE = Profile(
         "airborne_joint_torque_max": 127,
         "airborne_pitch_reference": 128,
         "pitch_rate": 129,
+    },
+)
+
+# Per-side airborne latch added (schema 7).  A single lifted leg leaves the
+# four-joint average high, so the whole-machine latch cannot see it; each side
+# now has its own load and latch state, and gates only its own wheel.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=134,
+    channels={
+        **FORMAT_V10_PROFILE.channels,
+        "airborne_side_torque_left": 130,
+        "airborne_side_torque_right": 131,
+        "airborne_side_active_left": 132,
+        "airborne_side_active_right": 133,
     },
 )
 
@@ -237,6 +253,7 @@ PROFILES = {
     "format-v7": FORMAT_V7_PROFILE,
     "format-v8": FORMAT_V8_PROFILE,
     "format-v9": FORMAT_V9_PROFILE,
+    "format-v10": FORMAT_V10_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -248,6 +265,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V7_PROFILE,
     FORMAT_V8_PROFILE,
     FORMAT_V9_PROFILE,
+    FORMAT_V10_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -260,6 +278,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V7_PROFILE.field_count: FORMAT_V7_PROFILE,
     FORMAT_V8_PROFILE.field_count: FORMAT_V8_PROFILE,
     FORMAT_V9_PROFILE.field_count: FORMAT_V9_PROFILE,
+    FORMAT_V10_PROFILE.field_count: FORMAT_V10_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -292,6 +311,10 @@ CSV_FIELDS = [
     "airborne_joint_torque_min",
     "airborne_joint_torque_max",
     "airborne_pitch_reference",
+    "airborne_side_torque_left",
+    "airborne_side_torque_right",
+    "airborne_side_active_left",
+    "airborne_side_active_right",
     "jump_stage",
     "jump_abort_reason",
     "gravity_sign",
@@ -366,6 +389,10 @@ class KalmanSample:
     airborne_joint_torque_min: float = INVALID_VALUE
     airborne_joint_torque_max: float = INVALID_VALUE
     airborne_pitch_reference: float = INVALID_VALUE
+    airborne_side_torque_left: float = INVALID_VALUE
+    airborne_side_torque_right: float = INVALID_VALUE
+    airborne_side_active_left: float = INVALID_VALUE
+    airborne_side_active_right: float = INVALID_VALUE
     jump_stage: float = INVALID_VALUE
     jump_abort_reason: float = INVALID_VALUE
     gravity_sign: float = INVALID_VALUE
@@ -670,6 +697,10 @@ def parse_vmcvoa_line(
         airborne_joint_torque_min=channel("airborne_joint_torque_min"),
         airborne_joint_torque_max=channel("airborne_joint_torque_max"),
         airborne_pitch_reference=channel("airborne_pitch_reference"),
+        airborne_side_torque_left=channel("airborne_side_torque_left"),
+        airborne_side_torque_right=channel("airborne_side_torque_right"),
+        airborne_side_active_left=channel("airborne_side_active_left"),
+        airborne_side_active_right=channel("airborne_side_active_right"),
         jump_stage=channel("jump_stage"),
         jump_abort_reason=channel("jump_abort_reason"),
         gravity_sign=channel("gravity_sign"),
@@ -1269,6 +1300,7 @@ class FlagWatcher:
 
     def __init__(self) -> None:
         self.airborne = False
+        self.airborne_side = False
         self.slip = False
         self.jump_stage = 0.0
         self.gravity_sign: float | None = None
@@ -1304,6 +1336,29 @@ class FlagWatcher:
                     )
                 else:
                     print(f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE released")
+        if _finite(sample.airborne_side_active_left) or _finite(
+            sample.airborne_side_active_right
+        ):
+            left = _finite(sample.airborne_side_active_left) and (
+                sample.airborne_side_active_left > 0.5
+            )
+            right = _finite(sample.airborne_side_active_right) and (
+                sample.airborne_side_active_right > 0.5
+            )
+            if (left or right) != self.airborne_side:
+                self.airborne_side = left or right
+                if left or right:
+                    # A single lifted leg: only that side's wheel is cut, the
+                    # grounded side keeps balancing.
+                    print(
+                        f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE leg lifted "
+                        f"L={int(left)} R={int(right)} (torque L="
+                        f"{format_value(sample.airborne_side_torque_left, 2)} "
+                        f"R={format_value(sample.airborne_side_torque_right, 2)} "
+                        f"Nm)"
+                    )
+                else:
+                    print(f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE leg back down")
         if _finite(sample.kf_slip):
             slip = sample.kf_slip > 0.5
             if slip and not self.slip:
@@ -1475,6 +1530,18 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 airborne_pitch_reference=_safe_float(
                     row.get("airborne_pitch_reference", "")
+                ),
+                airborne_side_torque_left=_safe_float(
+                    row.get("airborne_side_torque_left", "")
+                ),
+                airborne_side_torque_right=_safe_float(
+                    row.get("airborne_side_torque_right", "")
+                ),
+                airborne_side_active_left=_safe_float(
+                    row.get("airborne_side_active_left", "")
+                ),
+                airborne_side_active_right=_safe_float(
+                    row.get("airborne_side_active_right", "")
                 ),
                 jump_stage=_safe_float(row.get("jump_stage", "")),
                 jump_abort_reason=_safe_float(
@@ -2086,6 +2153,8 @@ def build_parser() -> argparse.ArgumentParser:
             "format-v6",
             "format-v7",
             "format-v8",
+            "format-v9",
+            "format-v10",
         ),
         default=DEFAULT_PROFILE,
         help="VMCVOFA layout; auto detects by field count",

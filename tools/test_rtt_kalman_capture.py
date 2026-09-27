@@ -190,6 +190,35 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(sample.schema_version, 5.0)
         self.assertFalse(math.isfinite(sample.airborne_joint_torque_min))
 
+    def test_per_side_airborne_channels_parse(self) -> None:
+        """Schema 7 adds the per-side airborne latch behind a single-leg lift."""
+        line = format_line()
+        fields = line.split(",")
+        fields[1 + FORMAT_PROFILE.channels["airborne_side_torque_left"]] = "0.42"
+        fields[1 + FORMAT_PROFILE.channels["airborne_side_torque_right"]] = "9.51"
+        fields[1 + FORMAT_PROFILE.channels["airborne_side_active_left"]] = "1.0"
+        fields[1 + FORMAT_PROFILE.channels["airborne_side_active_right"]] = "0.0"
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.airborne_side_torque_left, 0.42)
+        self.assertAlmostEqual(sample.airborne_side_torque_right, 9.51)
+        self.assertAlmostEqual(sample.airborne_side_active_left, 1.0)
+        self.assertAlmostEqual(sample.airborne_side_active_right, 0.0)
+
+    def test_v10_layout_still_parses(self) -> None:
+        """The 130-field layout (schema 6) predates the per-side latch."""
+        fields = [0.001] * 130
+        fields[4] = 1.0
+        fields[115] = 6.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v10")
+        self.assertAlmostEqual(sample.schema_version, 6.0)
+        self.assertFalse(math.isfinite(sample.airborne_side_torque_left))
+
     def test_raw_text_replay_assigns_20ms_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.log"

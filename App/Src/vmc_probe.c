@@ -954,6 +954,21 @@ static void vmc_joint_torque_abs_extremes(float *minimum, float *maximum)
   }
 }
 
+/* Load carried by one leg, averaged over its two joints.  Both joints of a
+ * lifted leg lose the body weight, so the pair is a much stronger signal than
+ * either joint alone. */
+static float vmc_side_joint_torque_abs(uint8_t side)
+{
+  if (side == VMC_AIRBORNE_SIDE_LEFT) {
+    return (fabsf(vmc_probe_state.joint_left_ahead.torque) +
+            fabsf(vmc_probe_state.joint_left_back.torque)) *
+           0.5f;
+  }
+  return (fabsf(vmc_probe_state.joint_right_ahead.torque) +
+          fabsf(vmc_probe_state.joint_right_back.torque)) *
+         0.5f;
+}
+
 static uint8_t vmc_jump_is_active(void)
 {
   return (vmc_control.jump_stage == VMC_JUMP_STAGE_COMPRESS ||
@@ -1000,11 +1015,19 @@ static uint8_t vmc_jump_overrides_target(void)
 
 static void vmc_clear_airborne_latch(void)
 {
+  uint8_t side;
+
   vmc_probe_state.airborne_active = 0U;
   vmc_probe_state.airborne_candidate = 0U;
   vmc_probe_state.airborne_candidate_ms = 0U;
   vmc_probe_state.airborne_release_candidate_ms = 0U;
   vmc_probe_state.airborne_pitch_reference_valid = 0U;
+  for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
+    vmc_probe_state.airborne_side_active[side] = 0U;
+    vmc_probe_state.airborne_side_candidate[side] = 0U;
+    vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
+    vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+  }
 }
 
 static double vmc_jump_stage_target_length(void)
@@ -1961,6 +1984,82 @@ static void vmc_update_airborne_state(void)
           ? 1U
           : 0U;
 
+  /* Per-side latch: one leg lifted while the other still carries the body.
+   * The whole-machine test above cannot see that case - the average of all
+   * four joints stays high - so each side is tested on its own.  Only the
+   * lifted side's wheel gets gated; the grounded side must keep balancing. */
+  {
+    const float side_torque[VMC_AIRBORNE_SIDE_COUNT] = {
+        vmc_side_joint_torque_abs(VMC_AIRBORNE_SIDE_LEFT),
+        vmc_side_joint_torque_abs(VMC_AIRBORNE_SIDE_RIGHT)};
+    const float side_wheel_speed[VMC_AIRBORNE_SIDE_COUNT] = {left_wheel_speed,
+                                                             right_wheel_speed};
+    const uint32_t side_confirm_ms =
+        (vmc_balance.airborne_side_confirm_ms > 10000U)
+            ? 10000U
+            : vmc_balance.airborne_side_confirm_ms;
+    const uint32_t side_release_ms =
+        (vmc_balance.airborne_side_release_ms > 10000U)
+            ? 10000U
+            : vmc_balance.airborne_side_release_ms;
+    const float side_release_torque = joint_torque_threshold * 1.5f;
+    const uint8_t side_ready =
+        (detector_ready != 0U &&
+         vmc_balance.airborne_side_enable != 0U &&
+         vmc_jump_joint_lqr_active() == 0U)
+            ? 1U
+            : 0U;
+    uint8_t side;
+
+    for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
+      vmc_probe_state.airborne_side_torque[side] = side_torque[side];
+
+      if (side_ready == 0U) {
+        vmc_probe_state.airborne_side_active[side] = 0U;
+        vmc_probe_state.airborne_side_candidate[side] = 0U;
+        vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
+        vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+        continue;
+      }
+
+      if (vmc_probe_state.airborne_side_active[side] != 0U) {
+        if (side_torque[side] >= side_release_torque) {
+          if (vmc_probe_state.airborne_side_release_candidate_ms[side] <
+              side_release_ms) {
+            vmc_probe_state.airborne_side_release_candidate_ms[side] += dt_ms;
+          }
+          if (vmc_probe_state.airborne_side_release_candidate_ms[side] >=
+              side_release_ms) {
+            vmc_probe_state.airborne_side_active[side] = 0U;
+            vmc_probe_state.airborne_side_candidate[side] = 0U;
+            vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
+            vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+          }
+        } else {
+          vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+        }
+        continue;
+      }
+
+      if (side_wheel_speed[side] >= wheel_speed_threshold &&
+          side_torque[side] <= joint_torque_threshold) {
+        vmc_probe_state.airborne_side_candidate[side] = 1U;
+        if (vmc_probe_state.airborne_side_candidate_ms[side] <
+            side_confirm_ms) {
+          vmc_probe_state.airborne_side_candidate_ms[side] += dt_ms;
+        }
+        if (vmc_probe_state.airborne_side_candidate_ms[side] >=
+            side_confirm_ms) {
+          vmc_probe_state.airborne_side_active[side] = 1U;
+          vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+        }
+      } else {
+        vmc_probe_state.airborne_side_candidate[side] = 0U;
+        vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
+      }
+    }
+  }
+
   if (vmc_jump_joint_lqr_active() != 0U) {
     vmc_probe_state.airborne_active = 1U;
     vmc_probe_state.airborne_candidate = 0U;
@@ -2109,6 +2208,9 @@ void vmc_balance_init(void)
   vmc_balance.airborne_release_ms = VMC_AIRBORNE_RELEASE_MS_DEFAULT;
   vmc_balance.airborne_pitch_dev_max = VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT;
   vmc_balance.airborne_pitch_rate_max = VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT;
+  vmc_balance.airborne_side_enable = VMC_AIRBORNE_SIDE_ENABLE_DEFAULT;
+  vmc_balance.airborne_side_confirm_ms = VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT;
+  vmc_balance.airborne_side_release_ms = VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT;
   vmc_balance.kalman_q_v = VMC_BODY_MOTION_KF_Q_V_DEFAULT;
   vmc_balance.kalman_q_a = VMC_BODY_MOTION_KF_Q_A_DEFAULT;
   vmc_balance.kalman_r_wheel = VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT;
@@ -3255,19 +3357,34 @@ void vmc_wheel_control_update(void)
     max_current = VMC_WHEEL_CURRENT_MAX_DEFAULT;
   }
 
-  if (vmc_wheel_control.enabled != 0U &&
-      vmc_balance.wheel_output_enable != 0U &&
-      vmc_balance.wheel_output_user_enable != 0U &&
-      vmc_probe_state.airborne_active == 0U &&
-      vmc_probe_state.feedback_timeout_active == 0U &&
-      vmc_jump_blocks_wheel_output() == 0U &&
-      remote_control_allows_joint_enable() != 0U) {
-    left_current = clamp_i16(vmc_wheel_control.left_current,
-                             (int16_t)-max_current,
-                             max_current);
-    right_current = clamp_i16(vmc_wheel_control.right_current,
-                              (int16_t)-max_current,
-                              max_current);
+  /* Gating is per side.  airborne_active is the whole-machine latch and kills
+   * both wheels; the per-side latches each kill only their own wheel, so a
+   * single lifted leg stops spinning while the other keeps the machine
+   * balanced. */
+  {
+    const uint8_t output_ready =
+        (vmc_wheel_control.enabled != 0U &&
+         vmc_balance.wheel_output_enable != 0U &&
+         vmc_balance.wheel_output_user_enable != 0U &&
+         vmc_probe_state.airborne_active == 0U &&
+         vmc_probe_state.feedback_timeout_active == 0U &&
+         vmc_jump_blocks_wheel_output() == 0U &&
+         remote_control_allows_joint_enable() != 0U)
+            ? 1U
+            : 0U;
+
+    if (output_ready != 0U &&
+        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U) {
+      left_current = clamp_i16(vmc_wheel_control.left_current,
+                               (int16_t)-max_current,
+                               max_current);
+    }
+    if (output_ready != 0U &&
+        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U) {
+      right_current = clamp_i16(vmc_wheel_control.right_current,
+                                (int16_t)-max_current,
+                                max_current);
+    }
   }
 
   left_send_current = (int16_t)(VMC_WHEEL_LEFT_CMD_DIRECTION * left_current);

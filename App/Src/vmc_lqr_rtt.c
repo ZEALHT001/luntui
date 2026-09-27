@@ -26,7 +26,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 6U
+#define VMC_LQR_RTT_SCHEMA_VERSION 7U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -307,6 +307,20 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "airborne_pitch_rate_max", &value) != 0U) {
     vmc_balance.airborne_pitch_rate_max =
         vmc_lqr_rtt_clamp_float(value, 0.1f, 30.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_side_enable", &value) != 0U) {
+    vmc_balance.airborne_side_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_side_confirm_ms", &value) != 0U) {
+    vmc_balance.airborne_side_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "airborne_side_release_ms", &value) != 0U) {
+    vmc_balance.airborne_side_release_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
@@ -1197,6 +1211,23 @@ void vmc_lqr_rtt_telemetry_update(void)
           : (double)VMC_AIRBORNE_PITCH_REFERENCE_NONE);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_probe_state.body.pitch_rate);
+
+  /* VMCVOFA fields 130..133: per-side airborne latch.  One leg lifted while
+   * the other still carries the body leaves the four-joint average high, so
+   * the whole-machine test cannot see it; these record each side's own load
+   * and latch state, and each latch gates only its own wheel. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_side_torque[VMC_AIRBORNE_SIDE_LEFT]);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_side_torque[VMC_AIRBORNE_SIDE_RIGHT]);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT]);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT]);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

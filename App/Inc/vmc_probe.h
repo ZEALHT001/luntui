@@ -111,6 +111,23 @@ extern "C" {
  * the reachable pitch range so a recording cannot confuse an unarmed guard
  * with a reference captured at zero pitch. */
 #define VMC_AIRBORNE_PITCH_REFERENCE_NONE (-999.0f)
+/* Single-leg variant.  The whole-machine test above keys on the average of all
+ * four joints, so it cannot see one leg being lifted: the other leg still
+ * carries the body and holds that average well above the threshold.  Each side
+ * therefore latches on its own, and only the lifted side's wheel is gated -
+ * the grounded side is still needed to balance.
+ *
+ * The torque threshold is the same 2 N.m used by the whole-machine test, but
+ * the confirmation is far longer.  Ground margin is wide - over the projectile
+ * run the lowest single joint read 3.67 N.m and a side average is higher than
+ * its own lowest joint - so the long confirmation is what keeps one bump from
+ * cutting a wheel that is still on the ground. */
+#define VMC_AIRBORNE_SIDE_ENABLE_DEFAULT 1U
+#define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 60U
+#define VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT 200U
+#define VMC_AIRBORNE_SIDE_LEFT  0U
+#define VMC_AIRBORNE_SIDE_RIGHT 1U
+#define VMC_AIRBORNE_SIDE_COUNT 2U
 #define VMC_PHI0_VERTICAL_RAD     1.5707963267948966f
 #define VMC_BODY_PITCH_DIRECTION  1.0f
 #define VMC_BODY_PITCH_RATE_DIRECTION 1.0f
@@ -588,6 +605,9 @@ typedef struct {
   uint32_t airborne_release_ms;
   float airborne_pitch_dev_max;
   float airborne_pitch_rate_max;
+  uint8_t airborne_side_enable;
+  uint32_t airborne_side_confirm_ms;
+  uint32_t airborne_side_release_ms;
   float kalman_q_v;
   float kalman_q_a;
   float kalman_r_wheel;
@@ -806,6 +826,16 @@ typedef struct {
   float airborne_pitch_reference;
   uint8_t airborne_pitch_reference_valid;
   uint32_t airborne_pitch_reference_hold_ms;
+  /* Per-side "this leg is off the ground" latch, indexed by
+   * VMC_AIRBORNE_SIDE_LEFT/RIGHT.  Unlike airborne_active above - which is the
+   * whole-machine condition and gates both wheels - these gate only their own
+   * wheel, so a lifted leg stops spinning while the grounded one keeps
+   * balancing. */
+  float airborne_side_torque[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t airborne_side_active[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t airborne_side_candidate[VMC_AIRBORNE_SIDE_COUNT];
+  uint32_t airborne_side_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
+  uint32_t airborne_side_release_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
 } vmc_probe_state_t;
 
 extern volatile vmc_probe_state_t vmc_probe_state;

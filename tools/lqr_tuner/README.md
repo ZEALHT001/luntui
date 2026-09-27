@@ -74,6 +74,15 @@ diagnostics below:
 | 126..127 | weakest and strongest leg joint load | value multiplied by 1000 |
 | 128 | pitch captured when the airborne latch armed | value multiplied by 1000, `-999` when unarmed |
 | 129 | body pitch rate consumed by the controller | value multiplied by 1000 |
+| 130..131 | per-side leg load, left and right | value multiplied by 1000 |
+| 132..133 | per-side airborne latch, left and right | `0` or `1` |
+
+Fields 130..133 exist because the whole-machine latch cannot see a single
+lifted leg: it keys on the average of all four joints, and the leg that is
+still carrying the body holds that average high.  Fields 130/131 give each
+leg's own load so the per-side decision can be replayed; fields 132/133 are
+the latches, and each gates only its own wheel - the grounded side has to keep
+balancing the machine.
 
 Fields 126..129 exist because the airborne latch needs to be reproducible
 offline.  Recording `20260927_173327` shows why the latch keys on the *mean*
