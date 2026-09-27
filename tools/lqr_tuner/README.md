@@ -76,6 +76,8 @@ diagnostics below:
 | 129 | body pitch rate consumed by the controller | value multiplied by 1000 |
 | 130..131 | per-side leg load, left and right | value multiplied by 1000 |
 | 132..133 | per-side airborne latch, left and right | `0` or `1` |
+| 134 | measured control period | microseconds |
+| 135 | control-loop iteration counter | count |
 
 Fields 130..133 exist because the whole-machine latch cannot see a single
 lifted leg: it keys on the average of all four joints, and the leg that is
@@ -83,6 +85,17 @@ still carrying the body holds that average high.  Fields 130/131 give each
 leg's own load so the per-side decision can be replayed; fields 132/133 are
 the latches, and each gates only its own wheel - the grounded side has to keep
 balancing the machine.
+
+Fields 134/135 cover the control loop itself.  The loop is not fixed-rate:
+`osDelay(1)` only sets a floor, so the real period is however long the loop
+body takes plus the sleep.  Measured with the DWT cycle counter it ran at
+roughly 450 Hz, about 2.2 ms, so anything that had assumed a 1 ms period was
+off by that factor.  The firmware now measures the period every cycle and feeds
+it to the Kalman prediction and position integration, slip condition C, and the
+command ramps.  Field 134 is the instantaneous period and field 135 an
+iteration counter, so dividing its change by the change in field 99 gives the
+true average rate over any window - host timestamps cannot, because RTT
+batching quantises them.
 
 Fields 126..129 exist because the airborne latch needs to be reproducible
 offline.  Recording `20260927_173327` shows why the latch keys on the *mean*

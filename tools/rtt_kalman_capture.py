@@ -225,8 +225,9 @@ FORMAT_V10_PROFILE = Profile(
 # Per-side airborne latch added (schema 7).  A single lifted leg leaves the
 # four-joint average high, so the whole-machine latch cannot see it; each side
 # now has its own load and latch state, and gates only its own wheel.
-FORMAT_PROFILE = Profile(
-    name="format",
+# Layout with the per-side airborne latch (schema 7).
+FORMAT_V11_PROFILE = Profile(
+    name="format-v11",
     field_count=134,
     channels={
         **FORMAT_V10_PROFILE.channels,
@@ -234,6 +235,19 @@ FORMAT_PROFILE = Profile(
         "airborne_side_torque_right": 131,
         "airborne_side_active_left": 132,
         "airborne_side_active_right": 133,
+    },
+)
+
+# Measured control-loop timing added (schema 8).  The loop is not fixed-rate;
+# loop_dt_us is the instantaneous measured period and loop_count an iteration
+# counter, so a recording yields the true average rate over any window.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=136,
+    channels={
+        **FORMAT_V11_PROFILE.channels,
+        "loop_dt_us": 134,
+        "loop_count": 135,
     },
 )
 
@@ -254,6 +268,7 @@ PROFILES = {
     "format-v8": FORMAT_V8_PROFILE,
     "format-v9": FORMAT_V9_PROFILE,
     "format-v10": FORMAT_V10_PROFILE,
+    "format-v11": FORMAT_V11_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -266,6 +281,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V8_PROFILE,
     FORMAT_V9_PROFILE,
     FORMAT_V10_PROFILE,
+    FORMAT_V11_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -279,6 +295,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V8_PROFILE.field_count: FORMAT_V8_PROFILE,
     FORMAT_V9_PROFILE.field_count: FORMAT_V9_PROFILE,
     FORMAT_V10_PROFILE.field_count: FORMAT_V10_PROFILE,
+    FORMAT_V11_PROFILE.field_count: FORMAT_V11_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -315,6 +332,8 @@ CSV_FIELDS = [
     "airborne_side_torque_right",
     "airborne_side_active_left",
     "airborne_side_active_right",
+    "loop_dt_us",
+    "loop_count",
     "jump_stage",
     "jump_abort_reason",
     "gravity_sign",
@@ -393,6 +412,8 @@ class KalmanSample:
     airborne_side_torque_right: float = INVALID_VALUE
     airborne_side_active_left: float = INVALID_VALUE
     airborne_side_active_right: float = INVALID_VALUE
+    loop_dt_us: float = INVALID_VALUE
+    loop_count: float = INVALID_VALUE
     jump_stage: float = INVALID_VALUE
     jump_abort_reason: float = INVALID_VALUE
     gravity_sign: float = INVALID_VALUE
@@ -701,6 +722,8 @@ def parse_vmcvoa_line(
         airborne_side_torque_right=channel("airborne_side_torque_right"),
         airborne_side_active_left=channel("airborne_side_active_left"),
         airborne_side_active_right=channel("airborne_side_active_right"),
+        loop_dt_us=channel("loop_dt_us"),
+        loop_count=channel("loop_count"),
         jump_stage=channel("jump_stage"),
         jump_abort_reason=channel("jump_abort_reason"),
         gravity_sign=channel("gravity_sign"),
@@ -1543,6 +1566,8 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 airborne_side_active_right=_safe_float(
                     row.get("airborne_side_active_right", "")
                 ),
+                loop_dt_us=_safe_float(row.get("loop_dt_us", "")),
+                loop_count=_safe_float(row.get("loop_count", "")),
                 jump_stage=_safe_float(row.get("jump_stage", "")),
                 jump_abort_reason=_safe_float(
                     row.get("jump_abort_reason", "")
@@ -1758,6 +1783,38 @@ def write_csv(
             writer.writerow(_sample_to_row(sample))
 
 
+def control_loop_rate_hz(samples: list[KalmanSample]) -> float:
+    """Average control-loop rate from the firmware's own iteration counter.
+
+    The control loop is not fixed-rate - ``osDelay(1)`` only sets a floor, so
+    the real period is however long the loop body takes plus the sleep.  The
+    firmware counts its own iterations, so dividing the change in
+    ``loop_count`` by the firmware timebase yields the true average rate and
+    is immune to host-side RTT jitter, which makes the host timestamps
+    useless for this.
+    """
+    usable = [
+        sample
+        for sample in samples
+        if _finite(sample.loop_count) and _finite(sample.mcu_time_ms)
+    ]
+    if len(usable) < 2:
+        return INVALID_VALUE
+    elapsed_s = (usable[-1].mcu_time_ms - usable[0].mcu_time_ms) * 0.001
+    if elapsed_s <= 0.0:
+        return INVALID_VALUE
+    return (usable[-1].loop_count - usable[0].loop_count) / elapsed_s
+
+
+def median_loop_dt_us(samples: list[KalmanSample]) -> float:
+    values = [
+        sample.loop_dt_us
+        for sample in samples
+        if _finite(sample.loop_dt_us) and sample.loop_dt_us > 0.0
+    ]
+    return statistics.median(values) if values else INVALID_VALUE
+
+
 def render_report(
     *,
     source: str,
@@ -1798,6 +1855,8 @@ def render_report(
         f"- End reason: `{'stopped by user' if ended_early else 'completed'}`",
         f"- Samples: `{len(samples)}`",
         f"- Median sample rate excluding gaps: `{overall_rate:.2f} Hz`",
+        f"- Measured control loop: `{format_value(control_loop_rate_hz(samples), 0)} Hz`",
+        f"- Median measured control period: `{format_value(median_loop_dt_us(samples), 0)} us`",
         f"- Overall verdict: `{status}`",
         "",
         "## Runtime Q/R",
@@ -2155,6 +2214,7 @@ def build_parser() -> argparse.ArgumentParser:
             "format-v8",
             "format-v9",
             "format-v10",
+            "format-v11",
         ),
         default=DEFAULT_PROFILE,
         help="VMCVOFA layout; auto detects by field count",

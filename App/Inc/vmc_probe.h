@@ -81,7 +81,25 @@ extern "C" {
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
 #define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.08f
 #define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.12f
+/* Nominal control period in seconds.
+ *
+ * The loop is NOT fixed-rate.  osDelay(1) only sets a floor, so the real
+ * period is "however long the loop body takes, plus the sleep".  Measured on
+ * the vehicle with the DWT cycle counter the loop ran at roughly 450 Hz, i.e.
+ * about 2.2 ms, so every term that had assumed 1 ms was off by that factor.
+ *
+ * Measured period is therefore what actually feeds the controller: the Kalman
+ * prediction and its position integration, slip condition C's differentiator,
+ * and the command ramps all call vmc_loop_dt().  This constant is only the
+ * fallback used before the first measurement and if the cycle counter is
+ * unavailable. */
 #define VMC_CONTROL_DT            0.001f
+/* Sanity bounds for the measured control period, in seconds.  The lower bound
+ * keeps a division by a spuriously small delta from blowing up condition C;
+ * the upper bound keeps one stalled cycle from stepping the estimator across
+ * a whole second. */
+#define VMC_LOOP_DT_MIN           0.0001f
+#define VMC_LOOP_DT_MAX           0.05f
 #define VMC_FEEDBACK_TIMEOUT_MS   100U
 #define VMC_WHEEL_RADIUS          0.065f
 #define VMC_AIRBORNE_DETECT_ENABLE_DEFAULT 1U
@@ -220,10 +238,20 @@ extern "C" {
  * wheel torque on the same evidence, so a low-friction surface can trip that
  * protection first. */
 #define VMC_BODY_MOTION_KF_SLIP_ENABLE_DEFAULT    0U
-/* Condition C threshold in m/s2.  Measured on the vehicle: a landing transient
- * that spun the wheel from 0 to 2.9 m/s in ~200 ms produced a condition-C
- * magnitude well above this, while steady driving stays far below it. */
-#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     20.0f
+/* Condition C threshold in m/s2.
+ *
+ * Condition C now differentiates against the MEASURED control period, so this
+ * is a true m/s2 figure.  It was previously tuned while the differentiator
+ * assumed 1 ms against a loop that actually ran at ~450 Hz, which inflated
+ * every metric by about 2.2x.  The default is rescaled by that factor so the
+ * same events trigger as before: a landing transient that spins the wheel from
+ * 0 to 2.9 m/s in ~200 ms is a true 14.5 m/s2, which the old code reported as
+ * ~32 m/s2 while steady driving stays far below it either way.
+ *
+ * The rescale is an equivalence, not a re-measurement.  Any slip_accel value
+ * carried over from before this change should be divided by ~2.2, and the
+ * threshold should be re-derived from a fresh projectile run. */
+#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     9.0f
 /* Condition A: wheel track in metres and yaw-rate threshold in rad/s.  The
  * track width has not been measured, so A stays disabled until yaw_track is
  * set to a real value. */
@@ -836,6 +864,13 @@ typedef struct {
   uint8_t airborne_side_candidate[VMC_AIRBORNE_SIDE_COUNT];
   uint32_t airborne_side_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
   uint32_t airborne_side_release_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
+  /* Measured control-loop timing.  loop_dt_s is the period handed to every
+   * time-based term in the controller, loop_dt_us the same value in the
+   * telemetry's integer encoding, and loop_count an iteration counter so a
+   * recording can recover the true average rate over any window. */
+  float loop_dt_s;
+  uint32_t loop_dt_us;
+  uint32_t loop_count;
 } vmc_probe_state_t;
 
 extern volatile vmc_probe_state_t vmc_probe_state;

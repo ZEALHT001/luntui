@@ -26,7 +26,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 7U
+#define VMC_LQR_RTT_SCHEMA_VERSION 8U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -1228,6 +1228,16 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT]);
+
+  /* VMCVOFA fields 134..135: measured control-loop timing.  The loop is not
+   * fixed-rate, so its period is measured with the DWT cycle counter and fed
+   * to every time-based term.  These two fields are what make that visible
+   * from a recording: loop_dt_us is the instantaneous period, and loop_count
+   * gives the true average rate over any window. */
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  vmc_probe_state.loop_dt_us);
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  vmc_probe_state.loop_count);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

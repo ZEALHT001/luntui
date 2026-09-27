@@ -23,7 +23,6 @@ static double vmc_dpitch_lpf;
 static double vmc_speed_dx_prev;
 static double vmc_speed_accel_lpf;
 static uint8_t vmc_speed_accel_initialized;
-static uint32_t vmc_remote_mode_last_ms;
 static uint8_t vmc_remote_source_last;
 static float vmc_yaw_last_wrapped;
 static float vmc_yaw_unwrapped;
@@ -33,11 +32,18 @@ static uint32_t vmc_jump_last_update_ms;
 /* Gravity-compensation sign calibration; see VMC_GRAVITY_SIGN_ALPHA. */
 static float vmc_gravity_dot_lpf;
 static int8_t vmc_gravity_sign;
-/* The accelerometer runs at 200 Hz while this task runs at 1 kHz.  Feeding the
- * same frame into five consecutive updates would make r_imu effectively five
- * times stronger than configured, so the acceleration update is gated on a new
- * HI12 frame. */
+/* The accelerometer runs at 200 Hz while this task runs several times faster.
+ * Feeding one frame into every consecutive update would make r_imu effectively
+ * stronger than configured by the ratio of the two rates, so the acceleration
+ * update is gated on a new HI12 frame. */
 static uint32_t vmc_last_imu_rx_count;
+/* Control-loop timing.  See VMC_CONTROL_DT: the loop is not fixed-rate, so the
+ * period is measured each cycle and fed to every time-based term.  DWT->CYCCNT
+ * counts CPU cycles at SystemCoreClock (180 MHz here) and resolves the period
+ * far better than HAL_GetTick's 1 ms tick. */
+static uint32_t vmc_loop_cycles_last;
+static float vmc_loop_dt_s;
+static uint8_t vmc_loop_dt_use_dwt;
 /* A fall detected while the robot was enabled requires an explicit emergency
  * stop followed by S1=3 before control can be enabled again. */
 static uint8_t vmc_fall_rearm_required;
@@ -62,6 +68,7 @@ static void vmc_update_body_state(void);
 static void vmc_update_gravity_compensation(void);
 static void vmc_update_motion_state(void);
 static void vmc_update_airborne_state(void);
+static double vmc_loop_dt(void);
 static void vmc_update_lqr_gain(void);
 static uint8_t vmc_safety_allows_output(void);
 static int16_t vmc_update_yaw_hold_current(void);
@@ -113,6 +120,11 @@ static uint8_t body_motion_kf_initialized;
  * body acceleration, so both signals are low-passed first; the C620 reports
  * wheel speed as an integer RPM, which makes a raw sample-to-sample difference
  * far too coarse to threshold directly.  Each side latches on its own. */
+/* NOTE: these two alphas are applied once per control cycle, not per unit
+ * time, so the filter's real time constant is alpha * (period / 0.223) and
+ * therefore scales with the loop rate.  They were picked by ear against the
+ * real rate, so they are left alone here; making them dt-aware would be a
+ * separate change and would need its own re-tune. */
 #define VMC_BODY_MOTION_KF_SLIP_WHEEL_ALPHA 0.20
 #define VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA 0.20
 /* Release hysteresis and minimum hold.  Releasing on "the wheel speed fell
@@ -276,11 +288,13 @@ static uint8_t vmc_body_motion_kf_slip_gate(double wheel_left_body_speed,
   body_motion_kf_slip_right_raw_lpf +=
       VMC_BODY_MOTION_KF_SLIP_WHEEL_ALPHA *
       (wheel_right_raw_speed - body_motion_kf_slip_right_raw_lpf);
-  /* The wheel differentiator runs on every control cycle so its dt is the 1 ms
-   * control period, which is what makes the threshold a real m/s2 figure.  The
-   * IMU term is only refreshed when a new frame arrived; holding it in between
-   * keeps one accel sample from being counted five times, which is the same
-   * aliasing the estimator's own gate exists to avoid. */
+  /* The wheel differentiator runs on every control cycle, so dt is the
+   * MEASURED period (see VMC_CONTROL_DT).  That is what makes the threshold a
+   * real m/s2 figure: assuming 1 ms while the loop actually ran at ~450 Hz
+   * inflated every metric by about 2.2x.  The IMU term is only refreshed when
+   * a new frame arrived; holding it in between keeps one accel sample from
+   * being counted once per control cycle, which is the same aliasing the
+   * estimator's own gate exists to avoid. */
   if (accel_valid != 0U) {
     body_motion_kf_slip_imu_accel_lpf +=
         VMC_BODY_MOTION_KF_SLIP_ACCEL_ALPHA *
@@ -463,7 +477,7 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
                                       uint8_t acceleration_valid,
                                       uint8_t slip_active)
 {
-  const double dt = VMC_CONTROL_DT;
+  const double dt = vmc_loop_dt();
   double q_v = clamp_double((double)vmc_balance.kalman_q_v, 0.0, 1.0e12);
   double q_a = clamp_double((double)vmc_balance.kalman_q_a, 0.0, 1.0e12);
   double r_wheel = clamp_double((double)vmc_balance.kalman_r_wheel,
@@ -563,7 +577,7 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
   vmc_probe_state.motion.kf_dx = x0;
   vmc_probe_state.motion.kf_acc = x1;
   vmc_probe_state.motion.kf_x = clamp_double(
-      vmc_probe_state.motion.kf_x + x0 * VMC_CONTROL_DT,
+      vmc_probe_state.motion.kf_x + x0 * dt,
       -clamp_double(vmc_balance.x_limit, 0.05, VMC_BODY_MOTION_X_LIMIT_DEFAULT),
       clamp_double(vmc_balance.x_limit, 0.05, VMC_BODY_MOTION_X_LIMIT_DEFAULT));
 }
@@ -1478,7 +1492,7 @@ static void vmc_update_remote_mode(void)
   double turn_input;
   double speed_target_max;
   double yaw_rate_max;
-  double dt = VMC_CONTROL_DT;
+  const double dt = vmc_loop_dt();
   const uint32_t now = HAL_GetTick();
   uint8_t follow_requested = 0U;
 
@@ -1504,15 +1518,8 @@ static void vmc_update_remote_mode(void)
     vmc_balance.gimbal_follow_active = 0U;
     vmc_wheel_control.gimbal_follow_current = 0;
     vmc_fall_monitor_armed = 0U;
-    vmc_remote_mode_last_ms = now;
     return;
   }
-
-  if (vmc_remote_mode_last_ms != 0U) {
-    dt = (double)(now - vmc_remote_mode_last_ms) * 0.001;
-    dt = clamp_double(dt, VMC_CONTROL_DT, 0.10);
-  }
-  vmc_remote_mode_last_ms = now;
 
   if ((vmc_fall_rearm_required != 0U && remote_control.s[1] != RC_SW_DOWN) ||
       (vmc_fall_rearm_armed != 0U && remote_control.s[1] != RC_SW_DOWN &&
@@ -1816,7 +1823,7 @@ static void vmc_update_motion_state(void)
           body_motion_kf_x[0],
           (double)vmc_probe_state.body.wz,
           acceleration_valid,
-          VMC_CONTROL_DT,
+          vmc_loop_dt(),
           &slip_metric);
     } else {
       vmc_body_motion_kf_slip_reset(wheel_left_raw, wheel_right_raw,
@@ -2266,7 +2273,7 @@ void vmc_balance_update(void)
     speed_target_ramped = 0.0;
   }
   const double speed_ramp_step =
-      clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0) * VMC_CONTROL_DT;
+      clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0) * vmc_loop_dt();
   const double dx_target =
       vmc_step_towards(speed_target_ramped, speed_target, speed_ramp_step);
   const double stop_speed_threshold =
@@ -2287,7 +2294,7 @@ void vmc_balance_update(void)
       vmc_speed_dx_prev = motion->kf_dx;
       vmc_speed_accel_initialized = 1U;
     }
-    speed_accel = (motion->kf_dx - vmc_speed_dx_prev) / VMC_CONTROL_DT;
+    speed_accel = (motion->kf_dx - vmc_speed_dx_prev) / vmc_loop_dt();
     vmc_speed_dx_prev = motion->kf_dx;
     speed_accel = clamp_double(speed_accel, -20.0, 20.0);
     /* A fixed light LPF suppresses encoder/KF quantization without adding a
@@ -2308,7 +2315,7 @@ void vmc_balance_update(void)
                    -speed_pitch_limit,
                    speed_pitch_limit);
   const double speed_pitch_step =
-      clamp_double(vmc_balance.speed_pitch_ramp_rate, 0.0, 5.0) * VMC_CONTROL_DT;
+      clamp_double(vmc_balance.speed_pitch_ramp_rate, 0.0, 5.0) * vmc_loop_dt();
   const double speed_pitch_offset =
       vmc_step_towards(vmc_balance.speed_pitch_offset,
                        speed_pitch_target,
@@ -2343,7 +2350,7 @@ void vmc_balance_update(void)
     if (stick_speed_active == 0U) {
       const double speed_error = -motion->kf_dx;
       vmc_balance.disturbance_observer_neutral_time = (float)clamp_double(
-          vmc_balance.disturbance_observer_neutral_time + VMC_CONTROL_DT,
+          vmc_balance.disturbance_observer_neutral_time + vmc_loop_dt(),
           0.0,
           observer_delay + 1.0);
       if ((double)vmc_balance.disturbance_observer_neutral_time >= observer_delay &&
@@ -2352,7 +2359,7 @@ void vmc_balance_update(void)
         vmc_balance.disturbance_observer_residual = (float)speed_error;
         observer_output +=
             (observer_gain * speed_error - observer_leak * observer_output) *
-            VMC_CONTROL_DT;
+            vmc_loop_dt();
         observer_output =
             clamp_double(observer_output, -observer_limit, observer_limit);
       } else {
@@ -3212,7 +3219,7 @@ void vmc_control_update(void)
     ramped_target_length =
         vmc_step_towards(vmc_control.ramped_target_length,
                          target_length,
-                         length_ramp_rate * VMC_CONTROL_DT);
+                         length_ramp_rate * vmc_loop_dt());
   }
   vmc_control.ramped_target_length = (float)ramped_target_length;
 
@@ -3232,7 +3239,7 @@ void vmc_control_update(void)
       vmc_step_towards(vmc_control.roll_comp_offset,
                        roll_comp_desired,
                        clamp_double(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) *
-                           VMC_CONTROL_DT);
+                           vmc_loop_dt());
   vmc_control.roll_comp_offset = (float)roll_comp_offset;
 
   left_target_length =
@@ -3414,6 +3421,51 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   }
 }
 
+static void vmc_loop_timing_init(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  vmc_loop_dt_use_dwt =
+      ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0U) ? 1U : 0U;
+  vmc_loop_cycles_last = DWT->CYCCNT;
+  vmc_loop_dt_s = VMC_CONTROL_DT;
+  vmc_probe_state.loop_dt_s = vmc_loop_dt_s;
+  vmc_probe_state.loop_dt_us = (uint32_t)(VMC_CONTROL_DT * 1.0e6f);
+  vmc_probe_state.loop_count = 0U;
+}
+
+/* Measured control period in seconds.  Every time-based term must read this
+ * rather than the VMC_CONTROL_DT fallback. */
+static double vmc_loop_dt(void)
+{
+  return (double)vmc_loop_dt_s;
+}
+
+/* Call once per control cycle, before anything that needs dt. */
+static void vmc_loop_timing_update(void)
+{
+  const uint32_t cycles = DWT->CYCCNT;
+  const uint32_t delta = cycles - vmc_loop_cycles_last;
+
+  vmc_loop_cycles_last = cycles;
+  if (vmc_loop_dt_use_dwt == 0U || SystemCoreClock == 0U) {
+    vmc_loop_dt_s = VMC_CONTROL_DT;
+  } else {
+    float dt = (float)delta / (float)SystemCoreClock;
+
+    if (dt < VMC_LOOP_DT_MIN) {
+      dt = VMC_LOOP_DT_MIN;
+    } else if (dt > VMC_LOOP_DT_MAX) {
+      dt = VMC_LOOP_DT_MAX;
+    }
+    vmc_loop_dt_s = dt;
+  }
+  vmc_probe_state.loop_dt_s = vmc_loop_dt_s;
+  vmc_probe_state.loop_dt_us = (uint32_t)(vmc_loop_dt_s * 1.0e6f + 0.5f);
+  vmc_probe_state.loop_count++;
+}
+
 void vmc_probe_task(void const *argument)
 {
   (void)argument;
@@ -3427,8 +3479,10 @@ void vmc_probe_task(void const *argument)
   vmc_control_init();
   vmc_wheel_control_init();
   vmc_balance_init();
+  vmc_loop_timing_init();
 
   for (;;) {
+    vmc_loop_timing_update();
     hi12_imu_update();
     tf02_pro_update();
     remote_control_update_source();

@@ -19,6 +19,7 @@ from tools.rtt_kalman_capture import (
     analyze_continuity,
     analyze_window,
     capture_live,
+    control_loop_rate_hz,
     iter_raw_text_samples,
     parse_vmcvoa_line,
     sliding_windows,
@@ -218,6 +219,60 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(profile.name, "format-v10")
         self.assertAlmostEqual(sample.schema_version, 6.0)
         self.assertFalse(math.isfinite(sample.airborne_side_torque_left))
+
+    def test_loop_timing_channels_parse(self) -> None:
+        """Schema 8 records the measured control period and iteration count."""
+        line = format_line()
+        fields = line.split(",")
+        fields[1 + FORMAT_PROFILE.channels["loop_dt_us"]] = "2207"
+        fields[1 + FORMAT_PROFILE.channels["loop_count"]] = "123456"
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.loop_dt_us, 2207.0)
+        self.assertAlmostEqual(sample.loop_count, 123456.0)
+
+    def test_v11_layout_still_parses(self) -> None:
+        """The 134-field layout (schema 7) predates the loop-timing fields."""
+        fields = [0.001] * 134
+        fields[4] = 1.0
+        fields[115] = 7.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v11")
+        self.assertAlmostEqual(sample.schema_version, 7.0)
+        self.assertFalse(math.isfinite(sample.loop_dt_us))
+
+    def test_control_loop_rate_uses_firmware_timebase(self) -> None:
+        """The loop rate comes from loop_count / MCU time, not host time.
+
+        Host timestamps are quantised by RTT batching, so a rate derived from
+        them would be wrong; the firmware counter is immune to that.
+        """
+        samples = [
+            KalmanSample(
+                host_time_s=0.0, mcu_time_ms=1000.0, kf_x=0.0, kf_dx=0.0,
+                loop_count=0.0,
+            ),
+            KalmanSample(
+                host_time_s=9.0, mcu_time_ms=2000.0, kf_x=1.0, kf_dx=1.0,
+                loop_count=450.0,
+            ),
+        ]
+        self.assertAlmostEqual(control_loop_rate_hz(samples), 450.0)
+
+    def test_control_loop_rate_is_absent_on_old_layouts(self) -> None:
+        samples = [
+            KalmanSample(
+                host_time_s=0.0, mcu_time_ms=1000.0, kf_x=0.0, kf_dx=0.0
+            ),
+            KalmanSample(
+                host_time_s=1.0, mcu_time_ms=2000.0, kf_x=1.0, kf_dx=1.0
+            ),
+        ]
+        self.assertFalse(math.isfinite(control_loop_rate_hz(samples)))
 
     def test_raw_text_replay_assigns_20ms_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
