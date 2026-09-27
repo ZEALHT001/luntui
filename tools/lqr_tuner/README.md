@@ -75,13 +75,16 @@ diagnostics below:
 | 128 | pitch captured when the airborne latch armed | value multiplied by 1000, `-999` when unarmed |
 | 129 | body pitch rate consumed by the controller | value multiplied by 1000 |
 
-Fields 126..129 exist because `airborne_joint_torque` (field 88) is the *mean*
-of the four leg loads, and the mean cannot answer the question the latch asks.
-"Whole machine off the ground" means every leg is unloaded at once - that is
-`max <= threshold` on fields 126/127 - while a machine that is merely slipping
-still has one side carrying the body.  Field 128 is the attitude reference the
-pitch guard compares against, so the guard's decision can be reproduced from
-the recording.
+Fields 126..129 exist because the airborne latch needs to be reproducible
+offline.  Recording `20260927_173327` shows why the latch keys on the *mean*
+leg load (field 88) and not on the strongest leg (field 127): held in the air
+the weakest leg reads p50 0.49 N.m but the strongest reads p50 3.89 N.m,
+because the leg controller keeps driving the joints while airborne.  An
+"all four legs under threshold" test - `max` on field 127 - is therefore
+satisfied on only 7 of 275 in-air frames, while the mean test is satisfied on
+126 and still never trips while the machine rests on its legs (average load
+stays above 10 N.m).  Field 128 is the attitude reference the pitch guard
+compares against; field 129 is the pitch rate that guard tests.
 
 All channels use integer ASCII output, so the firmware does not depend on
 newlib-nano floating-point `printf` support.

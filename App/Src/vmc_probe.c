@@ -1845,17 +1845,27 @@ static uint8_t vmc_safety_allows_output(void)
              : 0U;
 }
 
-/* Detect "the whole machine is off the ground": the wheels are spinning, all
- * four leg joints are unloaded at once, and the body is not being swung
- * around.  Once confirmed, latch the condition until leg load recovers so the
- * wheels cannot repeatedly restart while still in the air.
+/* Detect "the whole machine is off the ground": the wheels are spinning, the
+ * legs are carrying almost nothing, and the body is not being swung around.
+ * Once confirmed, latch the condition until leg load recovers so the wheels
+ * cannot repeatedly restart while still in the air.
+ *
+ * The test is the AVERAGE leg load, not the strongest leg.  Recording
+ * 20260927_173327 settles this: held in the air, the weakest leg reads
+ * p50 0.49 N.m (it hangs free) but the strongest reads p50 3.89 N.m, because
+ * the leg controller keeps driving the joints while airborne.  Requiring all
+ * four legs under 2 N.m is therefore satisfied on only 7 of 275 in-air frames,
+ * and the latch chattered - 24 transitions, wheels reaching 4.19 m/s with the
+ * wheel output gated for just 7.6% of the air time.  The old mean-based test
+ * satisfies 126 of those frames and gates 57% of the air time with no
+ * ground-side false trigger, since the average stays above 10 N.m whenever the
+ * machine is resting on its legs.
  *
  * The reachable-but-supported case - a wheel spinning on a low-friction
  * surface while the body still rests on its legs - is handled by the slip
- * gate in the body-motion estimator, not here.  A supported machine keeps at
- * least one joint loaded, which is why the test is on the strongest joint
- * instead of the mean, and why the attitude guard is on top: while the body is
- * being carried or thrown by the pilot its pitch leaves the reference. */
+ * gate in the body-motion estimator, not here.  The attitude guard is on top:
+ * while the body is being carried or thrown by the pilot its pitch leaves the
+ * reference the guard captured when the wheel-speed condition first held. */
 static void vmc_update_airborne_state(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -1921,7 +1931,7 @@ static void vmc_update_airborne_state(void)
    * still has to happen while the body is where it just was rather than
    * re-arming the reference on the cycle that trips the latch. */
   wheels_fast = (wheel_speed >= wheel_speed_threshold) ? 1U : 0U;
-  joints_unloaded = (joint_torque_max <= joint_torque_threshold) ? 1U : 0U;
+  joints_unloaded = (joint_torque <= joint_torque_threshold) ? 1U : 0U;
   if (wheels_fast != 0U && joints_unloaded != 0U && detector_ready != 0U) {
     if (vmc_probe_state.airborne_pitch_reference_valid == 0U) {
       vmc_probe_state.airborne_pitch_reference = body_pitch;
@@ -1971,7 +1981,7 @@ static void vmc_update_airborne_state(void)
 
   if (vmc_probe_state.airborne_active != 0U) {
     const float release_torque_threshold = joint_torque_threshold * 1.5f;
-    if (joint_torque_max >= release_torque_threshold) {
+    if (joint_torque >= release_torque_threshold) {
       if (vmc_probe_state.airborne_release_candidate_ms < release_ms) {
         vmc_probe_state.airborne_release_candidate_ms += dt_ms;
       }
