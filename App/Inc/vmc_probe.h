@@ -56,7 +56,8 @@ extern "C" {
 #define VMC_LEG_TARGET_SHORT      0.180f
 #define VMC_LEG_TARGET_MID        0.230f
 #define VMC_LEG_TARGET_LONG       0.280f
-#define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.5f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
+#define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
 #define VMC_JUMP_ENABLE_DEFAULT   1U
 #define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.18f
 #define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.25f
@@ -80,7 +81,8 @@ extern "C" {
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
 #define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.08f
-#define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.12f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
+#define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.054f
 /* Nominal control period in seconds.
  *
  * The loop is NOT fixed-rate.  osDelay(1) only sets a floor, so the real
@@ -92,7 +94,25 @@ extern "C" {
  * prediction and its position integration, slip condition C's differentiator,
  * and the command ramps all call vmc_loop_dt().  This constant is only the
  * fallback used before the first measurement and if the cycle counter is
- * unavailable. */
+ * unavailable.
+ *
+ * CONSEQUENCE FOR THE PER-SECOND CONSTANTS BELOW: while dt was wrong, every
+ * "rate * dt" term really advanced at 0.001 / 0.00222 = 0.45 of its nominal
+ * rate.  Now that dt is measured they all advance at their nominal rate, which
+ * is 2.22x faster in real time than the machine was tuned for.  The disturbance
+ * observer reacted to that with a limit cycle - its output pinned at the +/-0.1
+ * clamp, which drove the balance loop and left the wheels dithering at ~1250 A
+ * with NIS_v around 15 while standing still.  Rescaling its gain and leak by
+ * 0.45 restored it exactly (NIS_v 0.8-1.7, wheels ~500 A).
+ *
+ * Every constant that multiplies dt and acts as an actuator command or a timer
+ * has therefore been multiplied by 0.45 so the machine keeps the behaviour it
+ * was tuned for.  They are written as plain literals rather than as
+ * "original * scale" because the LQR tuner parses these macros, and do NOT
+ * "fix" them back to round numbers: a round value here means the old
+ * 2.22x-too-fast behaviour, which is what caused the observer limit cycle.
+ * The estimator terms are deliberately NOT rescaled - they were wrong and are
+ * now correct, which is the entire point of measuring dt. */
 #define VMC_CONTROL_DT            0.001f
 /* Sanity bounds for the measured control period, in seconds.  The lower bound
  * keeps a division by a spuriously small delta from blowing up condition C;
@@ -390,13 +410,15 @@ extern "C" {
 #define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 30.0f
 #define VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 4.0f
-#define VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT 5.0f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
+#define VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT 2.25f
 #define VMC_BALANCE_SPEED_DEADBAND_DEFAULT 0.02f
 #define VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT 0.08f
 /* Braking-only Pitch feedforward gain (rad per m/s^2). */
 #define VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT 0.0f
 #define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.18f
-#define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.8f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
+#define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.36f
 #define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.05f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
@@ -404,17 +426,24 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 10.0f
 #define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 1U
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT 0.6f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT 0.1f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT.  This is
+ * the pair that was verified on the vehicle: left at 0.6/0.1 the observer sat
+ * against its limit clamp and the machine dithered while standing still. */
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT 0.27f
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT 0.045f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_LIMIT_DEFAULT 0.1f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_SPEED_LIMIT_DEFAULT 0.6f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_DELAY_DEFAULT 0.5f
+/* Divides by 0.45 instead of multiplying: it is a time, so restoring the old
+ * wait in real seconds means a LARGER number.  Scaled for the same reason as
+ * the gain above; see VMC_CONTROL_DT. */
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_DELAY_DEFAULT 1.11f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_PITCH_GAIN_DEFAULT 0.0f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_THETA_GAIN_DEFAULT -1.0f
 #define VMC_RC_CH_DEADBAND 20
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
-#define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 2.0f
+/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
+#define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 0.9f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 5000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 500.0f

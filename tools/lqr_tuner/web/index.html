@@ -192,11 +192,11 @@
           </label>
           <label>
             观测器增益 / disturbance_observer_gain
-            <input id="disturbanceObserverGain" type="number" step="0.05" min="-20" max="20" value="0.3" />
+            <input id="disturbanceObserverGain" type="number" step="0.05" min="-20" max="20" value="0.27" />
           </label>
           <label>
             泄漏系数 / disturbance_observer_leak
-            <input id="disturbanceObserverLeak" type="number" step="0.01" min="0" max="2" value="0.02" />
+            <input id="disturbanceObserverLeak" type="number" step="0.01" min="0" max="2" value="0.045" />
           </label>
           <label>
             补偿限幅（rad） / disturbance_observer_limit
@@ -208,7 +208,7 @@
           </label>
           <label>
             摇杆回中后延时（s） / disturbance_observer_delay
-            <input id="disturbanceObserverDelay" type="number" step="0.1" min="0" max="5" value="0.5" />
+            <input id="disturbanceObserverDelay" type="number" step="0.1" min="0" max="5" value="1.11" />
           </label>
           <label>
             分配到机身 Pitch / disturbance_observer_pitch_gain
@@ -252,7 +252,7 @@
           </label>
           <label>
             速度斜坡 / speed_ramp_rate
-            <input id="speedRampRate" type="number" step="0.1" value="3" />
+            <input id="speedRampRate" type="number" step="0.1" value="2.25" />
           </label>
           <label>
             速度死区 / speed_deadband
@@ -284,7 +284,7 @@
           </label>
           <label>
             Pitch 前馈斜坡 / speed_pitch_ramp_rate
-            <input id="speedPitchRampRate" type="number" step="0.1" value="0.5" />
+            <input id="speedPitchRampRate" type="number" step="0.1" value="0.36" />
           </label>
         </div>
 
@@ -308,7 +308,7 @@
           </label>
           <label>
             腿长斜坡 / length_ramp_rate
-            <input id="lengthRampRate" type="number" step="0.01" value="0.2" />
+            <input id="lengthRampRate" type="number" step="0.01" value="0.225" />
           </label>
         </div>
 
@@ -408,7 +408,7 @@
           </label>
           <label>
             Roll 补偿斜坡 / roll_comp_ramp_rate
-            <input id="rollCompRampRate" type="number" step="0.01" min="0" value="0.12" />
+            <input id="rollCompRampRate" type="number" step="0.01" min="0" value="0.054" />
           </label>
         </div>
 
@@ -448,7 +448,7 @@
           </label>
           <label>
             遥控 Yaw 目标速度 / yaw_target_rate_max (rad/s)
-            <input id="yawTargetRateMax" type="number" step="0.1" value="2" />
+            <input id="yawTargetRateMax" type="number" step="0.1" value="0.9" />
           </label>
           <label>
             Yaw 电流限幅 / yaw_hold_current_limit
