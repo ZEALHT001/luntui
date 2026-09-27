@@ -766,10 +766,12 @@ def steady_state_gains(
 ) -> tuple[float, float, float, float, float, float]:
     """Return gains, time constants, and the predicted innovation std devs.
 
-    The firmware runs the two-state filter on the 1 kHz control loop but gates
-    the accelerometer update to the HI12's 200 Hz frame rate.  Modelling that
-    gate matters: feeding one accelerometer frame into five consecutive
-    updates would make the IMU channel five times heavier than configured.
+    The filter runs once per control cycle and gates the accelerometer update to
+    one new HI12 frame.  Modelling the gate correctly therefore needs BOTH the
+    real control period and the real IMU rate: at 1 kHz and 200 Hz the IMU
+    corrects every 5 cycles, at the measured 450 Hz it corrects every ~2.2.
+    Assume the nominal 1 ms against a loop that actually runs at 2.22 ms and the
+    predicted innovation variance - and so NIS - comes out wrong.
     """
     if not all(
         _finite(value)
@@ -911,6 +913,10 @@ def analyze_window(samples: list[KalmanSample]) -> WindowMetrics:
         [sample.r_wheel for sample in samples if _finite(sample.r_wheel)]
     )
     r_imu = _mean([sample.r_imu for sample in samples if _finite(sample.r_imu)])
+    model_dt = model_control_period_s(samples)
+    model_imu_rate = measured_imu_rate_hz(samples)
+    if not _finite(model_imu_rate) or model_imu_rate <= 0.0:
+        model_imu_rate = 200.0
     (
         wheel_gain,
         imu_gain,
@@ -918,7 +924,9 @@ def analyze_window(samples: list[KalmanSample]) -> WindowMetrics:
         imu_tau_ms,
         predicted_innov_v_std,
         predicted_innov_a_std,
-    ) = steady_state_gains(q_v, q_a, r_wheel, r_imu)
+    ) = steady_state_gains(
+        q_v, q_a, r_wheel, r_imu, dt=model_dt, imu_rate_hz=model_imu_rate
+    )
 
     # Normalised innovation squared: the filter is consistent when its own
     # predicted innovation variance matches the observed one, i.e. NIS ~ 1.
@@ -1816,6 +1824,42 @@ def mean_loop_period_us(samples: list[KalmanSample]) -> float:
     """
     rate = control_loop_rate_hz(samples)
     return (1.0e6 / rate) if _finite(rate) and rate > 0.0 else INVALID_VALUE
+
+
+def measured_imu_rate_hz(samples: list[KalmanSample]) -> float:
+    """IMU fusion rate from the firmware's own accelerometer-update counter.
+
+    The estimator gates its acceleration update on a new HI12 frame, so this is
+    the rate the IMU channel actually corrects at, not the sensor's nominal
+    rate.
+    """
+    usable = [
+        sample
+        for sample in samples
+        if _finite(sample.kf_accel_update_count) and _finite(sample.mcu_time_ms)
+    ]
+    if len(usable) < 2:
+        return INVALID_VALUE
+    elapsed_s = (usable[-1].mcu_time_ms - usable[0].mcu_time_ms) * 0.001
+    updates = usable[-1].kf_accel_update_count - usable[0].kf_accel_update_count
+    if elapsed_s <= 0.0 or updates <= 0.0:
+        return INVALID_VALUE
+    return updates / elapsed_s
+
+
+def model_control_period_s(samples: list[KalmanSample]) -> float:
+    """Control period to use when modelling the filter.
+
+    Prefers the measured period; falls back to the nominal constant for older
+    recordings that do not carry the loop-timing channels.  Getting this wrong
+    is not cosmetic: the accelerometer update is gated to one frame, so the
+    number of control cycles between IMU corrections changes with the period,
+    which moves the predicted innovation variance and therefore NIS.
+    """
+    period_us = mean_loop_period_us(samples)
+    if _finite(period_us) and period_us > 0.0:
+        return period_us * 1.0e-6
+    return 0.001
 
 
 def sampled_loop_period_us(samples: list[KalmanSample]) -> float:
