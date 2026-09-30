@@ -59,18 +59,18 @@ PRESETS: dict[str, AbkPreset] = {
     "abk": AbkPreset(
         # Current A-board wheel-leg chassis parameters.
         # User measurements:
-        #   two wheels total: 0.32 kg -> 0.16 kg each
-        #   wheel radius: 55 mm
+        #   wheel mass: 0.4 kg each
+        #   wheel radius: 60 mm
         #   two legs total: 3.5 kg -> 1.75 kg each
         #   body mass: 11 kg + gimbal 2.3 kg = 13.3 kg
         # Leg/body inertias are mass-scaled from the original ABK values until
         # measured CAD inertia values are available.
-        wheel_radius=0.055,
+        wheel_radius=0.06,
         body_com_to_hip=0.0,
-        wheel_mass=0.32 / 2.0,
+        wheel_mass=0.4,
         leg_mass=3.5 / 2.0,
         body_mass=13.3,
-        wheel_inertia=0.5 * (0.32 / 2.0) * 0.055**2,
+        wheel_inertia=0.5 * 0.4 * 0.06**2,
         leg_inertia=0.042737089 * ((3.5 / 2.0) / 0.95),
         body_inertia=(0.393175574 / 2.0 * 3.0) *
         (13.3 / (22.0 - 0.6 * 2.0 - 0.95 * 2.0)),

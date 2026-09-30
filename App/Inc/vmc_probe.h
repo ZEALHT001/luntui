@@ -121,7 +121,10 @@ extern "C" {
 #define VMC_LOOP_DT_MIN           0.0001f
 #define VMC_LOOP_DT_MAX           0.05f
 #define VMC_FEEDBACK_TIMEOUT_MS   100U
-#define VMC_WHEEL_RADIUS          0.065f
+/* Measured wheel radius: 60 mm.  All wheel-speed -> body-speed conversions
+ * use this value, so balance and speed-loop tuning must be revalidated after
+ * a wheel change. */
+#define VMC_WHEEL_RADIUS          0.060f
 #define VMC_AIRBORNE_DETECT_ENABLE_DEFAULT 1U
 /* An unloaded wheel accelerates quickly while the joints carry almost no
  * load.  Keep the thresholds conservative so normal balancing corrections do
