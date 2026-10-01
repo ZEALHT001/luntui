@@ -324,7 +324,7 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_limit", &value) != 0U) {
-    vmc_balance.tp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_DM_J8009_TMAX);
+    vmc_balance.tp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_LEG_TP_MAX);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "tp_phi_gain", &value) != 0U) {
@@ -580,7 +580,7 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "max_phi0_torque", &value) != 0U) {
-    vmc_control.max_phi0_torque = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_DM_J8009_TMAX);
+    vmc_control.max_phi0_torque = vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_LEG_TP_MAX);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_enable", &value) != 0U) {

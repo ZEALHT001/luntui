@@ -67,7 +67,7 @@ DEFAULT_BALANCE_PARAMS = {
     "airborne_side_enable": 1.0,
     "airborne_side_confirm_ms": 60.0,
     "airborne_side_release_ms": 200.0,
-    "tp_limit": 5.0,
+    "tp_limit": 108.0,
     "tp_phi_gain": 1.0,
     "tp_x_gain": 1.0,
     "dpitch_lpf_alpha": 1.0,
@@ -77,8 +77,8 @@ DEFAULT_BALANCE_PARAMS = {
     # keep the behaviour the machine was tuned for; left unscaled the
     # disturbance observer limit-cycles while standing still.  Keep in step with
     # App/Inc/vmc_probe.h - see VMC_CONTROL_DT there.
-    "disturbance_observer_gain": 0.27,
-    "disturbance_observer_leak": 0.045,
+    "disturbance_observer_gain": 0.2,
+    "disturbance_observer_leak": 0.06,
     "disturbance_observer_limit": 0.05,
     "disturbance_observer_speed_limit": 0.25,
     "disturbance_observer_delay": 1.11,
@@ -127,7 +127,7 @@ DEFAULT_BALANCE_PARAMS = {
     "roll_comp_ramp_rate": 0.054,
     "kp_phi0": 50.0,
     "kd_phi0": 0.5,
-    "max_phi0_torque": 80.0,
+    "max_phi0_torque": 108.0,
     "yaw_hold_enable": 1.0,
     "yaw_hold_kp": 2000.0,
     "yaw_hold_kd": 0.0,

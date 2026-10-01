@@ -37,6 +37,17 @@ extern "C" {
 #define VMC_DM_J8009_VMIN        -45.0f
 #define VMC_DM_J8009_TMAX         54.0f
 #define VMC_DM_J8009_TMIN        -54.0f
+/* Leg torque is commanded in the virtual-leg domain (force along the leg, Tp
+ * about the virtual-leg angle) and only afterwards mapped onto the two joint
+ * motors.  vmc_leg_force() puts exactly half of Tp on each joint, and that
+ * 0.5 coefficient is posture independent, so one joint saturates at
+ * |Tp| = 2 * VMC_DM_J8009_TMAX = 108.  VMC_DM_J8009_TMAX is the per-joint
+ * limit; VMC_LEG_TP_MAX is the matching virtual-leg limit.  Mixing the two
+ * units is what used to cap each joint at 27 N.m.
+ *
+ * Kept as plain literals on purpose: App/Src parsers (the LQR tuner and its
+ * tests) read these tokens as numbers and cannot evaluate macro arithmetic. */
+#define VMC_LEG_TP_MAX            108.0f
 
 #define VMC_LEG_LENGTH_DEFAULT     0.280f
 #define VMC_LEG_LENGTH_MIN         0.120f
@@ -48,9 +59,9 @@ extern "C" {
 #define VMC_LEG_PHI0_TARGET_DEFAULT VMC_PHI0_VERTICAL_RAD
 #define VMC_LEG_PHI0_KP_DEFAULT     50.0f
 #define VMC_LEG_PHI0_KD_DEFAULT     0.5f
-#define VMC_LEG_PHI0_TORQUE_MAX_DEFAULT 80.0f
+#define VMC_LEG_PHI0_TORQUE_MAX_DEFAULT 108.0f /* = VMC_LEG_TP_MAX */
 #define VMC_LEG_PHI0_PID_DIRECTION  1.0f
-#define VMC_LEG_SUPPORT_FORCE_DEFAULT 200.0f
+#define VMC_LEG_SUPPORT_FORCE_DEFAULT 120.0f
 #define VMC_LEG_SUPPORT_FORCE_MAX     120.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
 #define VMC_LEG_TARGET_SHORT      0.180f
@@ -387,7 +398,7 @@ extern "C" {
 #define VMC_BALANCE_C620_RAW_MAX 16384.0f
 #define VMC_BALANCE_WHEEL_TORQUE_TO_CURRENT 2730.6666f /* motor N.m -> C620 raw */
 #define VMC_BALANCE_WHEEL_CURRENT_GAIN_DEFAULT 1.0f
-#define VMC_BALANCE_TP_LIMIT_DEFAULT 30.0f
+#define VMC_BALANCE_TP_LIMIT_DEFAULT 108.0f /* = VMC_LEG_TP_MAX */
 #define VMC_BALANCE_TP_PHI_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_X_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT 1U
@@ -410,7 +421,7 @@ extern "C" {
 #define VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT -1.0f
 #define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.0f
 #define VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT 20.0f
-#define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 30.0f
+#define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 4.0f
 #define VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 4.0f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
@@ -429,11 +440,17 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 10.0f
 #define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 1U
-/* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT.  This is
- * the pair that was verified on the vehicle: left at 0.6/0.1 the observer sat
- * against its limit clamp and the machine dithered while standing still. */
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT 0.27f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT 0.045f
+/* Re-tuned on the 60 mm / 0.4 kg wheels (2026-10-01 RTT sweep).  The gains are
+ * a leaky velocity-error integrator, so the pair sets both the steady-state
+ * authority (gain/leak) and the response time (1/leak); these cannot be tuned
+ * independently.  Measured on the vehicle:
+ *   0.27/0.045  stable but the residual drift was never cancelled
+ *   1.00/0.200  time constant 5 s - the machine oscillated and had to be cut
+ *   0.28/0.060  gain/leak 4.7 - slow 8..10 s limit cycle grew over 100 s
+ *   0.20/0.060  stable over a 180 s capture; this is the shipped pair
+ * Do not raise gain without re-running a long standstill capture. */
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT 0.2f
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT 0.06f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_LIMIT_DEFAULT 0.1f
 #define VMC_BALANCE_DISTURBANCE_OBSERVER_SPEED_LIMIT_DEFAULT 0.6f
 /* Divides by 0.45 instead of multiplying: it is a time, so restoring the old

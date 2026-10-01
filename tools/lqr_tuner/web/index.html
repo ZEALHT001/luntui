@@ -168,7 +168,7 @@
           </label>
           <label>
             关节 Tp 力矩限幅 / tp_limit
-            <input id="tpLimit" type="number" step="0.1" min="0" value="5.0" />
+            <input id="tpLimit" type="number" step="1" min="0" max="108" value="108" />
           </label>
           <label>
             关节 Phi 增益 / tp_phi_gain
@@ -192,11 +192,11 @@
           </label>
           <label>
             观测器增益 / disturbance_observer_gain
-            <input id="disturbanceObserverGain" type="number" step="0.05" min="-20" max="20" value="0.27" />
+            <input id="disturbanceObserverGain" type="number" step="0.05" min="-20" max="20" value="0.20" />
           </label>
           <label>
             泄漏系数 / disturbance_observer_leak
-            <input id="disturbanceObserverLeak" type="number" step="0.01" min="0" max="2" value="0.045" />
+            <input id="disturbanceObserverLeak" type="number" step="0.01" min="0" max="2" value="0.06" />
           </label>
           <label>
             补偿限幅（rad） / disturbance_observer_limit
@@ -424,7 +424,7 @@
           </label>
           <label>
             摆角力矩限幅 / max_phi0_torque
-            <input id="maxPhi0Torque" type="number" step="1" value="80" />
+            <input id="maxPhi0Torque" type="number" step="1" min="0" max="108" value="108" />
           </label>
         </div>
 

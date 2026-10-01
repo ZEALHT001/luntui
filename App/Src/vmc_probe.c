@@ -3149,6 +3149,22 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
 
   vmc_leg_force(force, leg->torque_phi0_command, leg->phi1, leg->phi4, joint_torque);
 
+  /* Final per-joint bound.  vmc_leg_force() has no limit of its own, and the
+   * force path alone (max_force is 500 N, about 0.147 N.m per N at the
+   * shortest stance) can already ask for more than the motor rating.  Scale
+   * both joints by the same factor so the commanded (force, Tp) direction is
+   * preserved; clipping one joint on its own would silently rotate the leg. */
+  {
+    const double joint_peak =
+        (fabs(joint_torque[0]) > fabs(joint_torque[1])) ? fabs(joint_torque[0])
+                                                        : fabs(joint_torque[1]);
+    if (joint_peak > (double)VMC_DM_J8009_TMAX) {
+      const double scale = (double)VMC_DM_J8009_TMAX / joint_peak;
+      joint_torque[0] *= scale;
+      joint_torque[1] *= scale;
+    }
+  }
+
   leg->joint_torque_ahead = ahead_direction * joint_torque[0];
   leg->joint_torque_back = back_direction * joint_torque[1];
 }
@@ -3319,7 +3335,7 @@ void vmc_control_update(void)
   vmc_control.getup_target_phi0_right = (float)right_target_phi0;
   max_phi0_torque = clamp_double(vmc_control.max_phi0_torque,
                                  0.0,
-                                 VMC_DM_J8009_TMAX);
+                                 VMC_LEG_TP_MAX);
   support_force = (jump_force_profile != 0U)
                       ? clamp_double(vmc_control.jump_support_force,
                                      -VMC_LEG_SUPPORT_FORCE_MAX,
