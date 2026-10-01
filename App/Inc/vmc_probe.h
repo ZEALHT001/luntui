@@ -140,7 +140,7 @@ extern "C" {
  * deliberately loose and does not sharpen the trigger.  It is there for the
  * swing that is not in the recordings yet - a tumbling body moves several
  * tenths of a rad over that span. */
-#define VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT 0.20f
+#define VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT 0.2f
 #define VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT 4.0f
 /* How long the armed pitch reference survives after the wheel-speed condition
  * stops holding.  Without this the reference would be re-armed on the very
@@ -375,7 +375,7 @@ extern "C" {
 #define VMC_FEEDBACK_TIMEOUT_WHEEL_RIGHT 0x20U
 
 #define VMC_WHEEL_CURRENT_MAX_DEFAULT 16000
-#define VMC_BALANCE_WHEEL_CURRENT_LIMIT_DEFAULT 9000
+#define VMC_BALANCE_WHEEL_CURRENT_LIMIT_DEFAULT 15000
 /* The LQR wheel input and its runtime limit are 3508 motor-shaft torque (N.m).
  * The model already reflects the drivetrain; tuning must not apply the
  * reduction ratio and efficiency a second time. */
@@ -399,7 +399,7 @@ extern "C" {
  * The struct still uses the older pitch_offset/phi_offset field names for
  * compatibility with existing watch expressions and RTT payloads.
  */
-#define VMC_BALANCE_THETA_TARGET_DEFAULT 0.03f
+#define VMC_BALANCE_THETA_TARGET_DEFAULT 0.05f
 #define VMC_BALANCE_PITCH_TARGET_DEFAULT 0.0f
 #define VMC_BALANCE_PITCH_OFFSET_DEFAULT VMC_BALANCE_THETA_TARGET_DEFAULT
 #define VMC_BALANCE_PHI_OFFSET_DEFAULT VMC_BALANCE_PITCH_TARGET_DEFAULT
@@ -421,7 +421,7 @@ extern "C" {
 #define VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT 0.0f
 #define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.18f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
-#define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.36f
+#define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.3f
 #define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.05f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
@@ -448,10 +448,10 @@ extern "C" {
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 0.9f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
-#define VMC_YAW_HOLD_KP_DEFAULT 5000.0f
-#define VMC_YAW_HOLD_KD_DEFAULT 500.0f
+#define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
+#define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
 #define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
-#define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 9000
+#define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 12000
 #define VMC_YAW_HOLD_DIRECTION 1.0f
 #define VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT 0U
 #define VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT 0U
