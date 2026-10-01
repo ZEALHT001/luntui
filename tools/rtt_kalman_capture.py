@@ -58,10 +58,39 @@ class Profile:
 # VMCVOFA is comma-delimited.  The indices below are zero-based positions in
 # the comma-separated vector.  Keeping all offsets in one place makes version
 # detection obvious when the firmware telemetry grows.
+#
+# Torque layout.  These live in the preserved 0..98 block, so the indices are
+# identical in every profile.  Tp is a virtual-leg torque: vmc_leg_force()
+# sends exactly half of it to each joint, so one joint reaches its rating when
+# |Tp| = 2 * 54 = 108.  Comparing tp_raw against tp_cmd shows whether the
+# firmware clamps, and comparing tp_cmd against 108 shows how much of the
+# joint rating the pitch loop actually asked for.
+TORQUE_CHANNELS = {
+    "left_wheel_torque_raw": 16,
+    "right_wheel_torque_raw": 24,
+    "left_tp_theta_term": 26,
+    "left_tp_dtheta_term": 27,
+    "left_tp_x_term": 28,
+    "left_tp_dx_term": 29,
+    "left_tp_phi_term": 30,
+    "left_tp_dphi_term": 31,
+    "left_tp_raw": 32,
+    "left_tp_cmd": 33,
+    "right_tp_theta_term": 34,
+    "right_tp_dtheta_term": 35,
+    "right_tp_x_term": 36,
+    "right_tp_dx_term": 37,
+    "right_tp_phi_term": 38,
+    "right_tp_dphi_term": 39,
+    "right_tp_raw": 40,
+    "right_tp_cmd": 41,
+}
+
 FORMAT_LEGACY_PROFILE = Profile(
     name="format-v1",
     field_count=99,
     channels={
+        **TORQUE_CHANNELS,
         "kf_x": 4,
         "kf_dx": 5,
         "left_wheel_current": 60,
@@ -79,6 +108,7 @@ FORMAT_V2_PROFILE = Profile(
     name="format-v2",
     field_count=106,
     channels={
+        **TORQUE_CHANNELS,
         "kf_x": 4,
         "kf_dx": 5,
         "left_wheel_current": 60,
@@ -366,6 +396,25 @@ CSV_FIELDS = [
     "lqr_theta",
     "roll_rate",
     "pitch_rate",
+    # Torque observations.  Appended so every older CSV keeps its column order.
+    "left_wheel_torque_raw",
+    "right_wheel_torque_raw",
+    "left_tp_theta_term",
+    "left_tp_dtheta_term",
+    "left_tp_x_term",
+    "left_tp_dx_term",
+    "left_tp_phi_term",
+    "left_tp_dphi_term",
+    "left_tp_raw",
+    "left_tp_cmd",
+    "right_tp_theta_term",
+    "right_tp_dtheta_term",
+    "right_tp_x_term",
+    "right_tp_dx_term",
+    "right_tp_phi_term",
+    "right_tp_dphi_term",
+    "right_tp_raw",
+    "right_tp_cmd",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -446,6 +495,26 @@ class KalmanSample:
     lqr_theta: float = INVALID_VALUE
     roll_rate: float = INVALID_VALUE
     pitch_rate: float = INVALID_VALUE
+    # Torque observations.  Tp is a virtual-leg torque; each joint receives
+    # half of it, so a joint is at its rating when |Tp| reaches 108.
+    left_wheel_torque_raw: float = INVALID_VALUE
+    right_wheel_torque_raw: float = INVALID_VALUE
+    left_tp_theta_term: float = INVALID_VALUE
+    left_tp_dtheta_term: float = INVALID_VALUE
+    left_tp_x_term: float = INVALID_VALUE
+    left_tp_dx_term: float = INVALID_VALUE
+    left_tp_phi_term: float = INVALID_VALUE
+    left_tp_dphi_term: float = INVALID_VALUE
+    left_tp_raw: float = INVALID_VALUE
+    left_tp_cmd: float = INVALID_VALUE
+    right_tp_theta_term: float = INVALID_VALUE
+    right_tp_dtheta_term: float = INVALID_VALUE
+    right_tp_x_term: float = INVALID_VALUE
+    right_tp_dx_term: float = INVALID_VALUE
+    right_tp_phi_term: float = INVALID_VALUE
+    right_tp_dphi_term: float = INVALID_VALUE
+    right_tp_raw: float = INVALID_VALUE
+    right_tp_cmd: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -756,6 +825,24 @@ def parse_vmcvoa_line(
         lqr_theta=channel("lqr_theta"),
         roll_rate=channel("roll_rate"),
         pitch_rate=channel("pitch_rate"),
+        left_wheel_torque_raw=channel("left_wheel_torque_raw"),
+        right_wheel_torque_raw=channel("right_wheel_torque_raw"),
+        left_tp_theta_term=channel("left_tp_theta_term"),
+        left_tp_dtheta_term=channel("left_tp_dtheta_term"),
+        left_tp_x_term=channel("left_tp_x_term"),
+        left_tp_dx_term=channel("left_tp_dx_term"),
+        left_tp_phi_term=channel("left_tp_phi_term"),
+        left_tp_dphi_term=channel("left_tp_dphi_term"),
+        left_tp_raw=channel("left_tp_raw"),
+        left_tp_cmd=channel("left_tp_cmd"),
+        right_tp_theta_term=channel("right_tp_theta_term"),
+        right_tp_dtheta_term=channel("right_tp_dtheta_term"),
+        right_tp_x_term=channel("right_tp_x_term"),
+        right_tp_dx_term=channel("right_tp_dx_term"),
+        right_tp_phi_term=channel("right_tp_phi_term"),
+        right_tp_dphi_term=channel("right_tp_dphi_term"),
+        right_tp_raw=channel("right_tp_raw"),
+        right_tp_cmd=channel("right_tp_cmd"),
     )
     return profile, sample
 
@@ -1630,6 +1717,28 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 lqr_theta=_safe_float(row.get("lqr_theta", "")),
                 roll_rate=_safe_float(row.get("roll_rate", "")),
                 pitch_rate=_safe_float(row.get("pitch_rate", "")),
+                left_wheel_torque_raw=_safe_float(
+                    row.get("left_wheel_torque_raw", "")
+                ),
+                right_wheel_torque_raw=_safe_float(
+                    row.get("right_wheel_torque_raw", "")
+                ),
+                left_tp_theta_term=_safe_float(row.get("left_tp_theta_term", "")),
+                left_tp_dtheta_term=_safe_float(row.get("left_tp_dtheta_term", "")),
+                left_tp_x_term=_safe_float(row.get("left_tp_x_term", "")),
+                left_tp_dx_term=_safe_float(row.get("left_tp_dx_term", "")),
+                left_tp_phi_term=_safe_float(row.get("left_tp_phi_term", "")),
+                left_tp_dphi_term=_safe_float(row.get("left_tp_dphi_term", "")),
+                left_tp_raw=_safe_float(row.get("left_tp_raw", "")),
+                left_tp_cmd=_safe_float(row.get("left_tp_cmd", "")),
+                right_tp_theta_term=_safe_float(row.get("right_tp_theta_term", "")),
+                right_tp_dtheta_term=_safe_float(row.get("right_tp_dtheta_term", "")),
+                right_tp_x_term=_safe_float(row.get("right_tp_x_term", "")),
+                right_tp_dx_term=_safe_float(row.get("right_tp_dx_term", "")),
+                right_tp_phi_term=_safe_float(row.get("right_tp_phi_term", "")),
+                right_tp_dphi_term=_safe_float(row.get("right_tp_dphi_term", "")),
+                right_tp_raw=_safe_float(row.get("right_tp_raw", "")),
+                right_tp_cmd=_safe_float(row.get("right_tp_cmd", "")),
             )
 
 

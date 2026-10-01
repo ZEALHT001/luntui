@@ -8,8 +8,10 @@ import unittest
 from pathlib import Path
 
 from tools.lqr_tuner.server import (
+    _BALANCE_PARAM_FALLBACK,
     BALANCE_PARAM_DEFAULT_MACROS,
     _format_c_literal,
+    _firmware_balance_params,
     _read_firmware_defaults,
 )
 
@@ -64,6 +66,27 @@ class FirmwareDefaultFormattingTest(unittest.TestCase):
         defaults = _read_firmware_defaults()["balance_params"]
         self.assertAlmostEqual(defaults["tp_limit"], leg_max)
         self.assertAlmostEqual(defaults["max_phi0_torque"], leg_max)
+
+    def test_web_defaults_track_the_firmware(self) -> None:
+        """The page must never offer a value the firmware does not have.
+
+        The tuner used to keep its own copy of the defaults, which drifted 35
+        entries away from vmc_probe.h.  Loading a fresh page and pressing
+        "write firmware defaults" then pushed those stale numbers - including
+        wheel_torque_limit and support_force - straight back into the header.
+        """
+        firmware = _read_firmware_defaults()["balance_params"]
+        web = _firmware_balance_params()
+        for key, value in firmware.items():
+            if key not in _BALANCE_PARAM_FALLBACK:
+                continue
+            with self.subTest(key=key):
+                self.assertAlmostEqual(web[key], value)
+
+        # The three that actually stopped the machine from hitting the ground.
+        self.assertAlmostEqual(web["wheel_torque_limit"], 5.5)
+        self.assertAlmostEqual(web["support_force"], 120.0)
+        self.assertAlmostEqual(web["dx_feedback_limit"], 5.0)
 
 
 if __name__ == "__main__":

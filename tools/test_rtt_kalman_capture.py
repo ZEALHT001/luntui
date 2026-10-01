@@ -233,6 +233,35 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(sample.loop_dt_us, 2207.0)
         self.assertAlmostEqual(sample.loop_count, 123456.0)
 
+    def test_torque_channels_parse(self) -> None:
+        """The Tp decomposition and wheel torque are recorded verbatim.
+
+        These live in the preserved 0..98 block, so the same indices must
+        resolve for both the current and the legacy layouts.  left_tp_raw vs
+        left_tp_cmd is what shows whether the firmware clamps the command.
+        """
+        line = format_line()
+        fields = line.split(",")
+        fields[1 + FORMAT_PROFILE.channels["left_tp_raw"]] = "107.5"
+        fields[1 + FORMAT_PROFILE.channels["left_tp_cmd"]] = "54.0"
+        fields[1 + FORMAT_PROFILE.channels["left_tp_dx_term"]] = "-38.25"
+        fields[1 + FORMAT_PROFILE.channels["right_tp_cmd"]] = "-54.0"
+        fields[1 + FORMAT_PROFILE.channels["left_wheel_torque_raw"]] = "3.30"
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        _profile, sample = parsed  # type: ignore[misc]
+        self.assertAlmostEqual(sample.left_tp_raw, 107.5)
+        self.assertAlmostEqual(sample.left_tp_cmd, 54.0)
+        self.assertAlmostEqual(sample.left_tp_dx_term, -38.25)
+        self.assertAlmostEqual(sample.right_tp_cmd, -54.0)
+        self.assertAlmostEqual(sample.left_wheel_torque_raw, 3.30)
+
+    def test_torque_channels_exist_in_legacy_layout(self) -> None:
+        """Fields 0..98 are preserved across layouts, so v1 must resolve them."""
+        legacy = FORMAT_LEGACY_PROFILE
+        self.assertEqual(legacy.channels["left_tp_raw"], 32)
+        self.assertEqual(legacy.channels["right_tp_cmd"], 41)
+
     def test_v11_layout_still_parses(self) -> None:
         """The 134-field layout (schema 7) predates the loop-timing fields."""
         fields = [0.001] * 134

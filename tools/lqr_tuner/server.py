@@ -44,7 +44,10 @@ DEFAULT_RTT_HOST = "127.0.0.1"
 DEFAULT_RTT_PORT = 19021
 DEFAULT_VOFA_HOST = "127.0.0.1"
 DEFAULT_VOFA_PORT = 1347
-DEFAULT_BALANCE_PARAMS = {
+# Fallback table.  This is only used for keys that are not backed by a macro
+# in App/Inc/vmc_probe.h, or when that header cannot be read.  Everything else
+# resolves through _firmware_balance_params() below.
+_BALANCE_PARAM_FALLBACK = {
     "theta_target": 0.0,
     "pitch_target": -0.05,
     "phi_deadband": 0.0,
@@ -348,11 +351,30 @@ def _calc_response(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _firmware_balance_params() -> dict[str, float]:
+    """Web-UI defaults, resolved from App/Inc/vmc_probe.h.
+
+    The tuner used to carry its own hard-coded copy of the defaults.  That copy
+    drifted a long way from the firmware: a fresh page plus "write firmware
+    defaults" pushed 35 stale values back into the header, including
+    wheel_torque_limit, support_force and gimbal_follow_enable.  Read the
+    header instead, so the page always shows what the firmware actually runs
+    and a blind write is a no-op.  The literal table stays only as a fallback
+    for keys the header does not define, or if the header cannot be parsed.
+    """
+    params = dict(_BALANCE_PARAM_FALLBACK)
+    try:
+        params.update(_read_firmware_defaults()["balance_params"])
+    except (OSError, ValueError):
+        pass
+    return params
+
+
 def _balance_params_payload(data: dict[str, Any]) -> str:
-    params = dict(DEFAULT_BALANCE_PARAMS)
+    params = _firmware_balance_params()
     params.update(data.get("params", {}))
     payload = {"type": "vmc_balance_params"}
-    for key in DEFAULT_BALANCE_PARAMS:
+    for key in _BALANCE_PARAM_FALLBACK:
         payload[key] = float(params[key])
     return json.dumps(payload, separators=(",", ":"))
 
@@ -372,12 +394,12 @@ def _kalman_params_payload(data: dict[str, Any]) -> str:
 
 
 def _balance_params_payload_chunks(data: dict[str, Any], max_len: int = 700) -> list[str]:
-    params = dict(DEFAULT_BALANCE_PARAMS)
+    params = _firmware_balance_params()
     params.update(data.get("params", {}))
     chunks: list[str] = []
     payload: dict[str, Any] = {"type": "vmc_balance_params"}
 
-    for key in DEFAULT_BALANCE_PARAMS:
+    for key in _BALANCE_PARAM_FALLBACK:
         candidate = dict(payload)
         candidate[key] = float(params[key])
         candidate_text = json.dumps(candidate, separators=(",", ":"))
@@ -622,7 +644,7 @@ def _save_firmware_defaults_response(data: dict[str, Any]) -> dict[str, Any]:
     c_source = _emit_lqr_c_source(coeffs, preset_name, preset)
     lqr_path.write_text(c_source)
 
-    params = dict(DEFAULT_BALANCE_PARAMS)
+    params = _firmware_balance_params()
     params.update(data.get("params", {}))
     changed_macros = _write_balance_defaults(params)
 
@@ -911,7 +933,7 @@ class Handler(BaseHTTPRequestHandler):
                     "leg_length": 0.28,
                     "rtt_host": DEFAULT_RTT_HOST,
                     "rtt_port": DEFAULT_RTT_PORT,
-                    "balance_params": DEFAULT_BALANCE_PARAMS,
+                    "balance_params": _firmware_balance_params(),
                     "kalman_params": DEFAULT_KALMAN_PARAMS,
                 },
             )
