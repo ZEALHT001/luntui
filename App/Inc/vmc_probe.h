@@ -460,7 +460,7 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 10.0f
 #define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 1U
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 0U
 /* Re-tuned on the 60 mm / 0.4 kg wheels (2026-10-01 RTT sweep).  The gains are
  * a leaky velocity-error integrator, so the pair sets both the steady-state
  * authority (gain/leak) and the response time (1/leak); these cannot be tuned
