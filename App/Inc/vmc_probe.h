@@ -306,11 +306,25 @@ extern "C" {
  * detection. */
 #define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 60U
 
-/* Raw joint positions captured with both legs vertical down at 385 mm. */
+/* Raw joint positions captured with both legs vertical down at 385 mm.
+ *
+ * These are zero offsets, not gains.  joint_model_angle() applies
+ *   model = REF_MODEL + DIR * (raw - REF_RAW)
+ * so re-zeroing a leg means solving REF_RAW = raw - (target - REF_MODEL)/DIR
+ * for the raw position the motor reports at the reference pose.  Leave DIR
+ * alone unless the linkage itself was rebuilt: DIR sets the sign of motion,
+ * not the zero.
+ *
+ * The right leg was re-zeroed on 2026-10-02.  Held in the same pose as the
+ * left (vertical, fully extended) it read phi1=2.1938 phi4=1.6191, which
+ * corresponds to a 0.4442 m leg length - past the 0.385 m mechanical stop -
+ * while the left read the correct 2.1809 / 0.9413 at 0.3892 m.  The right
+ * references below were re-solved against the left leg, which was accepted as
+ * ground truth, and now reproduce its length and phi0 exactly. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
-#define VMC_REF_RAW_RIGHT_AHEAD    -2.53776646f
-#define VMC_REF_RAW_RIGHT_BACK     0.432402611f
+#define VMC_REF_RAW_RIGHT_AHEAD   -1.85989916f
+#define VMC_REF_RAW_RIGHT_BACK     0.445302725f
 
 /* VMC model angles at the same 385 mm reference pose. */
 #define VMC_REF_MODEL_PHI1         2.20948918f
