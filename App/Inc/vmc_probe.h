@@ -315,16 +315,23 @@ extern "C" {
  * alone unless the linkage itself was rebuilt: DIR sets the sign of motion,
  * not the zero.
  *
- * The right leg was re-zeroed on 2026-10-02.  Held in the same pose as the
- * left (vertical, fully extended) it read phi1=2.1938 phi4=1.6191, which
- * corresponds to a 0.4442 m leg length - past the 0.385 m mechanical stop -
- * while the left read the correct 2.1809 / 0.9413 at 0.3892 m.  The right
- * references below were re-solved against the left leg, which was accepted as
- * ground truth, and now reproduce its length and phi0 exactly. */
+ * WARNING - the right_ahead motor (id 2) does NOT report a stable absolute
+ * position across power cycles.  Measured at the same physical pose on three
+ * separate power-ups it read -2.5378, -1.8507 and -2.5519 rad.  The steps are
+ * 39.4 and 40.2 degrees, i.e. one motor-rotor revolution through the ~9:1
+ * reduction (360/9 = 40.0 deg): the multi-turn reference is re-established at
+ * power-on instead of being absolute.  The joint angle is therefore only
+ * reliable modulo ~40 degrees and NO firmware offset can fix that.
+ *
+ * Consequences: do not re-calibrate REF_RAW from a single reading - it will
+ * bake in whichever turn happened to come up and break on the next power-on.
+ * The values below are the long-standing ones; with them the right leg tracks
+ * the left to ~1.3 deg at the reference pose.  Fix the motor (set and store
+ * its zero, and check the encoder connector) rather than the constants. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
-#define VMC_REF_RAW_RIGHT_AHEAD   -1.85989916f
-#define VMC_REF_RAW_RIGHT_BACK     0.445302725f
+#define VMC_REF_RAW_RIGHT_AHEAD    -2.53776646f
+#define VMC_REF_RAW_RIGHT_BACK     0.432402611f
 
 /* VMC model angles at the same 385 mm reference pose. */
 #define VMC_REF_MODEL_PHI1         2.20948918f
