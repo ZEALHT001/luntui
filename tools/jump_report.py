@@ -106,6 +106,41 @@ def main() -> int:
     print(f"jump_armed was 1 at some point: {'yes' if armed_ever else 'NO'}")
     print(f"peak leg extension reached: {max(length):.4f} m "
           f"(starts around {length[0]:.4f} m)")
+
+    # Take-off speed -> jump height.
+    #
+    # The robot's upward velocity at the instant the foot leaves the ground is
+    # the leg's extension rate at that moment (the foot is planted, so the body
+    # moves up exactly as fast as the leg lengthens).  A projectile then rises
+    # v^2 / 2g.  That makes the extension rate the one number worth chasing,
+    # and it is measurable from the leg-length channel alone.
+    print()
+    dt = [t[k + 1] - t[k] for k in range(len(t) - 1)]
+    step = sorted(v for v in dt if v > 0)[len(dt) // 2] if dt else 0.02
+    rates = []
+    for k in range(2, len(t) - 2):
+        if stage[k] != 2.0:          # EXTEND only
+            continue
+        # Central difference over +-2 samples to beat the 1 mm quantisation.
+        span = t[k + 2] - t[k - 2]
+        if span <= 0:
+            continue
+        rates.append((length[k + 2] - length[k - 2]) / span)
+    if rates:
+        peak = max(rates)
+        height = peak * peak / (2.0 * 9.81)
+        print(f"leg extension rate: peak {peak:.2f} m/s "
+              f"(median step {step * 1000:.0f} ms, {len(rates)} samples)")
+        print(f"  -> take-off speed {peak:.2f} m/s gives {height * 1000:.0f} mm "
+              f"of jump height")
+        print()
+        print("  how the height scales with that speed:")
+        for target in (0.05, 0.10, 0.15, 0.20):
+            need = (2.0 * 9.81 * target) ** 0.5
+            print(f"    {target * 1000:5.0f} mm needs {need:.2f} m/s "
+                  f"({need / peak:.2f}x current)")
+    else:
+        print("no EXTEND samples with a usable leg-rate window")
     return 0
 
 
