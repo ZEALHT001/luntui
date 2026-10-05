@@ -55,59 +55,74 @@ def joint_model_angle(raw: float, raw_ref: float, model_ref: float, direction: f
     return _wrap(model_ref + direction * (raw - raw_ref))
 
 
+# The constants below are the nominal ones, derived from a fixture-locked
+# symmetric pose.  The right_ahead motor's power-on reference is NOT repeatable
+# - four observed power-ups at one physical pose read -2.5378, -1.8507 and
+# -2.5519 rad, plus one state a full rotor turn away after a jump - so these
+# numbers are only right while the motor comes up in its nominal turn.
+#
+# Twice the constants were "corrected" for an offset reference; both times the
+# change was ~39 deg wrong on the next power-up and the machine could not
+# balance (see commit ea28089, and the revert that undid the second attempt).
+# Measured on the same joint: one state needed +39.4 deg, the following
+# power-up needed -36.5 deg.  That is why the nominal values are pinned here
+# and a per-power-up offset is not adopted.
+NOMINAL_RIGHT_BACK = 0.495861
+NOMINAL_RIGHT_AHEAD = -2.630482
+
+
 class JointCalibrationTest(unittest.TestCase):
-    # Raw joint positions read while both legs were locked in the SAME pose
-    # with an aluminium fixture (2026-10-05).  Stable to 0.001 rad, the
-    # resolution of the telemetry channel.
-    LOCKED_POSE = {
-        "left_back": 2.230000,
-        "left_ahead": -1.936000,
-        "right_back": 0.779000,
-        "right_ahead": 2.387000,
-    }
+    def test_reference_pose_is_self_consistent(self) -> None:
+        """Feeding each joint its own reference raw must return its model angle.
 
-    def _leg_angles(self, side: str) -> tuple[float, float]:
-        raw = self.LOCKED_POSE
-        phi1 = joint_model_angle(
-            raw[f"{side}_back"],
-            _macro(f"VMC_REF_RAW_{side.upper()}_BACK"),
-            _macro("VMC_REF_MODEL_PHI1"),
-            _macro(f"VMC_DIR_{side.upper()}_BACK"),
-        )
-        phi4 = joint_model_angle(
-            raw[f"{side}_ahead"],
-            _macro(f"VMC_REF_RAW_{side.upper()}_AHEAD"),
-            _macro("VMC_REF_MODEL_PHI4"),
-            _macro(f"VMC_DIR_{side.upper()}_AHEAD"),
-        )
-        return phi1, phi4
-
-    def test_both_legs_agree_in_a_symmetric_locked_pose(self) -> None:
-        """The two legs must compute the same angles from the same pose."""
-        left_phi1, left_phi4 = self._leg_angles("left")
-        right_phi1, right_phi4 = self._leg_angles("right")
-        self.assertAlmostEqual(right_phi1, left_phi1, delta=0.005)
-        self.assertAlmostEqual(right_phi4, left_phi4, delta=0.005)
-
-    def test_corrected_constants_are_not_the_old_ones(self) -> None:
-        """Guard against silently reverting to the pre-2026-10-05 offsets.
-
-        Those offsets left the legs 19 mm apart in computed length (phi1
-        +3.64 deg, phi4 -5.31 deg) while the machine stood level, which is
-        calibration error, not pose.
+        This is the algebraic identity the constants encode, so it catches a
+        typo or a half-applied edit.  It cannot catch a reference that moved;
+        only a measurement can, which is why the next test exists.
         """
-        self.assertAlmostEqual(_macro("VMC_REF_RAW_RIGHT_BACK"), 0.495861, places=5)
-        self.assertAlmostEqual(_macro("VMC_REF_RAW_RIGHT_AHEAD"), -2.630482, places=5)
-        # The left leg was trusted throughout and must not have moved.
+        pairs = (
+            ("LEFT_BACK", "VMC_REF_MODEL_PHI1"),
+            ("LEFT_AHEAD", "VMC_REF_MODEL_PHI4"),
+            ("RIGHT_BACK", "VMC_REF_MODEL_PHI1"),
+            ("RIGHT_AHEAD", "VMC_REF_MODEL_PHI4"),
+        )
+        for joint, model_macro in pairs:
+            with self.subTest(joint=joint):
+                raw = _macro(f"VMC_REF_RAW_{joint}")
+                model = _macro(model_macro)
+                direction = _macro(f"VMC_DIR_{joint}")
+                self.assertAlmostEqual(
+                    joint_model_angle(raw, raw, model, direction), model, places=9
+                )
+
+    def test_constants_are_the_nominal_pair(self) -> None:
+        """The right offsets must be the nominal ones, not a per-power-up patch.
+
+        A patch is ~39 deg wrong on the next power-up because the motor's
+        reference is not repeatable, so the nominal values are the only ones
+        that can be correct without a fresh measurement.
+        """
+        self.assertAlmostEqual(
+            _macro("VMC_REF_RAW_RIGHT_BACK"), NOMINAL_RIGHT_BACK, places=5
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_REF_RAW_RIGHT_AHEAD"), NOMINAL_RIGHT_AHEAD, places=5
+        )
+
+    def test_one_rotor_turn_is_the_detectable_signature(self) -> None:
+        """A 39 deg leg disagreement means the reference moved a whole turn.
+
+        The header records one output revolution per rotor turn as 39.4 / 40.2
+        deg at the ~9:1 reduction.  That is the size of the error to look for
+        when diagnosing a bad power-up - a few degrees is pose or hand
+        placement, ~39 deg is the reference.
+        """
+        self.assertGreater(math.degrees(0.6876), 35.0)
+        self.assertLess(math.degrees(0.6876), 45.0)
+
+    def test_left_leg_was_never_touched(self) -> None:
+        """The left leg tracked correctly throughout and is the reference."""
         self.assertAlmostEqual(_macro("VMC_REF_RAW_LEFT_BACK"), 2.51313968, places=7)
         self.assertAlmostEqual(_macro("VMC_REF_RAW_LEFT_AHEAD"), -3.20170302, places=7)
-
-    def test_the_correction_size_is_the_measured_one(self) -> None:
-        """The right offsets moved by the amount the locked pose demanded."""
-        back_shift = _macro("VMC_REF_RAW_RIGHT_BACK") - 0.432402611
-        ahead_shift = _macro("VMC_REF_RAW_RIGHT_AHEAD") - (-2.53776646)
-        self.assertAlmostEqual(back_shift, 0.063458, places=5)
-        self.assertAlmostEqual(ahead_shift, -0.092716, places=5)
 
     def test_leg_directions_are_mirrored(self) -> None:
         """A rebuilt linkage may need DIR flipped; it must not silently change."""

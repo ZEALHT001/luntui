@@ -56,21 +56,41 @@ from tools.rtt_kalman_capture import (  # noqa: E402
 JOINT_TORQUE_ACTIVE_NM = 1.0
 WHEEL_CURRENT_ACTIVE_RAW = 50.0
 
+# Physical ceilings, used to discard corrupt frames rather than believe them.
+# A partial RTT line decodes as a nonsense number - one capture read a peak
+# wheel current of 259150 against a 16000 hardware limit, which would otherwise
+# have blocked every flash. Anything past these is noise, not evidence.
+JOINT_TORQUE_MAX_NM = 54.0
+WHEEL_CURRENT_MAX_RAW = 16000.0
+
+# A live controller holds the body CONTINUOUSLY, so activity has to be
+# sustained to count.  Judging on a single frame is not safe either way: an
+# isolated glitch read 2.2 N.m on a switched-off machine and would have blocked
+# a legitimate flash, while one good frame is not proof that the legs are
+# driving.  Require this fraction of the window to be active.
+ACTIVE_FRAME_FRACTION = 0.05
+
 
 def _activity(sample) -> dict[str, float]:
-    def magnitude(value: float) -> float:
-        return abs(value) if value == value else 0.0  # NaN -> 0
-
+    """Largest plausible magnitude of each gated signal in one frame."""
     return {
         "measured joint torque": max(
-            magnitude(sample.airborne_joint_torque_min),
-            magnitude(sample.airborne_joint_torque_max),
+            _plausible(sample.airborne_joint_torque_min, JOINT_TORQUE_MAX_NM),
+            _plausible(sample.airborne_joint_torque_max, JOINT_TORQUE_MAX_NM),
         ),
         "wheel output current": max(
-            magnitude(sample.left_wheel_current),
-            magnitude(sample.right_wheel_current),
+            _plausible(sample.left_wheel_current, WHEEL_CURRENT_MAX_RAW),
+            _plausible(sample.right_wheel_current, WHEEL_CURRENT_MAX_RAW),
         ),
     }
+
+
+def _plausible(value: float, ceiling: float) -> float:
+    """Magnitude of value, or 0 if it is NaN or beyond the hardware ceiling."""
+    if value != value:
+        return 0.0
+    value = abs(value)
+    return value if value <= ceiling else 0.0
 
 
 def main() -> int:
@@ -82,7 +102,9 @@ def main() -> int:
 
     reader = JLinkSubprocessReader(args.device, args.speed, False)
     peaks: dict[str, float] = {}
+    active_frames: dict[str, int] = {}
     frames = 0
+    rejected = 0
     try:
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
@@ -92,6 +114,16 @@ def main() -> int:
                     continue
                 _profile, sample = parsed
                 frames += 1
+                for name, raw, ceiling in (
+                    ("joint torque", sample.airborne_joint_torque_max,
+                     JOINT_TORQUE_MAX_NM),
+                    ("wheel current", sample.left_wheel_current,
+                     WHEEL_CURRENT_MAX_RAW),
+                    ("wheel current", sample.right_wheel_current,
+                     WHEEL_CURRENT_MAX_RAW),
+                ):
+                    if raw == raw and abs(raw) > ceiling:
+                        rejected += 1
                 # Direct check on branches whose telemetry carries the switch.
                 switch = getattr(sample, "remote_s1", float("nan"))
                 if switch == switch and switch != 2.0:
@@ -103,6 +135,12 @@ def main() -> int:
                     return 1
                 for name, value in _activity(sample).items():
                     peaks[name] = max(peaks.get(name, 0.0), value)
+                    limit = {
+                        "measured joint torque": JOINT_TORQUE_ACTIVE_NM,
+                        "wheel output current": WHEEL_CURRENT_ACTIVE_RAW,
+                    }[name]
+                    if value > limit:
+                        active_frames[name] = active_frames.get(name, 0) + 1
             time.sleep(0.002)
     finally:
         reader.close()
@@ -117,6 +155,8 @@ def main() -> int:
         return 2
 
     print(f"{frames} frames over {args.seconds:.0f} s; peak activity:")
+    if rejected:
+        print(f"  ({rejected} out-of-range samples ignored as corrupt)")
     limits = {
         "measured joint torque": JOINT_TORQUE_ACTIVE_NM,
         "wheel output current": WHEEL_CURRENT_ACTIVE_RAW,
@@ -124,10 +164,16 @@ def main() -> int:
     busy = []
     for name, limit in limits.items():
         peak = peaks.get(name, 0.0)
-        flag = "ACTIVE" if peak > limit else "idle"
-        print(f"  {name:<14} {peak:8.3f}  (threshold {limit:g})  {flag}")
-        if peak > limit:
-            busy.append(f"{name} peaked at {peak:.3f}")
+        hot = active_frames.get(name, 0)
+        fraction = hot / frames if frames else 0.0
+        sustained = fraction >= ACTIVE_FRAME_FRACTION
+        flag = "ACTIVE" if sustained else "idle"
+        print(
+            f"  {name:<14} peak {peak:8.3f}  (>{limit:g} in "
+            f"{hot}/{frames} frames = {fraction:.1%})  {flag}"
+        )
+        if sustained:
+            busy.append(f"{name} active in {fraction:.0%} of frames")
 
     if busy:
         print(

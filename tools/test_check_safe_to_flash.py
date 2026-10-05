@@ -17,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tools.check_safe_to_flash import (  # noqa: E402
+    ACTIVE_FRAME_FRACTION,
+    JOINT_TORQUE_MAX_NM,
     JOINT_TORQUE_ACTIVE_NM,
+    WHEEL_CURRENT_MAX_RAW,
     WHEEL_CURRENT_ACTIVE_RAW,
     _activity,
 )
@@ -73,6 +76,34 @@ class SafeToFlashTest(unittest.TestCase):
         )
         self.assertLess(busy["measured joint torque"], JOINT_TORQUE_ACTIVE_NM)
         self.assertLess(busy["wheel output current"], WHEEL_CURRENT_ACTIVE_RAW)
+
+    def test_corrupt_frames_are_discarded(self) -> None:
+        """A half-parsed RTT line must not look like a running controller.
+
+        One real capture reported a peak wheel current of 259150 against a
+        16000 hardware limit; believing it would block every flash.
+        """
+        busy = _activity(
+            _sample(
+                airborne_joint_torque_max=JOINT_TORQUE_MAX_NM * 4,
+                left_wheel_current=WHEEL_CURRENT_MAX_RAW * 16,
+                right_wheel_current=-WHEEL_CURRENT_MAX_RAW * 16,
+            )
+        )
+        self.assertEqual(busy["measured joint torque"], 0.0)
+        self.assertEqual(busy["wheel output current"], 0.0)
+
+    def test_a_single_frame_is_not_enough(self) -> None:
+        """Judging on one frame is unsafe in both directions.
+
+        An isolated glitch read 2.2 N.m on a switched-off machine. The verdict
+        is taken over the fraction of active frames, so one sample among
+        hundreds must not decide it.
+        """
+        self.assertLess(1.0 / 300.0, ACTIVE_FRAME_FRACTION)
+        # ...while a genuinely live controller is active nearly all the time:
+        # the recorded standing and jump captures measured 57-100% of frames.
+        self.assertLess(ACTIVE_FRAME_FRACTION, 0.5)
 
 
 if __name__ == "__main__":

@@ -285,6 +285,12 @@ FORMAT_PROFILE = Profile(
         # jump_abort_reason were visible but the leg length the state machine
         # actually acts on was not.
         "getup_state": 70,
+        # Per-leg virtual angles.  Named because they are the only way to tell
+        # a calibration fault from an odd pose on this layout: the average
+        # theta alone cannot show which leg disagrees.
+        "theta": 71,
+        "left_theta": 72,
+        "right_theta": 73,
         "leg_length_left": 75,
         "leg_length_right": 76,
         "leg_length_target": 77,
@@ -396,6 +402,9 @@ CSV_FIELDS = [
     "leg_length_right",
     "leg_length_target",
     "getup_state",
+    "theta",
+    "left_theta",
+    "right_theta",
     "gravity_sign",
     "body_ax_g",
     "body_ax_lin_g",
@@ -505,6 +514,9 @@ class KalmanSample:
     leg_length_right: float = INVALID_VALUE
     leg_length_target: float = INVALID_VALUE
     getup_state: float = INVALID_VALUE
+    theta: float = INVALID_VALUE
+    left_theta: float = INVALID_VALUE
+    right_theta: float = INVALID_VALUE
     gravity_sign: float = INVALID_VALUE
     body_ax_g: float = INVALID_VALUE
     body_ax_lin_g: float = INVALID_VALUE
@@ -845,6 +857,9 @@ def parse_vmcvoa_line(
         leg_length_right=channel("leg_length_right"),
         leg_length_target=channel("leg_length_target"),
         getup_state=channel("getup_state"),
+        theta=channel("theta"),
+        left_theta=channel("left_theta"),
+        right_theta=channel("right_theta"),
         gravity_sign=channel("gravity_sign"),
         body_ax_g=channel("body_ax_g"),
         body_ax_lin_g=channel("body_ax_lin_g"),
@@ -1733,6 +1748,9 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 leg_length_right=_safe_float(row.get("leg_length_right", "")),
                 leg_length_target=_safe_float(row.get("leg_length_target", "")),
                 getup_state=_safe_float(row.get("getup_state", "")),
+                theta=_safe_float(row.get("theta", "")),
+                left_theta=_safe_float(row.get("left_theta", "")),
+                right_theta=_safe_float(row.get("right_theta", "")),
                 gravity_sign=_safe_float(row.get("gravity_sign", "")),
                 body_ax_g=_safe_float(row.get("body_ax_g", "")),
                 body_ax_lin_g=_safe_float(row.get("body_ax_lin_g", "")),
