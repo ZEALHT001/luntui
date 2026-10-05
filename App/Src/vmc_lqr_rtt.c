@@ -467,6 +467,10 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.jump_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_moving_enable", &value) != 0U) {
+    vmc_control.jump_moving_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "jump_compress_length", &value) != 0U) {
     vmc_control.jump_compress_length =
         vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);

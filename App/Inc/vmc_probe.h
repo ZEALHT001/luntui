@@ -81,17 +81,41 @@ extern "C" {
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
 #define VMC_JUMP_ENABLE_DEFAULT   1U
+/* Allow a jump to be started while the machine is driving.
+ *
+ * With this enabled the wheels keep balancing through the on-ground
+ * COMPRESS and EXTEND phases and are only blanked once the robot is actually
+ * in the air (RETRACT/LAND).  Disabling it restores the original behaviour,
+ * where the wheels are cut for the whole jump - which makes jumping only
+ * viable from a standstill, because 300 ms of no balance control tips a
+ * moving machine over before it leaves the ground. */
+#define VMC_JUMP_MOVING_ENABLE_DEFAULT 1U
 #define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.18f
 #define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.32f
 #define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.18f
 #define VMC_JUMP_LAND_LENGTH_DEFAULT     0.23f
-#define VMC_JUMP_LENGTH_KP_DEFAULT       3000.0f
+/* Leg-length gains used during the jump's EXTEND and RETRACT phases.
+ *
+ * KP is the dominant lever on jump height.  The legs are driven by a position
+ * PD, so the force is proportional to the REMAINING error: measured over one
+ * EXTEND the commanded force fell from 360 N to 48 N as the leg closed on its
+ * target, and the extension rate never exceeded ~0.9 m/s.  Raising the force
+ * LIMIT alone does nothing (the PD was not saturating); the gain itself has to
+ * rise.  Simulated against the measured body mass, 3000 -> 4500 lifts the
+ * take-off speed by roughly half.
+ *
+ * This is deliberately short of doubling: the joint torque scales with the
+ * force, the measured peak was 36 N.m against a 54 N.m motor limit, so there
+ * is only ~1.4x of headroom before the motors clip.  4500 with a 390 N force
+ * cap stays inside it.  Verify the joint torque in telemetry
+ * (airborne_joint_torque_max) after any further increase. */
+#define VMC_JUMP_LENGTH_KP_DEFAULT       4500.0f
 #define VMC_JUMP_LENGTH_KD_DEFAULT       180.0f
 /* Push force used during the EXTEND and RETRACT phases of a jump.  This is
  * clamped by VMC_LEG_FORCE_MAX_DEFAULT above, so at 100 the jump inherited a
  * 100 N per-leg ceiling and could not leave the ground.  350 N per leg
  * (~1.75 g of net lift) is what the jump was written with. */
-#define VMC_JUMP_FORCE_MAX_DEFAULT       350.0f
+#define VMC_JUMP_FORCE_MAX_DEFAULT       390.0f
 #define VMC_JUMP_SUPPORT_FORCE_DEFAULT   0.0f
 /* Stage timeouts.  The stage machine advances on (elapsed >= timeout) OR
  * (leg length reached the stage target), so these are timeouts, not delays -
@@ -101,7 +125,7 @@ extern "C" {
  * had time to extend, so jumping was silently impossible.  Restored to the
  * values the jump feature was written with. */
 #define VMC_JUMP_COMPRESS_TIMEOUT_MS_DEFAULT 180U
-#define VMC_JUMP_EXTEND_TIMEOUT_MS_DEFAULT   120U
+#define VMC_JUMP_EXTEND_TIMEOUT_MS_DEFAULT   160U
 #define VMC_JUMP_RETRACT_TIMEOUT_MS_DEFAULT  140U
 #define VMC_JUMP_LAND_TIMEOUT_MS_DEFAULT     600U
 #define VMC_JUMP_COOLDOWN_MS_DEFAULT         1500U
@@ -167,8 +191,18 @@ extern "C" {
  * not trip the latch. */
 #define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
 #define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 2.0f
-#define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 1U
-#define VMC_AIRBORNE_RELEASE_MS_DEFAULT 1U
+/* Confirmation and release times for the whole-machine latch.
+ *
+ * These were left at 1 ms, which makes the latch react to a SINGLE telemetry
+ * frame: one wheel-speed spike or one dropped torque sample was enough to
+ * declare the robot airborne and cut its wheels mid-drive.  A landing impact
+ * produces exactly those spikes.  Restored to the values the detector was
+ * written with; 100 ms is short enough that a real lift-off still cuts the
+ * wheels well before the machine reacts, and 500 ms of release hysteresis
+ * keeps a single good frame from re-arming the wheels while it is still in
+ * the air. */
+#define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 100U
+#define VMC_AIRBORNE_RELEASE_MS_DEFAULT 500U
 /* "Whole machine off the ground" also has to look still, so the latch cannot
  * sit on a body the pilot is carrying or throwing.  Measured on the recorded
  * runs: pitch moved by at most 0.012 rad in the 200 ms before every latch
@@ -503,7 +537,7 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 10.0f
 #define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 0U
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 1U
 /* Re-tuned on the 60 mm / 0.4 kg wheels (2026-10-01 RTT sweep).  The gains are
  * a leaky velocity-error integrator, so the pair sets both the steady-state
  * authority (gain/leak) and the response time (1/leak); these cannot be tuned
@@ -596,6 +630,7 @@ typedef struct {
   uint8_t enabled;
   float target_length;
   uint8_t jump_enable;
+  uint8_t jump_moving_enable;
   uint8_t jump_stage;
   uint8_t jump_armed;
   uint8_t jump_abort_reason;

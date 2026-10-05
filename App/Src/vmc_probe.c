@@ -61,6 +61,7 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
 static uint8_t vmc_jump_is_active(void);
+static uint8_t vmc_jump_is_active_or_aborted(void);
 static uint8_t vmc_jump_blocks_wheel_output(void);
 static uint8_t vmc_jump_joint_lqr_active(void);
 static uint8_t vmc_jump_overrides_target(void);
@@ -999,7 +1000,12 @@ static uint8_t vmc_jump_is_active(void)
              : 0U;
 }
 
-static uint8_t vmc_jump_blocks_wheel_output(void)
+/* True for every stage of a jump, plus the aborted-with-S1-up case.
+ *
+ * The leg torque path and the airborne detector gate on THIS: while a jump
+ * runs the legs are driven by the jump length profile, and the detector must
+ * stay out of the way rather than reacting to the leg motion. */
+static uint8_t vmc_jump_is_active_or_aborted(void)
 {
   if (vmc_jump_is_active() != 0U) {
     return 1U;
@@ -1009,6 +1015,36 @@ static uint8_t vmc_jump_blocks_wheel_output(void)
           remote_control.s[1] == RC_SW_UP)
              ? 1U
              : 0U;
+}
+
+/* Wheel blanking, which is deliberately NARROWER than the predicate above.
+ *
+ * Only the airborne part of a jump (RETRACT/LAND) cuts the wheels.  Cutting
+ * them for the whole jump - as the original code did - also kills the balance
+ * loop for the 300 ms of COMPRESS and EXTEND while the robot is still on the
+ * ground, so a jump started at any speed tips the machine over before it can
+ * ever leave the ground.  That is what made jumping stationary-only.  Keeping
+ * the wheels alive through the on-ground phases is also strictly better for a
+ * standing jump: the robot stays balanced during the crouch.
+ *
+ * VMC_JUMP_MOVING_ENABLE_DEFAULT = 0 restores the old whole-jump blanking.
+ *
+ * NOTE the aborted-with-S1-up latch deliberately does NOT appear here, in
+ * either mode.  It used to, and the effect was that an aborted jump left the
+ * wheels dead until the pilot cycled S1 from up to middle: the balance loop
+ * never came back, so the machine simply fell over on landing.  A jump aborts
+ * for ordinary reasons - the landing pushes |pitch| past the attitude limit,
+ * or one CAN frame is missed - so this happened intermittently and looked like
+ * the robot "sometimes not restarting its wheels".  The latch still gates the
+ * leg target and the re-arm, which is all it should do; a balancing robot must
+ * not have its wheels held off while the operator is mid-manoeuvre.  Real
+ * flight is covered independently by vmc_probe_state.airborne_active. */
+static uint8_t vmc_jump_blocks_wheel_output(void)
+{
+  if (vmc_control.jump_moving_enable == 0U) {
+    return vmc_jump_is_active();
+  }
+  return vmc_jump_joint_lqr_active();
 }
 
 static uint8_t vmc_jump_joint_lqr_active(void)
@@ -1100,6 +1136,17 @@ static void vmc_jump_finish(uint8_t stage, uint8_t reason, uint32_t now)
   vmc_control.jump_armed = 0U;
   vmc_control.jump_last_finish_ms = now;
   vmc_control.jump_land_contact_ms = 0U;
+  /* Drop the airborne latch the jump itself asserted.
+   *
+   * While RETRACT/LAND run, vmc_jump_joint_lqr_active() forces airborne_active
+   * to 1 to keep the wheels quiet, which means that flag is an artefact of the
+   * jump rather than a measurement.  Only the "landing confirmed by joint
+   * torque" path used to clear it; when the LAND phase instead expired on its
+   * timeout the latch stayed set and the wheels stayed cut until the normal
+   * detector released it - which needs 500 ms of sustained leg load and never
+   * happens if the robot lands softly.  Clear it for every exit so the
+   * detector starts from a clean state and can decide for itself. */
+  vmc_clear_airborne_latch();
   vmc_jump_enter_stage(stage, now);
 }
 
@@ -1291,9 +1338,7 @@ static void vmc_jump_update(void)
         if (vmc_control.jump_stage_ms >=
                 clamp_u32(vmc_control.jump_land_timeout_ms, 1U, 3000U) ||
             vmc_control.jump_land_contact_ms >= land_confirm_ms) {
-          if (vmc_control.jump_land_contact_ms >= land_confirm_ms) {
-            vmc_clear_airborne_latch();
-          }
+          /* vmc_jump_finish() clears the airborne latch for every exit. */
           vmc_jump_finish(VMC_JUMP_STAGE_FINISHED,
                           VMC_JUMP_ABORT_NONE,
                           now);
@@ -1935,9 +1980,9 @@ static void vmc_update_airborne_state(void)
        vmc_control.enabled != 0U &&
        vmc_balance.wheel_output_enable != 0U &&
        vmc_probe_state.feedback_timeout_active == 0U &&
-       vmc_getup_is_active() == 0U &&
-       vmc_jump_blocks_wheel_output() == 0U &&
-       remote_control_allows_joint_enable() != 0U)
+      vmc_getup_is_active() == 0U &&
+      vmc_jump_is_active_or_aborted() == 0U &&
+      remote_control_allows_joint_enable() != 0U)
           ? 1U
           : 0U;
 
@@ -2999,6 +3044,7 @@ void vmc_control_init(void)
   vmc_control.enabled = 0U;
   vmc_control.target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.jump_enable = VMC_JUMP_ENABLE_DEFAULT;
+  vmc_control.jump_moving_enable = VMC_JUMP_MOVING_ENABLE_DEFAULT;
   vmc_control.jump_stage = VMC_JUMP_STAGE_IDLE;
   vmc_control.jump_armed = 0U;
   vmc_control.jump_abort_reason = VMC_JUMP_ABORT_NONE;
@@ -3120,7 +3166,7 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
   const uint8_t use_lqr_tp =
       (vmc_balance.tp_output_enable != 0U &&
        vmc_getup_is_active() == 0U &&
-       (vmc_jump_blocks_wheel_output() == 0U ||
+       (vmc_jump_is_active_or_aborted() == 0U ||
         vmc_jump_joint_lqr_active() != 0U))
           ? 1U
           : 0U;
