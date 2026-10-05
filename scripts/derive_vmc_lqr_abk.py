@@ -53,6 +53,22 @@ class AbkPreset:
     # ABK/ABK2 use "-L*(phi2*cos(phi)-phi1^2*sin(phi))" in Nm, not "-l*...".
     use_leg_half_length_for_body_x_pitch_arm: bool = True
     gravity: float = 9.8
+    # Drivetrain.  The M3508 rotor is geared to the wheel (ratio n) and its
+    # stator is bolted to the leg, so the rotor's absolute speed is
+    #   omega_rotor = n * omega_wheel + (1 - n) * omega_leg.
+    # Its kinetic energy 0.5*Jr*omega_rotor^2 therefore contributes
+    #   n^2 * Jr          to the wheel's inertial term, and
+    #   (n - 1)^2 * Jr    to the LEG's inertial term,
+    # plus a velocity cross term that is second order in the state and thus
+    # vanishes from the LQR linearization.  Both inertia terms are applied
+    # inside residual(); the cross term is deliberately not modelled.
+    rotor_inertia: float = 0.0
+    gear_ratio: float = 1.0
+    # Rolling drag that is proportional to speed, expressed as a torque at the
+    # wheel per unit BODY speed: tau_drag = -wheel_viscous * x_dot, in
+    # N.m/(m/s).  Only the viscous part can enter a linear model; the Coulomb
+    # part has no derivative at the origin and is deliberately left out.
+    wheel_viscous: float = 0.0
 
 
 PRESETS: dict[str, AbkPreset] = {
@@ -63,10 +79,17 @@ PRESETS: dict[str, AbkPreset] = {
         #   wheel radius: 60 mm
         #   two legs total: 3.5 kg -> 1.75 kg each
         #   body mass: 11 kg + gimbal 2.3 kg = 13.3 kg
+        #   body CoM: measured 30 mm BELOW the hip joint (negative = below).
+        #     The original ABK script hard-coded l = 0.0, which makes the body
+        #     pitch a decoupled double integrator: A[:,phi] = 0 and
+        #     B[phi_dot, T] = 0, i.e. wheel torque cannot pitch the body and
+        #     pitch cannot affect anything.  On the real machine pitch and
+        #     translation are strongly coupled (measured d(pitch)/d(x) =
+        #     0.109 rad/m, corr 0.77), so that assumption was wrong here.
         # Leg/body inertias are mass-scaled from the original ABK values until
         # measured CAD inertia values are available.
         wheel_radius=0.06,
-        body_com_to_hip=0.0,
+        body_com_to_hip=-0.030,
         wheel_mass=0.4,
         leg_mass=3.5 / 2.0,
         body_mass=13.3,
@@ -74,8 +97,34 @@ PRESETS: dict[str, AbkPreset] = {
         leg_inertia=0.042737089 * ((3.5 / 2.0) / 0.95),
         body_inertia=(0.393175574 / 2.0 * 3.0) *
         (13.3 / (22.0 - 0.6 * 2.0 - 0.95 * 2.0)),
-        q=np.diag([1.0, 100.0, 150.0, 20.0, 10000.0, 1.0]),
-        r=np.diag([15.0, 0.3]),
+        # M3508 drivetrain, measured 2026-10-04 by spinning the free wheels on
+        # the stand with the LQR wheel row zeroed.  The wheel-only inertia
+        # 0.5*0.4*0.06^2 = 7.2e-4 is 7x too small: the rotor inertia reflected
+        # through the 268/17 gearbox is what dominates.
+        #   measured (coast-adjusted) 0.00487 +- 0.0004 kg.m^2
+        #   measured (raw impulse)    0.00683 kg.m^2 (drag inflates this)
+        #   model with this Jr        0.00072 + 15.7647^2*2.0e-5 = 0.00569
+        # so Jr is bracketed by 1.7e-5 .. 2.5e-5; 2.0e-5 is the midpoint.
+        rotor_inertia=2.0e-5,
+        gear_ratio=268.0 / 17.0,
+        # Viscous rolling drag, measured 2026-10-04 from the free-wheel
+        # coast-down on the stand (the only clean coast available - on the
+        # ground the position loop is always active, so its coasts cannot be
+        # fitted).  The wheel's own decay rate d(omega)/dt = -(a + b*omega)
+        # was a=14.4/b=0.851 (left) and a=8.3/b=2.205 (right).  Converting
+        # the viscous part to a torque at the wheel and averaging the two
+        # wheels (the model is a single symmetric x axis) gives
+        #   c = (0.101 + 0.262)/2 = 0.182 N.m per (m/s).
+        # The Coulomb part (0.06-0.10 N.m) has no derivative at the origin and
+        # cannot be represented here; it is the source of the low-speed dead
+        # band and has to be handled in firmware if it matters.
+        wheel_viscous=0.182,
+        # Weights the firmware schedule is actually built from.  Keeping the
+        # preset equal to the shipped weights means a bare run of this script
+        # reproduces App/Src/vmc_lqr.c exactly, so the LQR tuner cannot
+        # silently calculate from a different set than the file it writes.
+        q=np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0]),
+        r=np.diag([20.0, 2.5]),
         dt=0.001,
     ),
     "abk2": AbkPreset(
@@ -103,6 +152,29 @@ def parse_diag(value: str, expected: int, name: str) -> np.ndarray:
     return np.diag(parts)
 
 
+def drivetrain_inertias(p: AbkPreset) -> tuple[float, float]:
+    """Wheel and leg inertias with the geared rotor folded in.
+
+    The M3508 rotor is geared to the wheel (ratio n) and its stator is bolted
+    to the leg, so the rotor's absolute speed is
+
+        omega_rotor = n * omega_wheel + (1 - n) * omega_leg
+
+    and its kinetic energy 0.5*Jr*omega_rotor^2 loads both inertias:
+
+        wheel: Iw + n^2 * Jr
+        leg:   Il + (n - 1)^2 * Jr
+
+    The remaining n*(1-n)*Jr*omega_wheel*omega_leg cross term is second order
+    in the state, so it vanishes from the LQR linearization and is not
+    modelled.  Returns (wheel_inertia, leg_inertia) in kg.m^2.
+    """
+    ratio = p.gear_ratio
+    wheel = p.wheel_inertia + ratio * ratio * p.rotor_inertia
+    leg = p.leg_inertia + (ratio - 1.0) * (ratio - 1.0) * p.rotor_inertia
+    return wheel, leg
+
+
 def residual(
     acc: np.ndarray,
     state: np.ndarray,
@@ -110,13 +182,14 @@ def residual(
     p: AbkPreset,
     leg_length: float,
 ) -> np.ndarray:
-    theta, theta_dot, _x, _x_dot, phi, phi_dot = state
+    theta, theta_dot, _x, x_dot, phi, phi_dot = state
     theta_dd, x_dd, phi_dd = acc
     torque, hip_torque = control
 
     l_leg = leg_length / 2.0
     lm = leg_length / 2.0
     pitch_x_arm = l_leg if p.use_leg_half_length_for_body_x_pitch_arm else p.body_com_to_hip
+    wheel_inertia, leg_inertia = drivetrain_inertias(p)
 
     sin_theta = np.sin(theta)
     cos_theta = np.cos(theta)
@@ -142,15 +215,19 @@ def residual(
         -l_leg * theta_dot**2 * cos_theta - l_leg * theta_dd * sin_theta
     )
 
-    eq1 = x_dd - (torque - n * p.wheel_radius) / (
-        p.wheel_inertia / p.wheel_radius + p.wheel_mass * p.wheel_radius
+    # Viscous rolling drag acts on the wheel against its rotation and is the
+    # only friction term a linear plant can carry: it lands directly on
+    # A[3,3] = -wheel_viscous / (Iw/R + Mw*R).
+    wheel_drag = p.wheel_viscous * x_dot
+    eq1 = x_dd - (torque - n * p.wheel_radius - wheel_drag) / (
+        wheel_inertia / p.wheel_radius + p.wheel_mass * p.wheel_radius
     )
     eq2 = (
         (force_p * l_leg + pm * lm) * sin_theta
         - (n * l_leg + nm * lm) * cos_theta
         - torque
         + hip_torque
-        - p.leg_inertia * theta_dd
+        - leg_inertia * theta_dd
     )
     eq3 = (
         hip_torque
@@ -235,7 +312,63 @@ def fit_schedule(
     return lengths, gains, coeffs
 
 
+def report(p: AbkPreset, leg_length: float) -> None:
+    """Print the plant at one leg length for bench-anchor validation."""
+    a, b = linearize(p, leg_length)
+    ratio = p.gear_ratio
+    i_drivetrain = p.wheel_inertia + ratio * ratio * p.rotor_inertia
+    i_leg_effective = p.leg_inertia + (ratio - 1.0) ** 2 * p.rotor_inertia
+    np.set_printoptions(precision=6, suppress=True, linewidth=150)
+    print(f"leg length            : {leg_length:.4f} m")
+    print(f"gear ratio            : {ratio:.4f}")
+    print(f"rotor inertia         : {p.rotor_inertia:.4e} kg.m^2")
+    print(f"  -> wheel  + n^2*Jr  : {p.wheel_inertia:.4e} "
+          f"-> {i_drivetrain:.4e} kg.m^2  (x{ratio * ratio:.1f})")
+    print(f"  -> leg    +(n-1)^2*Jr: {p.leg_inertia:.4e} "
+          f"-> {i_leg_effective:.4e} kg.m^2 "
+          f"  (+{100.0 * ((ratio - 1.0) ** 2 * p.rotor_inertia) / p.leg_inertia:.1f}%)")
+    print(f"leg natural frequency : {np.sqrt(a[1, 0]) / (2.0 * np.pi):.3f} Hz "
+          f"(sqrt(A[1,0]), A[1,0]={a[1, 0]:.2f})")
+    poles = np.linalg.eigvals(a)
+    unstable = poles[poles.real > 1.0e-9]
+    print(f"unstable open-loop    : {unstable.real.max():.4f} 1/s"
+          if unstable.size else "unstable open-loop    : none")
+    print("A =")
+    print(a)
+    print("B =")
+    print(b)
+
+
+def emit_metadata(preset_name: str, p: AbkPreset) -> str:
+    """Comment block the LQR tuner reads back to recover the Q/R weights."""
+    q_values = ", ".join(f"{float(value):.17g}" for value in np.diag(p.q))
+    r_values = ", ".join(f"{float(value):.17g}" for value in np.diag(p.r))
+    wheel, leg = drivetrain_inertias(p)
+    return "\n".join(
+        [
+            "/* VMC_LQR_TUNER_METADATA",
+            f" * preset: {preset_name}",
+            f" * VMC_LQR_TUNER_Q: [{q_values}]",
+            f" * VMC_LQR_TUNER_R: [{r_values}]",
+            " *",
+            " * Wheel-leg plant used to generate this schedule:",
+            f" *   body_com_to_hip : {p.body_com_to_hip:+.4f} m",
+            f" *   gear_ratio     : {p.gear_ratio:.6g}",
+            f" *   rotor_inertia  : {p.rotor_inertia:.6g} kg.m^2",
+            f" *   wheel inertia  : {p.wheel_inertia:.6g} (bare) -> "
+            f"{wheel:.6g} kg.m^2 (with n^2*Jr)",
+            f" *   leg inertia    : {p.leg_inertia:.6g} (bare) -> "
+            f"{leg:.6g} kg.m^2 (with (n-1)^2*Jr)",
+            f" *   wheel viscous  : {p.wheel_viscous:.6g} N.m/(m/s) "
+            f"(sets A[3,3]; Coulomb drag is not modelled)",
+            " */",
+            "",
+        ]
+    )
+
+
 def emit_c(coeffs: np.ndarray) -> str:
+    """Write the cubic K schedule as firmware C."""
     lines = [
         '#include "vmc_lqr.h"',
         "",
@@ -276,6 +409,41 @@ def main() -> None:
         help="two diagonal R values: wheel_torque hip_torque, e.g. '35 1'",
     )
     parser.add_argument("--print-sample", type=float)
+    parser.add_argument(
+        "--rotor-inertia",
+        type=float,
+        help="M3508 rotor inertia in kg.m^2 (reflected through the gearbox)",
+    )
+    parser.add_argument(
+        "--gear-ratio",
+        type=float,
+        help="motor-to-wheel reduction ratio (default: preset value)",
+    )
+    parser.add_argument(
+        "--body-com",
+        type=float,
+        help=(
+            "signed body CoM offset from the hip in m, positive forward "
+            "(default: preset value)"
+        ),
+    )
+    parser.add_argument(
+        "--wheel-viscous",
+        type=float,
+        help=(
+            "viscous rolling drag at the wheel per unit body speed, "
+            "N.m/(m/s); sets A[3,3] (default: preset value)"
+        ),
+    )
+    parser.add_argument(
+        "--report",
+        type=float,
+        metavar="LEG_LENGTH",
+        help=(
+            "print A, B, the leg natural frequency and the reflected "
+            "drivetrain inertia for one leg length, then exit"
+        ),
+    )
     parser.add_argument("--out-c", type=Path)
     args = parser.parse_args()
 
@@ -284,6 +452,17 @@ def main() -> None:
         preset = replace(preset, q=parse_diag(args.q, 6, "Q"))
     if args.r:
         preset = replace(preset, r=parse_diag(args.r, 2, "R"))
+    if args.rotor_inertia is not None:
+        preset = replace(preset, rotor_inertia=args.rotor_inertia)
+    if args.gear_ratio is not None:
+        preset = replace(preset, gear_ratio=args.gear_ratio)
+    if args.body_com is not None:
+        preset = replace(preset, body_com_to_hip=args.body_com)
+    if args.wheel_viscous is not None:
+        preset = replace(preset, wheel_viscous=args.wheel_viscous)
+    if args.report is not None:
+        report(preset, args.report)
+        return
     if args.print_sample is not None:
         np.set_printoptions(precision=12, suppress=False)
         print(k_at_length(preset, args.print_sample))
@@ -297,7 +476,10 @@ def main() -> None:
         args.degree,
     )
     if args.out_c:
-        args.out_c.write_text(emit_c(coeffs))
+        args.out_c.write_text(
+            emit_metadata(args.preset, preset) + emit_c(coeffs),
+            encoding="utf-8",
+        )
     else:
         np.set_printoptions(precision=12, suppress=False)
         print("coeffs:")
