@@ -1174,8 +1174,6 @@ static uint8_t vmc_jump_start_is_allowed(void)
 
 static uint8_t vmc_jump_abort_reason(void)
 {
-  const float attitude_limit =
-      clamp_float(vmc_control.jump_attitude_limit, 0.05f, 1.00f);
   const uint8_t imu_ready =
       (vmc_probe_state.body.imu_valid != 0U &&
        vmc_probe_state.body.imu_connected != 0U)
@@ -1195,9 +1193,20 @@ static uint8_t vmc_jump_abort_reason(void)
   if (vmc_getup_is_active() != 0U || vmc_fall_rearm_required != 0U) {
     return VMC_JUMP_ABORT_GETUP;
   }
-  if (imu_ready == 0U ||
-      fabsf(vmc_probe_state.body.pitch) > attitude_limit ||
-      fabsf(vmc_probe_state.body.roll) > attitude_limit) {
+  /* Attitude is deliberately NOT an abort condition once the jump is running.
+   *
+   * It is still required before the jump starts (vmc_jump_start_is_allowed),
+   * which is enough to refuse a launch from a bad pose.  During and after the
+   * jump it has to be dropped: landing pitches the body hard - measured
+   * transients of 0.46 rad (26 deg) against the 0.35 rad limit - and that is
+   * ordinary landing nod, not loss of control.  Aborting on it marked roughly
+   * half of otherwise-good jumps as failures and disturbed the stage timing of
+   * the next one (a following jump launched with only 57 mm of push instead of
+   * 145-176 mm).
+   *
+   * IMU health is still checked: without a valid attitude the controller
+   * cannot balance at all, so losing it must stop the jump regardless. */
+  if (imu_ready == 0U) {
     return VMC_JUMP_ABORT_ATTITUDE;
   }
   return VMC_JUMP_ABORT_NONE;

@@ -73,7 +73,17 @@ extern "C" {
 #define VMC_LEG_PHI0_TORQUE_MAX_DEFAULT 108.0f /* = VMC_LEG_TP_MAX */
 #define VMC_LEG_PHI0_PID_DIRECTION  1.0f
 #define VMC_LEG_SUPPORT_FORCE_DEFAULT 120.0f
-#define VMC_LEG_SUPPORT_FORCE_MAX     120.0f
+/* Ceiling on the constant leg feedforward, used by both the standing support
+ * term and the jump's extension feedforward.
+ *
+ * Raised from 120 so the jump can actually reach the tail of its stroke. The
+ * jump needs >150 N of feedforward to matter there: the length loop is a
+ * position PD whose force collapses with the remaining error, and measured
+ * over one EXTEND it fell from ~380 N to 19 N, so the last third of the stroke
+ * was braking. Standing only ever asks for VMC_LEG_SUPPORT_FORCE_DEFAULT
+ * (120 N), which is unchanged, so this ceiling does not affect how the robot
+ * stands. */
+#define VMC_LEG_SUPPORT_FORCE_MAX     250.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
 #define VMC_LEG_TARGET_SHORT      0.180f
 #define VMC_LEG_TARGET_MID        0.230f
@@ -90,8 +100,14 @@ extern "C" {
  * viable from a standstill, because 300 ms of no balance control tips a
  * moving machine over before it leaves the ground. */
 #define VMC_JUMP_MOVING_ENABLE_DEFAULT 1U
-#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.18f
-#define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.32f
+/* Crouch depth.  NOTE this target is currently NOT reached: COMPRESS uses the
+ * standing gains and the standing support force, whose 120 N points toward
+ * extension, so the net command during COMPRESS is still outward. Measured,
+ * the leg moved 1 mm against a target 20 mm away, i.e. the phase is a 180 ms
+ * pause rather than a crouch. Changing this number therefore has no effect
+ * until COMPRESS is given the jump gains with no extension feedforward. */
+#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.16f
+#define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.38f
 #define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.18f
 #define VMC_JUMP_LAND_LENGTH_DEFAULT     0.23f
 /* Leg-length gains used during the jump's EXTEND and RETRACT phases.
@@ -116,7 +132,39 @@ extern "C" {
  * 100 N per-leg ceiling and could not leave the ground.  350 N per leg
  * (~1.75 g of net lift) is what the jump was written with. */
 #define VMC_JUMP_FORCE_MAX_DEFAULT       390.0f
-#define VMC_JUMP_SUPPORT_FORCE_DEFAULT   0.0f
+/* Constant extension force added on top of the jump length PD.
+ *
+ * Rationale for the parameter being here at all: the legs run a position PD,
+ * so force is proportional to the REMAINING error and collapses as the leg
+ * closes on its target.  Measured over one EXTEND (target 0.319 m) the
+ * commanded force fell from ~380 N to 19 N across the last third of the
+ * stroke, and the extension rate peaked at 1.05 m/s and then DECLINED - the
+ * tail of the stroke was braking, because -kd*v eventually outweighs
+ * kp*error.  A constant feedforward is the natural correction for exactly
+ * that, and it has to be inside +/-VMC_LEG_SUPPORT_FORCE_MAX (now 250 N) to
+ * pass the clamp at the call site.
+ *
+ * 80 N was tried and made no measurable difference: the leg-length trajectory
+ * was identical to the 0 N baseline, because at that size the term is small
+ * compared with the ~390 N the PD already commands at the start of the stroke,
+ * and it is the TAIL that needs help.  180 N did reach the tail and took the
+ * take-off speed from 0.91 to 1.37 m/s (a measured ~200 mm jump), so 240 N
+ * continues in that direction while staying inside the 250 N clamp.
+ *
+ * WARNING - this term applies to EXTEND and RETRACT only (jump_force_profile).
+ * COMPRESS instead runs on the STANDING gains and the standing support force,
+ * and that support force (120 N) points the same way as the jump extension
+ * force. Measured during COMPRESS with a 0.18 m target, the net command was
+ * -78 N - still extending - so the leg travelled 1 mm and the crouch never
+ * happened. Lowering the compress target on its own changes nothing.
+ *
+ * The earlier "80 N made it worse" reading was a measurement artifact: the
+ * take-off speed had been taken over a +-1 sample window, which picks up a
+ * single-sample spike, while later runs used +-2. Re-analysed on one window
+ * the 80 N run was 0.93 m/s against a 0 N baseline of 0.91, i.e. the same.
+ * Always compare jumps with one fixed window - tools/jump_report.py uses +-2
+ * samples and reports the window it used. */
+#define VMC_JUMP_SUPPORT_FORCE_DEFAULT   240.0f
 /* Stage timeouts.  The stage machine advances on (elapsed >= timeout) OR
  * (leg length reached the stage target), so these are timeouts, not delays -
  * but they must still be long enough for the legs to physically travel.  They
@@ -399,6 +447,30 @@ extern "C" {
  * genuinely symmetric pose instead of editing one number by hand. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
+/* Values that are correct when the right_ahead motor comes up in its NOMINAL
+ * turn (derived from a fixture-locked symmetric pose; see the history above).
+ *
+ * DO NOT patch these to chase a bad power-up. This pair has already been
+ * "corrected" for an offset reference three times, and every correction was
+ * invalid on the next power-up:
+ *
+ *   - The motor re-establishes its multi-turn reference at power-on and the
+ *     result is NOT repeatable. On four observed power-ups of the current
+ *     motor the right_ahead reading at one physical pose was -2.5378, -1.8507,
+ *     -2.5519 (steps of one rotor turn) and, after a jump, one full turn away
+ *     again.
+ *   - A compensation derived from one of those states is a -36 to -39 deg
+ *     error on any other, which the machine cannot balance. Measured directly:
+ *     after a jump needed (+39.4 deg) and the next power-up needed (-36.5 deg)
+ *     on the same joint - i.e. the reference had moved back.
+ *
+ * So when the legs disagree, the useful question is not "what constant fixes
+ * it" but "where is the motor's reference this time". Measure it, and if it is
+ * nominal these constants are right. The durable fix is on the motor side:
+ * store the zero with the DM tool and confirm it survives several power cycles,
+ * and check the joint supply for a droop under landing current (the failure
+ * appeared at the instant of touchdown, when wheel and joint current peak
+ * together). */
 #define VMC_REF_RAW_RIGHT_AHEAD    -2.630482f
 #define VMC_REF_RAW_RIGHT_BACK     0.495861f
 

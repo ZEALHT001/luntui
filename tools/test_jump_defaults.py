@@ -140,6 +140,64 @@ class JumpDefaultsTest(unittest.TestCase):
         # The force cap must stay under the joint-limit equivalent (~390 N).
         self.assertLessEqual(_macro("VMC_JUMP_FORCE_MAX_DEFAULT"), 400.0)
 
+    def test_extension_feedforward_clears_its_clamp(self) -> None:
+        """The feedforward must be large enough to reach the tail of the stroke.
+
+        The length loop is a position PD, so its force collapses as the leg
+        closes on the target (measured: ~380 N down to 19 N over one EXTEND),
+        and the last third of the stroke was braking. A small feedforward is
+        swamped by the ~390 N the PD already commands early on - 80 N measured
+        as no change at all - so it has to be big enough to matter where the PD
+        has faded.
+
+        It is clamped to +/-VMC_LEG_SUPPORT_FORCE_MAX at the call site, so a
+        value above that ceiling would be silently truncated.
+        """
+        support = _macro("VMC_JUMP_SUPPORT_FORCE_DEFAULT")
+        ceiling = _macro("VMC_LEG_SUPPORT_FORCE_MAX")
+        self.assertGreaterEqual(
+            support, 150.0, "below this the term does nothing measurable"
+        )
+        self.assertLessEqual(
+            support,
+            ceiling,
+            "the call site clamps to this, so more than it would do nothing",
+        )
+
+    def test_the_force_ceiling_does_not_change_how_the_robot_stands(self) -> None:
+        """Raising the ceiling must not alter the standing support force.
+
+        VMC_LEG_SUPPORT_FORCE_MAX only bounds the feedforward; standing asks
+        for VMC_LEG_SUPPORT_FORCE_DEFAULT, which must stay where it was tuned.
+        """
+        self.assertGreater(_macro("VMC_LEG_SUPPORT_FORCE_MAX"), 120.0)
+        self.assertEqual(_macro("VMC_LEG_SUPPORT_FORCE_DEFAULT"), 120.0)
+
+    def test_jump_extension_stays_inside_the_leg_stroke(self) -> None:
+        """The EXTEND target must remain reachable and leave room to retract."""
+        extend = _macro("VMC_JUMP_EXTEND_LENGTH_DEFAULT")
+        lo = _macro("VMC_LEG_LENGTH_MIN")
+        hi = _macro("VMC_LEG_LENGTH_MAX")
+        self.assertGreater(extend, _macro("VMC_JUMP_COMPRESS_LENGTH_DEFAULT"))
+        self.assertLess(extend, hi, "the leg cannot reach past its own limit")
+        # The latch length must come back down inside the stroke too.
+        self.assertGreater(extend, _macro("VMC_JUMP_RETRACT_LENGTH_DEFAULT"))
+        self.assertGreater(hi - extend, 0.0)
+        self.assertGreater(extend, lo)
+
+    def test_feedforward_adds_extension_not_retraction(self) -> None:
+        """A sign error here would fight the jump instead of helping it.
+
+        Two direction constants both multiply by -1 on the way to the force:
+        the length PID and the support term. During EXTEND the commanded force
+        comes out negative while the leg extends, so a POSITIVE
+        jump_support_force must make the force more negative (more extension).
+        If either direction were flipped, the same positive value would
+        subtract force and the robot would jump lower.
+        """
+        self.assertEqual(_macro("VMC_LEG_SUPPORT_FORCE_DIRECTION"), -1.0)
+        self.assertEqual(_macro("VMC_LEG_LENGTH_PID_DIRECTION"), -1.0)
+
 
 SOURCE = ROOT / "App" / "Src" / "vmc_probe.c"
 
@@ -166,6 +224,30 @@ def _function_body(source: str, name: str) -> str:
 
 
 class MovingJumpTest(unittest.TestCase):
+    def test_attitude_gates_the_launch_but_not_the_flight(self) -> None:
+        """Attitude must be checked BEFORE the jump, never during it.
+
+        Landing pitches the body hard - measured transients of 0.46 rad
+        (26 deg) against a 0.35 rad limit - and that is ordinary landing nod.
+        While the abort path also tested attitude, roughly half of otherwise
+        good jumps were marked failed, and the aborted state disturbed the
+        stage timing of the next jump (57 mm of push instead of 145-176 mm).
+
+        The launch check must keep the test, otherwise a jump could be
+        commanded from a pose the machine cannot recover from.
+        """
+        source = SOURCE.read_text(encoding="utf-8")
+        launch = _function_body(source, "vmc_jump_start_is_allowed")
+        abort = _function_body(source, "vmc_jump_abort_reason")
+        self.assertIn("body.pitch", launch, "launch must still gate on attitude")
+        self.assertIn("body.roll", launch)
+        self.assertNotIn(
+            "body.pitch", abort, "attitude must not abort a running jump"
+        )
+        self.assertNotIn("body.roll", abort)
+        # IMU health still aborts: without attitude the controller cannot balance.
+        self.assertIn("imu_ready", abort)
+
     """A jump must be startable while the machine is already driving.
 
     The jump itself was never speed-gated; what made it stationary-only was

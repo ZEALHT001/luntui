@@ -108,7 +108,7 @@ _BALANCE_PARAM_FALLBACK = {
     "jump_enable": 1.0,
     "jump_moving_enable": 1.0,
     "jump_compress_length": 0.18,
-    "jump_extend_length": 0.32,
+    "jump_extend_length": 0.36,
     "jump_retract_length": 0.18,
     "jump_land_length": 0.23,
     "jump_kp_length": 3000.0,
