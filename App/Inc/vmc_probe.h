@@ -54,7 +54,18 @@ extern "C" {
 #define VMC_LEG_LENGTH_MAX         0.385f
 #define VMC_LEG_LENGTH_KP_DEFAULT  2000.0f
 #define VMC_LEG_LENGTH_KD_DEFAULT  100.0f
-#define VMC_LEG_FORCE_MAX_DEFAULT  200.0f
+/* Leg force ceiling, used by BOTH the stance leg-length loop and the jump.
+ *
+ * It has to clear what a jump needs: the machine is about 20 kg, so ~200 N of
+ * total leg force only just holds it up and leaves no upward acceleration at
+ * all.  At 200 the jump could extend the legs but never leave the ground.  A
+ * normal stance only commands ~100-200 N per leg, so raising the ceiling does
+ * not change how the robot stands - a limit that is never reached has no
+ * effect - it only stops the jump from being clipped.
+ *
+ * Note the jump also applies its own, lower clamp (VMC_JUMP_FORCE_MAX_DEFAULT)
+ * inside this one, so both have to be large enough. */
+#define VMC_LEG_FORCE_MAX_DEFAULT  500.0f
 #define VMC_LEG_LENGTH_PID_DIRECTION -1.0f
 #define VMC_LEG_PHI0_TARGET_DEFAULT VMC_PHI0_VERTICAL_RAD
 #define VMC_LEG_PHI0_KP_DEFAULT     50.0f
@@ -71,22 +82,36 @@ extern "C" {
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
 #define VMC_JUMP_ENABLE_DEFAULT   1U
 #define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.18f
-#define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.25f
+#define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.32f
 #define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.18f
-#define VMC_JUMP_LAND_LENGTH_DEFAULT     0.18f
+#define VMC_JUMP_LAND_LENGTH_DEFAULT     0.23f
 #define VMC_JUMP_LENGTH_KP_DEFAULT       3000.0f
-#define VMC_JUMP_LENGTH_KD_DEFAULT       100.0f
-#define VMC_JUMP_FORCE_MAX_DEFAULT       100.0f
+#define VMC_JUMP_LENGTH_KD_DEFAULT       180.0f
+/* Push force used during the EXTEND and RETRACT phases of a jump.  This is
+ * clamped by VMC_LEG_FORCE_MAX_DEFAULT above, so at 100 the jump inherited a
+ * 100 N per-leg ceiling and could not leave the ground.  350 N per leg
+ * (~1.75 g of net lift) is what the jump was written with. */
+#define VMC_JUMP_FORCE_MAX_DEFAULT       350.0f
 #define VMC_JUMP_SUPPORT_FORCE_DEFAULT   0.0f
-#define VMC_JUMP_COMPRESS_TIMEOUT_MS_DEFAULT 1U
-#define VMC_JUMP_EXTEND_TIMEOUT_MS_DEFAULT   1U
-#define VMC_JUMP_RETRACT_TIMEOUT_MS_DEFAULT  1U
-#define VMC_JUMP_LAND_TIMEOUT_MS_DEFAULT     1U
-#define VMC_JUMP_COOLDOWN_MS_DEFAULT         1U
-#define VMC_JUMP_TOTAL_TIMEOUT_MS_DEFAULT    1U
+/* Stage timeouts.  The stage machine advances on (elapsed >= timeout) OR
+ * (leg length reached the stage target), so these are timeouts, not delays -
+ * but they must still be long enough for the legs to physically travel.  They
+ * were all left at 1 ms, which made every stage complete in a millisecond:
+ * the target snapped 0.18 -> 0.25 -> 0.18 in about 3 ms and the machine never
+ * had time to extend, so jumping was silently impossible.  Restored to the
+ * values the jump feature was written with. */
+#define VMC_JUMP_COMPRESS_TIMEOUT_MS_DEFAULT 180U
+#define VMC_JUMP_EXTEND_TIMEOUT_MS_DEFAULT   120U
+#define VMC_JUMP_RETRACT_TIMEOUT_MS_DEFAULT  140U
+#define VMC_JUMP_LAND_TIMEOUT_MS_DEFAULT     600U
+#define VMC_JUMP_COOLDOWN_MS_DEFAULT         1500U
+/* Deliberately larger than the original 1200: the stage sum is 1040 ms, so
+ * 1200 left the retract and land phases almost no margin.  1800 still trips
+ * long before anything is damaged. */
+#define VMC_JUMP_TOTAL_TIMEOUT_MS_DEFAULT    1800U
 #define VMC_JUMP_ATTITUDE_LIMIT_DEFAULT      0.35f
 #define VMC_JUMP_LAND_TORQUE_THRESHOLD_DEFAULT 3.0f
-#define VMC_JUMP_LAND_CONFIRM_MS_DEFAULT     1U
+#define VMC_JUMP_LAND_CONFIRM_MS_DEFAULT     80U
 #define VMC_JUMP_LENGTH_READY_TOL            0.015f
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
@@ -315,23 +340,33 @@ extern "C" {
  * alone unless the linkage itself was rebuilt: DIR sets the sign of motion,
  * not the zero.
  *
- * WARNING - the right_ahead motor (id 2) does NOT report a stable absolute
- * position across power cycles.  Measured at the same physical pose on three
- * separate power-ups it read -2.5378, -1.8507 and -2.5519 rad.  The steps are
- * 39.4 and 40.2 degrees, i.e. one motor-rotor revolution through the ~9:1
- * reduction (360/9 = 40.0 deg): the multi-turn reference is re-established at
- * power-on instead of being absolute.  The joint angle is therefore only
- * reliable modulo ~40 degrees and NO firmware offset can fix that.
+ * HISTORY - the right_ahead motor (id 2) used to re-establish its multi-turn
+ * reference at power-on instead of holding an absolute zero.  Measured at the
+ * same physical pose on three separate power-ups it read -2.5378, -1.8507 and
+ * -2.5519 rad, stepping by 39.4 and 40.2 degrees - one motor-rotor revolution
+ * through the ~9:1 reduction.  That is exactly why re-calibrating REF_RAW from
+ * a single reading is a trap: it bakes in whichever turn happened to come up.
  *
- * Consequences: do not re-calibrate REF_RAW from a single reading - it will
- * bake in whichever turn happened to come up and break on the next power-on.
- * The values below are the long-standing ones; with them the right leg tracks
- * the left to ~1.3 deg at the reference pose.  Fix the motor (set and store
- * its zero, and check the encoder connector) rather than the constants. */
+ * That instability is NOT present on the current motor.  After the zero was
+ * stored, all four joints read byte-identical positions across a power cycle
+ * (right_ahead +2.387000 before and after, p95 spread 0.0000 rad on all
+ * four), so the constants could be corrected safely.
+ *
+ * The values below were re-derived on 2026-10-05 from a pose that was
+ * physically locked with both legs in the SAME configuration.  That
+ * measurement found the legs disagreeing by 19 mm of computed length
+ * (phi1 +3.64 deg, phi4 -5.31 deg) while the machine stood level to 0.86 deg
+ * of roll.  A real 19 mm leg-length difference would have to appear as about
+ * 7 deg of roll, since the leg-length controller cannot remove roll - so the
+ * disagreement was calibration, not pose.  With these constants the two legs
+ * agree to 0.0 mm in that pose.
+ *
+ * If a leg zero ever moves again, re-derive BOTH constants from a locked,
+ * genuinely symmetric pose instead of editing one number by hand. */
 #define VMC_REF_RAW_LEFT_BACK      2.51313968f
 #define VMC_REF_RAW_LEFT_AHEAD    -3.20170302f
-#define VMC_REF_RAW_RIGHT_AHEAD    -2.53776646f
-#define VMC_REF_RAW_RIGHT_BACK     0.432402611f
+#define VMC_REF_RAW_RIGHT_AHEAD    -2.630482f
+#define VMC_REF_RAW_RIGHT_BACK     0.495861f
 
 /* VMC model angles at the same 385 mm reference pose. */
 #define VMC_REF_MODEL_PHI1         2.20948918f
@@ -454,7 +489,15 @@ extern "C" {
 #define VMC_BALANCE_SPEED_PITCH_LIMIT_DEFAULT 0.18f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_BALANCE_SPEED_PITCH_RAMP_RATE_DEFAULT 0.3f
-#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.05f
+/* Anchor (x hold) capture window.
+ *
+ * This is a drift fix, not a tuning knob.  At 0.05 the position loop asked for
+ * less than the wheels' Coulomb friction could deliver, so the machine could
+ * not pull itself back: it crept in one direction indefinitely (measured
+ * metres).  At 0.25 the loop commands several times the friction threshold and
+ * the same test holds to a few centimetres.  Raising it further buys nothing -
+ * the residual limit cycle is closed-loop dynamics, not authority. */
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.25f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
@@ -484,7 +527,7 @@ extern "C" {
 #define VMC_RC_WHEEL_FWD_CURRENT_MAX 2000
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
-#define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 0.9f
+#define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f

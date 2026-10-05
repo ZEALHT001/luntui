@@ -280,6 +280,22 @@ FORMAT_PROFILE = Profile(
     field_count=136,
     channels={
         **FORMAT_V11_PROFILE.channels,
+        # Jump and leg-length diagnostics.  These were emitted but unnamed, so
+        # a jump could not be diagnosed from a capture at all: jump_stage and
+        # jump_abort_reason were visible but the leg length the state machine
+        # actually acts on was not.
+        "getup_state": 70,
+        "leg_length_left": 75,
+        "leg_length_right": 76,
+        "leg_length_target": 77,
+        "airborne_candidate_ms": 89,
+        "airborne_release_ms": 90,
+        "jump_armed": 92,
+        "jump_target_length": 94,
+        "jump_stage_ms": 95,
+        "jump_land_contact_ms": 96,
+        "jump_trigger_count": 97,
+        "jump_abort_count": 98,
         "loop_dt_us": 134,
         "loop_count": 135,
     },
@@ -370,6 +386,16 @@ CSV_FIELDS = [
     "loop_count",
     "jump_stage",
     "jump_abort_reason",
+    "jump_armed",
+    "jump_target_length",
+    "jump_stage_ms",
+    "jump_land_contact_ms",
+    "jump_trigger_count",
+    "jump_abort_count",
+    "leg_length_left",
+    "leg_length_right",
+    "leg_length_target",
+    "getup_state",
     "gravity_sign",
     "body_ax_g",
     "body_ax_lin_g",
@@ -469,6 +495,16 @@ class KalmanSample:
     loop_count: float = INVALID_VALUE
     jump_stage: float = INVALID_VALUE
     jump_abort_reason: float = INVALID_VALUE
+    jump_armed: float = INVALID_VALUE
+    jump_target_length: float = INVALID_VALUE
+    jump_stage_ms: float = INVALID_VALUE
+    jump_land_contact_ms: float = INVALID_VALUE
+    jump_trigger_count: float = INVALID_VALUE
+    jump_abort_count: float = INVALID_VALUE
+    leg_length_left: float = INVALID_VALUE
+    leg_length_right: float = INVALID_VALUE
+    leg_length_target: float = INVALID_VALUE
+    getup_state: float = INVALID_VALUE
     gravity_sign: float = INVALID_VALUE
     body_ax_g: float = INVALID_VALUE
     body_ax_lin_g: float = INVALID_VALUE
@@ -799,6 +835,16 @@ def parse_vmcvoa_line(
         loop_count=channel("loop_count"),
         jump_stage=channel("jump_stage"),
         jump_abort_reason=channel("jump_abort_reason"),
+        jump_armed=channel("jump_armed"),
+        jump_target_length=channel("jump_target_length"),
+        jump_stage_ms=channel("jump_stage_ms"),
+        jump_land_contact_ms=channel("jump_land_contact_ms"),
+        jump_trigger_count=channel("jump_trigger_count"),
+        jump_abort_count=channel("jump_abort_count"),
+        leg_length_left=channel("leg_length_left"),
+        leg_length_right=channel("leg_length_right"),
+        leg_length_target=channel("leg_length_target"),
+        getup_state=channel("getup_state"),
         gravity_sign=channel("gravity_sign"),
         body_ax_g=channel("body_ax_g"),
         body_ax_lin_g=channel("body_ax_lin_g"),
@@ -1675,6 +1721,18 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 jump_abort_reason=_safe_float(
                     row.get("jump_abort_reason", "")
                 ),
+                jump_armed=_safe_float(row.get("jump_armed", "")),
+                jump_target_length=_safe_float(row.get("jump_target_length", "")),
+                jump_stage_ms=_safe_float(row.get("jump_stage_ms", "")),
+                jump_land_contact_ms=_safe_float(
+                    row.get("jump_land_contact_ms", "")
+                ),
+                jump_trigger_count=_safe_float(row.get("jump_trigger_count", "")),
+                jump_abort_count=_safe_float(row.get("jump_abort_count", "")),
+                leg_length_left=_safe_float(row.get("leg_length_left", "")),
+                leg_length_right=_safe_float(row.get("leg_length_right", "")),
+                leg_length_target=_safe_float(row.get("leg_length_target", "")),
+                getup_state=_safe_float(row.get("getup_state", "")),
                 gravity_sign=_safe_float(row.get("gravity_sign", "")),
                 body_ax_g=_safe_float(row.get("body_ax_g", "")),
                 body_ax_lin_g=_safe_float(row.get("body_ax_lin_g", "")),
