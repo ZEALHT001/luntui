@@ -191,12 +191,18 @@ extern "C" {
 #define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.08f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.054f
-/* Nominal control period in seconds.
+/* Fallback control period in seconds, used before the first measurement and
+ * if the cycle counter is unavailable.
  *
- * The loop is NOT fixed-rate.  osDelay(1) only sets a floor, so the real
- * period is "however long the loop body takes, plus the sleep".  Measured on
- * the vehicle the loop ran at 450 Hz, i.e. 2.22 ms, so every term that had
- * assumed 1 ms was off by that factor.
+ * The loop is held to VMC_CONTROL_PERIOD_US, but the value that actually
+ * feeds the controller is the measured period: the Kalman prediction and its
+ * position integration, slip condition C's differentiator, and the command
+ * ramps all call vmc_loop_dt().
+ *
+ * HISTORY - the loop used to be free-running.  osDelay(1) only set a floor,
+ * so the real period was "however long the loop body takes, plus the sleep";
+ * measured on the vehicle it ran at 450 Hz, i.e. 2.22 ms, so every term that
+ * had assumed 1 ms was off by that factor.
  *
  * Measured period is therefore what actually feeds the controller: the Kalman
  * prediction and its position integration, slip condition C's differentiator,
@@ -228,6 +234,25 @@ extern "C" {
  * a whole second. */
 #define VMC_LOOP_DT_MIN           0.0001f
 #define VMC_LOOP_DT_MAX           0.05f
+/* Fixed control period, in microseconds (450 Hz).
+ *
+ * The loop is held to this period instead of running as fast as it can.
+ * Every rate term in the controller multiplies the measured dt, so a faster
+ * loop does not change the tuning in theory - but it does change the
+ * discrete-time realisation of every filter, and this machine was tuned
+ * against 450 Hz.  Pinning the period means a telemetry or formatting change
+ * cannot alter the closed-loop response.
+ *
+ * FreeRTOS ticks at 1 kHz, so the sub-millisecond remainder is waited out by
+ * polling TIM1 (1 MHz).  That costs up to one millisecond of idle time per
+ * cycle; deterministic timing is worth more here than the idle time.  There
+ * is no watchdog and no idle hook, so a busy control task is safe. */
+#define VMC_CONTROL_PERIOD_US     2222U
+/* Sleep only when a whole RTOS tick comfortably fits in the remaining time.
+ * osDelay(1) returns somewhere between almost immediately and ~1 ms later
+ * depending on where the call lands inside the tick, so a margin is needed to
+ * avoid overshooting the deadline. */
+#define VMC_CONTROL_SLEEP_MIN_US  1200
 #define VMC_FEEDBACK_TIMEOUT_MS   100U
 /* Measured wheel radius: 60 mm.  All wheel-speed -> body-speed conversions
  * use this value, so balance and speed-loop tuning must be revalidated after
@@ -381,18 +406,39 @@ extern "C" {
 #define VMC_BODY_MOTION_KF_SLIP_ENABLE_DEFAULT    0U
 /* Condition C threshold in m/s2.
  *
- * Condition C now differentiates against the MEASURED control period, so this
- * is a true m/s2 figure.  It was previously tuned while the differentiator
- * assumed 1 ms against a loop that actually ran at ~450 Hz, which inflated
- * every metric by about 2.2x.  The default is rescaled by that factor so the
- * same events trigger as before: a landing transient that spins the wheel from
- * 0 to 2.9 m/s in ~200 ms is a true 14.5 m/s2, which the old code reported as
- * ~32 m/s2 while steady driving stays far below it either way.
+ * Condition C differentiates against the MEASURED control period, so this is
+ * a true m/s2 figure.
  *
- * The rescale is an equivalence, not a re-measurement.  Any slip_accel value
- * carried over from before this change should be divided by ~2.2, and the
- * threshold should be re-derived from a fresh projectile run. */
-#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     9.0f
+ * DERIVED, not guessed.  Two labelled pellet runs, 600 s of driving and 35
+ * operator-marked slips in total, captured at 225 Hz on the binary VMCFAST
+ * stream with zero dropped frames (see tools/slip_analyze.py):
+ *
+ *   logs/slip_20261008_011004  300 s, 15 marked
+ *   logs/slip_20261008_013344  300 s, 20 marked
+ *
+ * Merged sweep over both runs, scoring one detection per marked event with a
+ * 700 ms refractory:
+ *
+ *   threshold  confirm   recall   extra detections
+ *      13        5 ms     34/35          8
+ *      14       10 ms     33/35          7    <- previous default
+ *      16        5 ms     33/35          4    <- this value
+ *      16       20 ms     31/35          1
+ *      18       10 ms     31/35          2
+ *
+ * 16 with a 5 ms confirmation matches the recall of 14 while cutting the
+ * extra detections from 7 to 4, and two of those four were later confirmed to
+ * be genuine slips the operator never marked - so the real cost is about two
+ * spurious triggers per 600 s.  Going to 18 loses two more real events for a
+ * gain of two, which is not worth it.
+ *
+ * The previous default of 9.0 sat below the noise floor and, with its 60 ms
+ * confirmation, produced 11 triggers for 4 real events on an early 120 s run.
+ *
+ * This is one recording.  If the machine, surface or speed changes, re-derive
+ * from a fresh labelled run before trusting the margin - and prefer changing
+ * it at runtime over RTT (see tools/slip_capture.py --slip-threshold). */
+#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     16.0f
 /* Condition A: wheel track in metres and yaw-rate threshold in rad/s.  The
  * track width has not been measured, so A stays disabled until yaw_track is
  * set to a real value. */
@@ -403,15 +449,18 @@ extern "C" {
 #define VMC_BODY_MOTION_KF_SLIP_HOLD_MS_DEFAULT   200U
 /* Trigger confirmation time in ms.
  *
- * Condition C differentiates the wheel speed, so any short mechanical
- * transient - a landing impact, an encoder glitch, a single-sample current
- * step - shows up in it as an isolated spike rather than a sustained level.
- * Measured on the vehicle those transients produced contiguous runs of only
- * 1-2 telemetry frames (20-40 ms) above threshold, while a genuine slide
- * persists for hundreds of milliseconds.  Requiring the metric to stay above
- * the threshold rejects the spikes without meaningfully delaying a real
- * detection. */
-#define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 60U
+ * DERIVED alongside the threshold above.  Real slips are SHORT: a marked
+ * event typically produces two above-threshold bursts of only 13-36 ms about
+ * 100-120 ms apart (entry and recovery), not the "hundreds of milliseconds"
+ * this comment used to claim.  A 60 ms confirmation therefore sat out entire
+ * real events.
+ *
+ * 5 ms is one to two control frames at 450 Hz: enough to reject a
+ * single-sample transient, short enough to admit a 13 ms burst.  Raising it
+ * trades recall away quickly - the merged sweep drops from 33/35 at 5 ms to
+ * 31/35 at 20 ms on the same threshold.  Threshold and confirmation are a
+ * pair; do not move one without re-running tools/slip_analyze.py --sweep. */
+#define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 5U
 
 /* Raw joint positions captured with both legs vertical down at 385 mm.
  *
@@ -1001,6 +1050,12 @@ typedef struct {
   double kf_slip_metric;
   double kf_slip_left;
   double kf_slip_right;
+  /* Raw detector evidence.  These latch regardless of whether the gate is
+   * allowed to modify the Kalman input, so a capture can study the detector
+   * without the detector changing the data it is evaluating. */
+  double slip_raw_latched;
+  double slip_raw_left;
+  double slip_raw_right;
   double kf_wheel_left_raw;
   double kf_wheel_right_raw;
   double kf_x;

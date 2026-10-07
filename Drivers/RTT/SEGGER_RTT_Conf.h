@@ -87,12 +87,14 @@ Revision: $Rev: 24316 $
 #endif
 
 #ifndef   BUFFER_SIZE_UP
-  // VMCVOFA emits roughly 10 kB/s at its 50 Hz telemetry rate.  The upstream
-  // default of 16 kB therefore only absorbs about 1.6 s of host stalls; a
-  // brief J-Link or USB hiccup then overflows the buffer and silently drops
-  // telemetry, which looks like a gap in the recording.  64 kB gives ~6 s of
-  // margin at a cost of 48 kB of RAM, which this target has spare.
-  #define BUFFER_SIZE_UP                            (65536) // Size of the buffer for terminal output of target, up to host (Default: 1k)
+  // Buffer depth is what decides how long a host stall can last before frames
+  // are silently dropped, so size it from the worst-case telemetry rate.
+  // VMCVOFA is 874 B at 50 Hz (43.7 kB/s).  VMCFAST is binary at 90 B and
+  // 250 Hz (22.5 kB/s), so the dual-stream worst case is ~66 kB/s and 128 kB
+  // absorbs about 2.0 s.  A measured 5 s J-Link/USB stall still loses data -
+  // 128 kB cannot cover that - but the loss is roughly halved versus 64 kB.
+  // Keep the fast stream disabled outside a supervised recording.
+  #define BUFFER_SIZE_UP                            (131072) // Size of the buffer for terminal output of target, up to host (Default: 1k)
 #endif
 
 #ifndef   BUFFER_SIZE_DOWN

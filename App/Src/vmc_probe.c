@@ -50,6 +50,7 @@ static uint32_t vmc_last_imu_rx_count;
  * time) but depends on the debug block and on SystemCoreClock. */
 static uint32_t vmc_loop_us_last;
 static float vmc_loop_dt_s;
+static uint32_t vmc_loop_deadline_us;
 /* A fall detected while the robot was enabled requires an explicit emergency
  * stop followed by S1=3 before control can be enabled again. */
 static uint8_t vmc_fall_rearm_required;
@@ -476,6 +477,9 @@ static void vmc_body_motion_kf_reset(void)
   vmc_probe_state.motion.kf_slip_metric = 0.0;
   vmc_probe_state.motion.kf_slip_left = 0.0;
   vmc_probe_state.motion.kf_slip_right = 0.0;
+  vmc_probe_state.motion.slip_raw_latched = 0.0;
+  vmc_probe_state.motion.slip_raw_left = 0.0;
+  vmc_probe_state.motion.slip_raw_right = 0.0;
   vmc_probe_state.motion.kf_wheel_left_raw = 0.0;
   vmc_probe_state.motion.kf_wheel_right_raw = 0.0;
 }
@@ -1864,36 +1868,44 @@ static void vmc_update_motion_state(void)
     const double wheel_right_raw =
         (double)vmc_probe_state.wheel_right.speed_rads * (double)VMC_WHEEL_RADIUS;
     double slip_metric = 0.0;
-    uint8_t slip_active = 0U;
+    uint8_t slip_latched = 0U;
+    uint8_t slip_filter_active = 0U;
 
     vmc_last_imu_rx_count = hi12_imu.rx_count;
-    if (vmc_balance.kalman_slip_enable != 0U) {
-      if (body_motion_kf_slip_initialized == 0U) {
-        vmc_body_motion_kf_slip_reset(wheel_left_raw, wheel_right_raw,
-                                      vmc_probe_state.motion.dd_x);
-      }
-      slip_active = vmc_body_motion_kf_slip_gate(
-          vmc_probe_state.motion.left_body_dx,
-          vmc_probe_state.motion.right_body_dx,
-          wheel_left_raw,
-          wheel_right_raw,
-          vmc_probe_state.motion.dd_x,
-          /* The previous fused velocity is the body-speed reference used by
-           * condition B, matching the USTB d_x. */
-          body_motion_kf_x[0],
-          (double)vmc_probe_state.body.wz,
-          acceleration_valid,
-          vmc_loop_dt(),
-          &slip_metric);
-    } else {
+    if (body_motion_kf_slip_initialized == 0U) {
       vmc_body_motion_kf_slip_reset(wheel_left_raw, wheel_right_raw,
                                     vmc_probe_state.motion.dd_x);
     }
-    vmc_probe_state.motion.kf_slip = (slip_active != 0U) ? 1.0 : 0.0;
+    /* Keep the evidence channel independent of the filter action.  The gate
+     * is always evaluated so a capture can compare raw features, but the
+     * estimator only rejects wheel measurements when slip_enable is set. */
+    slip_latched = vmc_body_motion_kf_slip_gate(
+        vmc_probe_state.motion.left_body_dx,
+        vmc_probe_state.motion.right_body_dx,
+        wheel_left_raw,
+        wheel_right_raw,
+        vmc_probe_state.motion.dd_x,
+        /* The previous fused velocity is the body-speed reference used by
+         * condition B, matching the USTB d_x. */
+        body_motion_kf_x[0],
+        (double)vmc_probe_state.body.wz,
+        acceleration_valid,
+        vmc_loop_dt(),
+        &slip_metric);
+    slip_filter_active =
+        (vmc_balance.kalman_slip_enable != 0U && slip_latched != 0U) ? 1U : 0U;
+    vmc_probe_state.motion.kf_slip =
+        (slip_filter_active != 0U) ? 1.0 : 0.0;
     vmc_probe_state.motion.kf_slip_metric = slip_metric;
     vmc_probe_state.motion.kf_slip_left =
-        (body_motion_kf_slip_left != 0U) ? 1.0 : 0.0;
+        (slip_filter_active != 0U && body_motion_kf_slip_left != 0U) ? 1.0 : 0.0;
     vmc_probe_state.motion.kf_slip_right =
+        (slip_filter_active != 0U && body_motion_kf_slip_right != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.slip_raw_latched =
+        (slip_latched != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.slip_raw_left =
+        (body_motion_kf_slip_left != 0U) ? 1.0 : 0.0;
+    vmc_probe_state.motion.slip_raw_right =
         (body_motion_kf_slip_right != 0U) ? 1.0 : 0.0;
     vmc_probe_state.motion.kf_wheel_left_raw = wheel_left_raw;
     vmc_probe_state.motion.kf_wheel_right_raw = wheel_right_raw;
@@ -1901,7 +1913,7 @@ static void vmc_update_motion_state(void)
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
                               vmc_probe_state.motion.dd_x,
                               acceleration_valid,
-                              slip_active);
+                              slip_filter_active);
   }
 }
 
@@ -3553,6 +3565,37 @@ static void vmc_loop_timing_update(void)
   vmc_probe_state.loop_count++;
 }
 
+/* Wait out the rest of the fixed control period.
+ *
+ * Uses an absolute deadline so the period does not accumulate the RTOS tick's
+ * quantisation error.  A whole tick is slept only when it comfortably fits in
+ * the remaining time; the sub-millisecond remainder is spent polling the
+ * 1 MHz TIM1 counter, which resolves to about a microsecond. */
+static void vmc_loop_wait_for_period(void)
+{
+  for (;;) {
+    const uint32_t now_us = vmc_loop_now_us();
+    const int32_t remaining_us = (int32_t)(vmc_loop_deadline_us - now_us);
+
+    if (remaining_us <= 0) {
+      break;
+    }
+    if (remaining_us >= VMC_CONTROL_SLEEP_MIN_US) {
+      osDelay(1);
+    }
+    /* Otherwise the remainder is shorter than one tick: keep polling. */
+  }
+
+  vmc_loop_deadline_us += VMC_CONTROL_PERIOD_US;
+  /* If the body overran by a whole period, resynchronise instead of trying to
+   * catch up.  A burst of back-to-back cycles would disturb the machine far
+   * more than one long period, and dt is measured, so the controller already
+   * sees the truth. */
+  if ((int32_t)(vmc_loop_now_us() - vmc_loop_deadline_us) > 0) {
+    vmc_loop_deadline_us = vmc_loop_now_us() + VMC_CONTROL_PERIOD_US;
+  }
+}
+
 void vmc_probe_task(void const *argument)
 {
   (void)argument;
@@ -3567,6 +3610,7 @@ void vmc_probe_task(void const *argument)
   vmc_wheel_control_init();
   vmc_balance_init();
   vmc_loop_timing_init();
+  vmc_loop_deadline_us = vmc_loop_now_us() + VMC_CONTROL_PERIOD_US;
 
   for (;;) {
     vmc_loop_timing_update();
@@ -3589,6 +3633,6 @@ void vmc_probe_task(void const *argument)
     vmc_balance_apply_wheel_output();
     vmc_wheel_control_update();
     board_comm_update();
-    osDelay(1);
+    vmc_loop_wait_for_period();
   }
 }

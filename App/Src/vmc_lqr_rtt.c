@@ -6,6 +6,7 @@
 #include "stm32f4xx_hal.h"
 #include "vmc_probe.h"
 #include "vmc_math.h"
+#include "vmc_rtt_format.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,9 +14,26 @@
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
 #define VMC_LQR_RTT_LINE_MAX     1536U
+#define VMC_LQR_RTT_FAST_LINE_MAX 768U
 #define VMC_LQR_RTT_READ_CHUNK   64U
 #define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
-#define VMC_LQR_RTT_TELEM_SCALE 1000L
+
+/* The full VMCVOFA frame is large, so raising it to 250 Hz would spend a
+ * material amount of control-loop time formatting and would stress the RTT
+ * link.  Keep it at 50 Hz and add a compact second stream for the high-rate
+ * mechanical channels needed by slip analysis. */
+#define VMC_LQR_RTT_TELEM_PERIOD_MIN_MS 2U
+#define VMC_LQR_RTT_TELEM_PERIOD_MAX_MS 200U
+#define VMC_LQR_RTT_FAST_ENABLE_DEFAULT 0U
+#define VMC_LQR_RTT_FAST_PERIOD_MIN_MS 2U
+#define VMC_LQR_RTT_FAST_PERIOD_MAX_MS 100U
+#define VMC_LQR_RTT_FAST_PERIOD_DEFAULT_MS 4U
+
+/* Binary VMCFAST frame: 4 B header + 4 B seq + 80 B payload + 2 B CRC. */
+#define VMC_LQR_RTT_FAST_SYNC0    0xFAU
+#define VMC_LQR_RTT_FAST_SYNC1    0xCEU
+#define VMC_LQR_RTT_FAST_VERSION  1U
+#define VMC_LQR_RTT_FAST_FRAME_SIZE 90U
 
 #define VMC_LQR_RTT_ERR_NONE      0U
 #define VMC_LQR_RTT_ERR_OVERFLOW  1U
@@ -32,6 +50,11 @@ static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
 static uint8_t lqr_rtt_discard_until_newline;
 static uint32_t lqr_rtt_last_telem_ms;
+static uint16_t lqr_rtt_telem_period_ms = VMC_LQR_RTT_TELEM_PERIOD_MS;
+static uint8_t lqr_rtt_fast_enable = VMC_LQR_RTT_FAST_ENABLE_DEFAULT;
+static uint16_t lqr_rtt_fast_period_ms = VMC_LQR_RTT_FAST_PERIOD_DEFAULT_MS;
+static uint32_t lqr_rtt_last_fast_ms;
+static uint32_t lqr_rtt_fast_seq;
 
 static void vmc_lqr_rtt_ack(const char *text)
 {
@@ -216,6 +239,31 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "slip_confirm_ms", &value) != 0U) {
     vmc_balance.kalman_slip_confirm_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
+    applied = 1U;
+  }
+  /* Logging controls.  These are not control parameters, but keeping them on
+   * the same payload lets a capture change rates without a reflash. */
+  if (vmc_lqr_rtt_parse_named_float(line, "telem_period_ms", &value) != 0U) {
+    const float clamped = vmc_lqr_rtt_clamp_float(
+        value,
+        (float)VMC_LQR_RTT_TELEM_PERIOD_MIN_MS,
+        (float)VMC_LQR_RTT_TELEM_PERIOD_MAX_MS);
+    lqr_rtt_telem_period_ms = (uint16_t)clamped;
+    lqr_rtt_last_telem_ms = HAL_GetTick() - (uint32_t)lqr_rtt_telem_period_ms;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "fast_enable", &value) != 0U) {
+    lqr_rtt_fast_enable = (value > 0.5f) ? 1U : 0U;
+    lqr_rtt_last_fast_ms = HAL_GetTick() - (uint32_t)lqr_rtt_fast_period_ms;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "fast_period_ms", &value) != 0U) {
+    const float clamped = vmc_lqr_rtt_clamp_float(
+        value,
+        (float)VMC_LQR_RTT_FAST_PERIOD_MIN_MS,
+        (float)VMC_LQR_RTT_FAST_PERIOD_MAX_MS);
+    lqr_rtt_fast_period_ms = (uint16_t)clamped;
+    lqr_rtt_last_fast_ms = HAL_GetTick() - (uint32_t)lqr_rtt_fast_period_ms;
     applied = 1U;
   }
 
@@ -736,6 +784,11 @@ void vmc_lqr_rtt_init(void)
   SEGGER_RTT_Init();
   lqr_rtt_line_len = 0U;
   lqr_rtt_discard_until_newline = 0U;
+  lqr_rtt_telem_period_ms = VMC_LQR_RTT_TELEM_PERIOD_MS;
+  lqr_rtt_fast_enable = VMC_LQR_RTT_FAST_ENABLE_DEFAULT;
+  lqr_rtt_fast_period_ms = VMC_LQR_RTT_FAST_PERIOD_DEFAULT_MS;
+  lqr_rtt_last_telem_ms = 0U;
+  lqr_rtt_last_fast_ms = 0U;
 }
 
 void vmc_lqr_rtt_update(void)
@@ -783,38 +836,6 @@ void vmc_lqr_rtt_update(void)
   } while (read_len == sizeof(data));
 }
 
-static int vmc_lqr_rtt_append_scaled(char *line, int offset, int max_len, double value)
-{
-  long scaled = (long)(value * (double)VMC_LQR_RTT_TELEM_SCALE);
-  const int negative = (scaled < 0L || (value < 0.0 && scaled == 0L)) ? 1 : 0;
-  long whole;
-  long frac;
-
-  if (scaled < 0L) {
-    scaled = -scaled;
-  } else if (negative != 0) {
-    scaled = 1L;
-  }
-
-  whole = scaled / VMC_LQR_RTT_TELEM_SCALE;
-  frac = scaled % VMC_LQR_RTT_TELEM_SCALE;
-
-  return offset + snprintf(&line[offset],
-                           (size_t)(max_len - offset),
-                           negative != 0 ? ",-%ld.%03ld" : ",%ld.%03ld",
-                           whole,
-                           frac);
-}
-
-static int vmc_lqr_rtt_append_u32(char *line, int offset, int max_len,
-                                  uint32_t value)
-{
-  return offset + snprintf(&line[offset],
-                           (size_t)(max_len - offset),
-                           ",%lu",
-                           (unsigned long)value);
-}
-
 /* Frame age in milliseconds, or -1.0 when no frame has arrived yet.
  *
  * The producer timestamps are written from CAN/UART callbacks while "now" is
@@ -834,60 +855,143 @@ static double vmc_lqr_rtt_frame_age_ms(uint32_t now, uint32_t last_ms)
   return (double)(now - last_ms);
 }
 
-/* Q/R span a huge dynamic range: a physically calibrated r_wheel is on the
- * order of 1e-4 m2/s2 while the legacy defaults were on the order of 1e2, and
- * the three-decimal wire format rounds the small end to zero.  Q/R therefore
- * use a nine-decimal fixed point.  newlib-nano has no "%lld", so the integer
- * part is split into two 32-bit chunks. */
-#define VMC_LQR_RTT_QR_SCALE 1000000000LL
+/* Compact high-rate stream for slip experiments.
+ *
+ * VMCFAST carries raw wheel, IMU, leg and actuator observations.  It is
+ * deliberately independent of the slow VMCVOFA stream so the full state
+ * remains available at 50 Hz while the mechanical evidence is recorded at
+ * 250 Hz.  The existing slip metric is published as a diagnostic, but it is
+ * not allowed to gate or replace any value in this stream.
+ *
+ * The payload is little-endian fixed point rather than ASCII.  The same 43
+ * fields cost 277 B/frame as text (mean 5.4 B/field) but 80 B here, which is
+ * what buys back RTT buffer headroom: at 250 Hz the stream drops from
+ * 69 kB/s to 22.5 kB/s.
+ *
+ * Wire format (90 bytes, fixed length):
+ *   0     0xFA          sync
+ *   1     0xCE          sync
+ *   2     0x01          version
+ *   3     90            total frame length
+ *   4..7  seq           monotonic frame counter, little-endian u32
+ *   8..11 t_ms          HAL tick
+ *   12..15 loop_count   control-loop iteration counter
+ *   16..17 loop_dt_us   measured control period
+ *   18..27 10 flag bytes
+ *   28..87 30 int16 scaled scalars
+ *   88..89 CRC-16/CCITT over bytes 0..87
+ *
+ * The frame counter is the point of the header: it makes "the firmware never
+ * wrote the frame" (seq jumps) distinguishable from "the host never read it"
+ * (seq continuous, arrival gap).
+ */
 
-static int vmc_lqr_rtt_append_qr(char *line, int offset, int max_len,
-                                 double value)
+/* Scaled int16 payload, in wire order.
+ *
+ *   V(<field>, <scale>, <expression>)
+ *
+ * "expression * scale" is quantised to int16 with saturation and
+ * round-half-away-from-zero.  A scale of 0 means "already an integer in
+ * range".  tools/slip_capture.py carries the mirrored table and
+ * tools/test_slip_capture.py fails if the two drift apart.
+ *
+ * Scale notes.  Wheel speed is the output shaft in rad/s: an M3508 reaches
+ * ~60 rad/s at 9000 rpm and an unloaded wheel during a slip spins past the
+ * ~33 rad/s that scale 1000 would allow, so it uses scale 100 (+/-327 rad/s).
+ * That ceiling clipped real slip peaks in the first pellet run.  Joint torque
+ * is reported at scale 100 (+/-327 N.m) against a 54 N.m motor rating. */
+#define VMC_LQR_RTT_FAST_SCALARS(V)                                          \
+  V(body_pitch,                  10000, (double)s->body.pitch)               \
+  V(body_pitch_rate,              1000, (double)s->body.pitch_rate)          \
+  V(body_roll,                   10000, (double)s->body.roll)                \
+  V(body_roll_rate,               1000, (double)s->body.wy)                  \
+  V(body_yaw_rate,                1000, (double)s->body.wz)                  \
+  V(body_ax_g,                    1000, (double)s->body.ax)                  \
+  V(body_ax_lin_g,                1000, (double)s->body.ax_lin)              \
+  V(kf_dx,                        1000, s->motion.kf_dx)                     \
+  V(wheel_left_speed,              100, (double)s->wheel_left.speed_rads)    \
+  V(wheel_left_torque,            1000, (double)s->wheel_left.torque)        \
+  V(wheel_left_current_output,       0,                                      \
+    (double)vmc_wheel_control.left_current_output)                           \
+  V(wheel_right_speed,             100, (double)s->wheel_right.speed_rads)   \
+  V(wheel_right_torque,           1000, (double)s->wheel_right.torque)       \
+  V(wheel_right_current_output,      0,                                      \
+    (double)vmc_wheel_control.right_current_output)                          \
+  V(leg_left_length,             10000, s->left_leg.length)                  \
+  V(leg_left_d_length,            1000, s->left_leg.d_length)                \
+  V(leg_left_phi0,               10000, s->left_leg.phi0)                    \
+  V(leg_left_d_phi0,              1000, s->left_leg.d_phi0)                  \
+  V(leg_right_length,            10000, s->right_leg.length)                 \
+  V(leg_right_d_length,           1000, s->right_leg.d_length)               \
+  V(leg_right_phi0,              10000, s->right_leg.phi0)                   \
+  V(leg_right_d_phi0,             1000, s->right_leg.d_phi0)                 \
+  V(joint_left_ahead_torque,       100, (double)s->joint_left_ahead.torque)  \
+  V(joint_left_back_torque,        100, (double)s->joint_left_back.torque)   \
+  V(joint_right_ahead_torque,      100, (double)s->joint_right_ahead.torque) \
+  V(joint_right_back_torque,       100, (double)s->joint_right_back.torque)  \
+  V(slip_metric,                   100, s->motion.kf_slip_metric)            \
+  V(airborne_wheel_speed,         1000, (double)s->airborne_wheel_speed)     \
+  V(airborne_joint_torque_min,     100, (double)s->airborne_joint_torque_min)\
+  V(airborne_joint_torque_max,     100, (double)s->airborne_joint_torque_max)
+
+/* Context flags, in wire order.  Written as raw bytes. */
+#define VMC_LQR_RTT_FAST_FLAGS(V)                                            \
+  V(enabled,                    (double)vmc_control.enabled)                 \
+  V(dm_state,                   (double)s->dm_state)                         \
+  V(feedback_timeout_source,    (double)s->feedback_timeout_source)          \
+  V(airborne_active,            (double)s->airborne_active)                  \
+  V(airborne_side_left,         (double)s->airborne_side_active[VMC_AIRBORNE_SIDE_LEFT])  \
+  V(airborne_side_right,        (double)s->airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT]) \
+  V(jump_stage,                 (double)vmc_control.jump_stage)               \
+  V(getup_state,                (double)vmc_control.getup_state)             \
+  V(slip_left,                  s->motion.slip_raw_left)                     \
+  V(slip_right,                 s->motion.slip_raw_right)
+
+static void vmc_lqr_rtt_fast_telemetry_update(uint32_t now)
 {
-  long long scaled;
-  unsigned long long magnitude;
-  unsigned long long whole;
-  unsigned long long frac;
-  unsigned long long whole_high;
-  unsigned long long whole_low;
-  int negative;
-  int written;
+  static uint8_t frame[VMC_LQR_RTT_FAST_FRAME_SIZE];
+  const volatile vmc_probe_state_t *s = &vmc_probe_state;
+  int offset = 0;
+  uint16_t crc;
 
-  if (value > 9.0e9) {
-    value = 9.0e9;
-  } else if (value < -9.0e9) {
-    value = -9.0e9;
+  if (lqr_rtt_fast_enable == 0U) {
+    return;
   }
-  scaled = (long long)(value * (double)VMC_LQR_RTT_QR_SCALE);
-  negative = (scaled < 0LL || (value < 0.0 && scaled == 0LL)) ? 1 : 0;
-
-  if (scaled < 0LL) {
-    magnitude = (unsigned long long)(-(scaled + 1LL)) + 1ULL;
-  } else {
-    magnitude = (unsigned long long)scaled;
+  if ((uint32_t)(now - lqr_rtt_last_fast_ms) <
+      (uint32_t)lqr_rtt_fast_period_ms) {
+    return;
   }
+  lqr_rtt_last_fast_ms = now;
 
-  whole = magnitude / (unsigned long long)VMC_LQR_RTT_QR_SCALE;
-  frac = magnitude % (unsigned long long)VMC_LQR_RTT_QR_SCALE;
-  whole_high = whole / 1000000000ULL;
-  whole_low = whole % 1000000000ULL;
+  frame[offset++] = VMC_LQR_RTT_FAST_SYNC0;
+  frame[offset++] = VMC_LQR_RTT_FAST_SYNC1;
+  frame[offset++] = VMC_LQR_RTT_FAST_VERSION;
+  frame[offset++] = (uint8_t)VMC_LQR_RTT_FAST_FRAME_SIZE;
+  vmc_rtt_put_u32le(&frame[offset], lqr_rtt_fast_seq++);
+  offset += 4;
+  vmc_rtt_put_u32le(&frame[offset], now);
+  offset += 4;
+  vmc_rtt_put_u32le(&frame[offset], s->loop_count);
+  offset += 4;
+  vmc_rtt_put_u16le(&frame[offset], (uint16_t)s->loop_dt_us);
+  offset += 2;
 
-  written = snprintf(&line[offset], (size_t)(max_len - offset),
-                     negative != 0 ? ",-" : ",");
-  offset += written;
-  if (whole_high != 0ULL) {
-    written = snprintf(&line[offset], (size_t)(max_len - offset),
-                       "%lu%09lu.%09lu",
-                       (unsigned long)whole_high,
-                       (unsigned long)whole_low,
-                       (unsigned long)frac);
-  } else {
-    written = snprintf(&line[offset], (size_t)(max_len - offset),
-                       "%lu.%09lu",
-                       (unsigned long)whole_low,
-                       (unsigned long)frac);
-  }
-  return offset + written;
+#define VMC_RTT_EMIT_FLAG(name, expr) \
+  frame[offset++] = (uint8_t)vmc_rtt_scale_i16((expr), 0);
+  VMC_LQR_RTT_FAST_FLAGS(VMC_RTT_EMIT_FLAG)
+#undef VMC_RTT_EMIT_FLAG
+
+#define VMC_RTT_EMIT_SCALAR(name, scale, expr) \
+  vmc_rtt_put_i16le(&frame[offset], vmc_rtt_scale_i16((expr), (scale))); \
+  offset += 2;
+  VMC_LQR_RTT_FAST_SCALARS(VMC_RTT_EMIT_SCALAR)
+#undef VMC_RTT_EMIT_SCALAR
+
+  crc = vmc_rtt_crc16(frame, (uint32_t)(VMC_LQR_RTT_FAST_FRAME_SIZE - 2U));
+  vmc_rtt_put_u16le(&frame[offset], crc);
+  offset += 2;
+
+  (void)SEGGER_RTT_Write(VMC_LQR_RTT_BUFFER_INDEX, frame, (unsigned)offset);
 }
 
 void vmc_lqr_rtt_telemetry_update(void)
@@ -906,12 +1010,19 @@ void vmc_lqr_rtt_telemetry_update(void)
   const double right_tp_phi_term = tp_phi_gain * vmc_probe_state.lqr.right_k[9] * b->phi_error;
   const double right_tp_dphi_term = tp_phi_gain * vmc_probe_state.lqr.right_k[11] * b->dpitch_lpf;
 
-  if ((uint32_t)(now - lqr_rtt_last_telem_ms) < VMC_LQR_RTT_TELEM_PERIOD_MS) {
+  /* Service the fast stream before the slow gate; otherwise a fast frame
+   * could never be emitted on a cycle where the slow frame is not due. */
+  vmc_lqr_rtt_fast_telemetry_update(now);
+
+  if ((uint32_t)(now - lqr_rtt_last_telem_ms) <
+      (uint32_t)lqr_rtt_telem_period_ms) {
     return;
   }
   lqr_rtt_last_telem_ms = now;
 
-  offset = snprintf(line, sizeof(line), "VMCVOFA");
+  /* Constant prefix; memcpy keeps the telemetry path free of printf. */
+  memcpy(line, "VMCVOFA", 7U);
+  offset = 7;
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), body->pitch);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), body->pitch_rate);
   offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), b->lqr_theta);
@@ -1164,11 +1275,17 @@ void vmc_lqr_rtt_telemetry_update(void)
                                   VMC_LQR_RTT_SCHEMA_VERSION);
   /* VMCVOFA fields 116..121: slip-gate inputs and per-side state.  The raw
    * per-wheel speeds are what condition C differentiates, so recording them
-   * makes the trigger threshold verifiable offline. */
+   * makes the trigger threshold verifiable offline.
+   *
+   * Fields 116/117 report the RAW per-side latch, not the post-gate state.
+   * The gate is only allowed to reject wheel measurements when slip_enable is
+   * set, so emitting kf_slip_left/right here would report a constant 0 during
+   * a normal raw capture and the threshold under test would be unverifiable.
+   * The filter action itself is still visible in field 104 (kf_slip). */
   offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line), m->kf_slip_left);
+      line, offset, (int)sizeof(line), m->slip_raw_left);
   offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line), m->kf_slip_right);
+      line, offset, (int)sizeof(line), m->slip_raw_right);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), m->kf_wheel_left_raw);
   offset = vmc_lqr_rtt_append_scaled(
