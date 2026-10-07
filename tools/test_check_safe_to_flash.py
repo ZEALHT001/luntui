@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -20,8 +21,12 @@ from tools.check_safe_to_flash import (  # noqa: E402
     ACTIVE_FRAME_FRACTION,
     JOINT_TORQUE_MAX_NM,
     JOINT_TORQUE_ACTIVE_NM,
+    RC_SOURCE_NONE,
+    RC_SW_DOWN,
+    RC_STATE_MIN_FRAMES,
     WHEEL_CURRENT_MAX_RAW,
     WHEEL_CURRENT_ACTIVE_RAW,
+    Probe,
     _activity,
 )
 from tools.rtt_kalman_capture import KalmanSample  # noqa: E402
@@ -104,6 +109,114 @@ class SafeToFlashTest(unittest.TestCase):
         # ...while a genuinely live controller is active nearly all the time:
         # the recorded standing and jump captures measured 57-100% of frames.
         self.assertLess(ACTIVE_FRAME_FRACTION, 0.5)
+
+
+class ProbeFailureTest(unittest.TestCase):
+    def test_unreachable_probe_returns_could_not_tell(self) -> None:
+        """A probe that cannot be opened must not crash or pass.
+
+        The caller has to treat it as unsafe and ask the operator, so the
+        exit status is 2 (same as no telemetry), never a traceback.
+        """
+        from tools import check_safe_to_flash as module
+
+        with mock.patch.object(
+            module,
+            "JLinkSubprocessReader",
+            side_effect=RuntimeError("Cannot connect to the probe/programmer."),
+        ):
+            with mock.patch.object(sys, "argv", ["check_safe_to_flash.py"]):
+                self.assertEqual(module.main(), 2)
+
+
+def _probe(count: int, **updates) -> Probe:
+    probe = Probe()
+    for _ in range(count):
+        probe.observe(_sample(**updates))
+    return probe
+
+
+class RemoteStateTest(unittest.TestCase):
+    """The operator's stop command is positive evidence, and is enough alone."""
+
+    def test_s1_down_is_accepted_even_with_active_outputs(self) -> None:
+        """S1 down forces every output to zero, so flashing is safe.
+
+        The output readings are deliberately left active here: the point is
+        that the operator's command is authoritative, not that the outputs
+        happen to agree.
+        """
+        probe = _probe(
+            100,
+            remote_s1=RC_SW_DOWN,
+            rc_source=2.0,
+            airborne_joint_torque_max=18.0,
+            left_wheel_current=15000.0,
+        )
+        self.assertTrue(probe.s1_down())
+        self.assertTrue(probe.busy())
+
+    def test_s1_not_down_is_rejected(self) -> None:
+        probe = _probe(100, remote_s1=1.0, rc_source=2.0)
+        self.assertFalse(probe.s1_down())
+        self.assertTrue(probe.switched_on())
+
+    def test_s1_mid_position_still_counts_as_enabled(self) -> None:
+        """S1 MID is not a stop; the firmware only stops on DOWN."""
+        probe = _probe(100, remote_s1=3.0, rc_source=2.0)
+        self.assertFalse(probe.s1_down())
+        self.assertTrue(probe.switched_on())
+
+    def test_remote_offline_is_accepted(self) -> None:
+        probe = _probe(100, rc_source=RC_SOURCE_NONE)
+        self.assertTrue(probe.rc_offline())
+        self.assertFalse(probe.switched_on())
+
+    def test_remote_offline_is_accepted_even_with_active_outputs(self) -> None:
+        """Offline means the firmware is forcing zero; stale readings must not
+        block a legitimate flash."""
+        probe = _probe(
+            100,
+            rc_source=RC_SOURCE_NONE,
+            airborne_joint_torque_max=21.3,
+            left_wheel_current=15000.0,
+        )
+        self.assertTrue(probe.rc_offline())
+
+    def test_remote_online_and_not_stopped_blocks(self) -> None:
+        probe = _probe(100, remote_s1=1.0, rc_source=2.0)
+        self.assertFalse(probe.rc_offline())
+        self.assertTrue(probe.switched_on())
+
+    def test_missing_s1_field_leaves_both_paths_available(self) -> None:
+        """This branch's layout has no switch; offline and outputs still work."""
+        probe = _probe(100, rc_source=1.0)
+        self.assertEqual(probe.s1_frames, 0)
+        self.assertFalse(probe.s1_down())
+        self.assertFalse(probe.switched_on())
+        self.assertFalse(probe.rc_offline())
+        self.assertFalse(probe.busy())
+
+    def test_a_single_stale_frame_does_not_decide(self) -> None:
+        """The operator's command must hold across the window."""
+        probe = _probe(100, rc_source=2.0, remote_s1=1.0)
+        # One frame reporting the remote absent / S1 down must not flip it.
+        probe.observe(_sample(rc_source=RC_SOURCE_NONE, remote_s1=RC_SW_DOWN))
+        self.assertFalse(probe.rc_offline())
+        self.assertFalse(probe.s1_down())
+
+    def test_a_very_short_window_cannot_open_the_gate(self) -> None:
+        """A fraction of a handful of frames is not evidence.
+
+        One frame reporting the remote absent must not clear the machine on
+        its own; the output evidence still has to agree.
+        """
+        probe = _probe(3, rc_source=RC_SOURCE_NONE)
+        self.assertLess(probe.frames, RC_STATE_MIN_FRAMES)
+        self.assertFalse(probe.rc_offline())
+
+        probe = _probe(3, remote_s1=RC_SW_DOWN, rc_source=2.0)
+        self.assertFalse(probe.s1_down())
 
 
 if __name__ == "__main__":

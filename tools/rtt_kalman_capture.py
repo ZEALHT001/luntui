@@ -488,6 +488,13 @@ class KalmanSample:
     kf_slip_metric: float = INVALID_VALUE
     rc_source: float = INVALID_VALUE
     rc_age_ms: float = INVALID_VALUE
+    # Transmitter switch positions (1 = up, 3 = mid, 2 = down).  No layout on
+    # this branch carries them yet, so these stay INVALID and consumers must
+    # treat "missing" as "unknown" rather than as a position.  The pre-flash
+    # safety check accepts a stop command when S1 reads DOWN, and falls back to
+    # the gated output signals when the switch is absent.
+    remote_s1: float = INVALID_VALUE
+    remote_s2: float = INVALID_VALUE
     state_age_ms: float = INVALID_VALUE
     airborne_active: float = INVALID_VALUE
     airborne_candidate: float = INVALID_VALUE
@@ -831,6 +838,8 @@ def parse_vmcvoa_line(
         kf_slip_metric=channel("kf_slip_metric"),
         rc_source=channel("rc_source"),
         rc_age_ms=channel("rc_age_ms"),
+        remote_s1=channel("remote_s1"),
+        remote_s2=channel("remote_s2"),
         state_age_ms=channel("state_age_ms"),
         airborne_active=channel("airborne_active"),
         airborne_candidate=channel("airborne_candidate"),
@@ -1282,20 +1291,21 @@ class TcpRttReader:
 
     def read_lines(self) -> list[str]:
         lines: list[str] = []
-        try:
-            chunk = self.socket.recv(8192)
-        except socket.timeout:
-            return lines
-        except OSError:
-            return lines
-        if not chunk:
-            return lines
-        self.buffer.extend(chunk)
+        self.buffer.extend(self.read_bytes())
         while b"\n" in self.buffer:
-            raw, _, remainder = self.buffer.partition(b"\n")
+            line, _, remainder = self.buffer.partition(b"\n")
             self.buffer = bytearray(remainder)
-            lines.append(raw.decode("utf-8", errors="replace").strip())
+            lines.append(line.decode("utf-8", errors="replace").strip())
         return lines
+
+    def read_bytes(self) -> bytes:
+        """Raw chunk from the RTT telnet port, or b"" when idle."""
+        try:
+            return self.socket.recv(8192)
+        except socket.timeout:
+            return b""
+        except OSError:
+            return b""
 
     def close(self) -> None:
         try:
@@ -1377,7 +1387,11 @@ class JLinkSubprocessReader:
             self.stderr_buffer.extend(remainder)
         return self.stderr_buffer.decode("utf-8", errors="replace").strip()
 
-    def read_lines(self) -> list[str]:
+    def read_bytes(self) -> bytes:
+        """Raw chunk from the J-Link helper, or b"" when idle.
+
+        VMCFAST is binary, so callers that need it must work on bytes.
+        """
         if self.process.poll() is not None:
             # The helper exits on any transient SWD/RTT error.  Without this
             # check the parent simply stops receiving data and eventually times
@@ -1399,12 +1413,15 @@ class JLinkSubprocessReader:
                 raise RuntimeError(
                     f"J-Link helper died and could not reconnect: {exc}"
                 ) from exc
-            return []
+            return b""
         readable, _, _ = select.select([self.process.stdout], [], [], 0.0)
-        if readable:
-            raw = self.process.stdout.read1(8192)
-            if raw:
-                self.buffer.extend(raw)
+        if not readable:
+            return b""
+        raw = self.process.stdout.read1(8192)
+        return raw or b""
+
+    def read_lines(self) -> list[str]:
+        self.buffer.extend(self.read_bytes())
         lines: list[str] = []
         while b"\n" in self.buffer:
             line, _, remainder = self.buffer.partition(b"\n")
@@ -2711,7 +2728,23 @@ def run_jlink_helper(device: str, speed: int, writable: bool = False) -> int:
             for attempt in range(25):
                 try:
                     with io_lock:
-                        jlink.rtt_write(0, payload)
+                        remaining = payload
+                        deadline = time.monotonic() + 2.0
+                        while remaining and time.monotonic() < deadline:
+                            written = jlink.rtt_write(0, remaining)
+                            if written > 0:
+                                remaining = remaining[written:]
+                            else:
+                                # The J-Link RTT down buffer can legitimately
+                                # report zero space for a short startup or
+                                # drain interval.  Treating that as success
+                                # silently drops the command.
+                                time.sleep(0.02)
+                        if remaining:
+                            raise TimeoutError(
+                                f"RTT down buffer stalled with {len(remaining)} "
+                                "bytes pending"
+                            )
                     break
                 except Exception as exc:  # noqa: BLE001 - report and retry
                     failures += 1
