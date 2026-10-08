@@ -28,6 +28,27 @@ Open the Vite URL and keep the backend running.
 
 ## RTT Downlink
 
+Every value on the page is applied at runtime; nothing on this path needs a
+reflash.  That includes the automatic jump gate, added to the page under
+"自动跳跃门控":
+
+| Field | Meaning |
+| --- | --- |
+| `jump_auto_speed_min` | Fused body speed the machine must reach, m/s (`kf_dx`) |
+| `jump_auto_dist_min_cm` | Lower laser bound, exclusive |
+| `jump_auto_dist_max_cm` | Upper laser bound, exclusive |
+| `jump_auto_confirm_ms` | How long all three conditions must hold before firing |
+
+The firmware normalises the distance pair on write, so a payload that sets
+`max` before `min` (the chunked sender does not guarantee order) cannot leave an
+inverted window that silently disables the gate forever.  The launch still runs
+through `vmc_jump_start_is_allowed()`, so attitude, feedback and enable are
+unchanged by anything tuned here.
+
+The macros of the same names in `App/Inc/vmc_probe.h` are only the power-on
+defaults.  "Write firmware defaults" updates them through the same table, and
+the write is idempotent when the values already match.
+
 Start the VS Code Cortex-Debug `J-Link Debug STM32F427` or `J-Link Attach STM32F427` configuration first. The launch config starts the J-Link GDB server with RTT Telnet on `127.0.0.1:19021`. The Python backend opens one persistent TCP connection to that port and reuses it for K and balance-parameter updates; it does not launch `JLinkRTTClient`. If the debug session restarts, the backend will reconnect on the next send.
 
 The server sends this payload shape through RTT channel 0:
@@ -78,6 +99,15 @@ diagnostics below:
 | 132..133 | per-side airborne latch, left and right | `0` or `1` |
 | 134 | measured control period | microseconds |
 | 135 | control-loop iteration counter | count |
+| 136 | TF02-Pro laser distance | centimetres, `0` with connected `0` means no reading |
+| 137 | TF02-Pro laser health flag | `0` or `1`, cleared after 100 ms without a frame |
+
+Fields 136/137 were added with schema 9.  The automatic jump gate fires on the
+laser reading strictly inside (80, 100) cm while S1 is UP and the fused speed is
+at least 1 m/s, so without the distance and the health flag a capture cannot
+distinguish "the window was never satisfied" from "the laser was not answering"
+from "the robot never reached speed".  The previous 136-field layout is still
+parsed as `format-v12`.
 
 Fields 130..133 exist because the whole-machine latch cannot see a single
 lifted leg: it keys on the average of all four joints, and the leg that is
@@ -86,13 +116,12 @@ leg's own load so the per-side decision can be replayed; fields 132/133 are
 the latches, and each gates only its own wheel - the grounded side has to keep
 balancing the machine.
 
-Fields 134/135 cover the control loop itself.  The loop is not fixed-rate:
-`osDelay(1)` only sets a floor, so the real period is however long the loop
-body takes plus the sleep.  Measured with the DWT cycle counter it ran at
-roughly 450 Hz, about 2.2 ms, so anything that had assumed a 1 ms period was
-off by that factor.  The firmware now measures the period every cycle and feeds
-it to the Kalman prediction and position integration, slip condition C, and the
-command ramps.  Field 134 is the instantaneous period and field 135 an
+Fields 134/135 cover the control loop itself.  The loop is pinned to 2222 us
+(450 Hz) by `VMC_CONTROL_PERIOD_US`; it used to free-run, and removing the
+snprintf work once let it drift to ~750 Hz, which changes the discrete
+realisation of every filter on a machine tuned at 450 Hz.  The measured period
+still feeds the Kalman prediction and position integration, slip condition C,
+and the command ramps.  Field 134 is the instantaneous period and field 135 an
 iteration counter, so dividing its change by the change in field 99 gives the
 true average rate over any window - host timestamps cannot, because RTT
 batching quantises them.

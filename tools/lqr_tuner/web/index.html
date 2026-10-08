@@ -388,6 +388,26 @@
           </label>
         </div>
 
+        <h3>自动跳跃门控</h3>
+        <div class="params">
+          <label>
+            触发速度下限 / jump_auto_speed_min (m/s)
+            <input id="jumpAutoSpeedMin" type="number" step="0.05" min="0" max="5" value="1.0" />
+          </label>
+          <label>
+            测距下限（不含）/ jump_auto_dist_min_cm (cm)
+            <input id="jumpAutoDistMinCm" type="number" step="1" min="0" max="500" value="80" />
+          </label>
+          <label>
+            测距上限（不含）/ jump_auto_dist_max_cm (cm)
+            <input id="jumpAutoDistMaxCm" type="number" step="1" min="0" max="500" value="100" />
+          </label>
+          <label>
+            条件确认时间 / jump_auto_confirm_ms (ms)
+            <input id="jumpAutoConfirmMs" type="number" step="5" min="0" max="1000" value="20" />
+          </label>
+        </div>
+
         <h3>Roll 补偿</h3>
         <div class="params">
           <label>
