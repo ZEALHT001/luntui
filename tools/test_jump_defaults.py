@@ -205,7 +205,7 @@ SOURCE = ROOT / "App" / "Src" / "vmc_probe.c"
 def _function_body(source: str, name: str) -> str:
     """Body of the *definition* of name, skipping the forward declaration."""
     pattern = re.compile(
-        rf"^static\s+\w+\s+{re.escape(name)}\s*\([^;{{]*\)\s*\{{",
+        rf"^(?:static\s+)?\w+\s+{re.escape(name)}\s*\([^;{{]*\)\s*\{{",
         re.MULTILINE,
     )
     match = pattern.search(source)
@@ -329,6 +329,147 @@ class MovingJumpTest(unittest.TestCase):
             body,
             "vmc_jump_finish must clear the latch so both exits behave alike",
         )
+
+
+class AutoJumpTest(unittest.TestCase):
+    """The jump is fired by the automatic gate, not by flipping S1 up.
+
+    Operator conditions: S1 must be UP, the machine must actually be moving at
+    1 m/s, and the laser must read strictly inside (80, 100) cm.
+    """
+
+    def test_thresholds_match_the_requested_conditions(self) -> None:
+        self.assertAlmostEqual(_macro("VMC_JUMP_AUTO_SPEED_MIN"), 1.0)
+        self.assertAlmostEqual(_macro("VMC_JUMP_AUTO_DIST_MIN_CM"), 80.0)
+        self.assertAlmostEqual(_macro("VMC_JUMP_AUTO_DIST_MAX_CM"), 100.0)
+        self.assertGreater(_macro("VMC_JUMP_AUTO_CONFIRM_MS"), 0.0)
+
+    def test_distance_window_is_ordered(self) -> None:
+        self.assertLess(
+            _macro("VMC_JUMP_AUTO_DIST_MIN_CM"),
+            _macro("VMC_JUMP_AUTO_DIST_MAX_CM"),
+        )
+
+    def test_gate_requires_all_three_conditions(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        gate = _function_body(source, "vmc_jump_auto_ready")
+        # Speed, read from the runtime value so the web tuner works.
+        self.assertIn("motion.kf_dx", gate)
+        self.assertIn("vmc_control.jump_auto_speed_min", gate)
+        # Distance, both bounds, exclusive
+        self.assertIn("vmc_control.jump_auto_dist_min_cm", gate)
+        self.assertIn("vmc_control.jump_auto_dist_max_cm", gate)
+        self.assertIn("<=", gate)
+        self.assertIn(">=", gate)
+        # A stale laser must never arm a jump.
+        self.assertIn("tf02_connected", gate)
+
+    def test_s1_up_gates_the_automatic_trigger(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        idle = _function_body(source, "vmc_jump_update")
+        self.assertIn("s1_is_up", idle)
+        self.assertIn("vmc_jump_auto_ready()", idle)
+
+    def test_the_manual_arm_step_is_gone(self) -> None:
+        """S1 MID used to arm and S1 UP used to fire; the gate replaced both.
+
+        If the old arming branch came back, moving S1 up would fire a jump
+        regardless of speed or distance, which is exactly what this change
+        removed.
+        """
+        source = SOURCE.read_text(encoding="utf-8")
+        idle = _function_body(source, "vmc_jump_update")
+        self.assertNotIn(
+            "jump_armed = 1U",
+            idle,
+            "jump_armed must be computed from the automatic gate, not set by "
+            "an S1-MID arming step",
+        )
+
+    def test_confirmation_window_is_required(self) -> None:
+        """One frame must not launch a jump."""
+        source = SOURCE.read_text(encoding="utf-8")
+        idle = _function_body(source, "vmc_jump_update")
+        self.assertIn("vmc_control.jump_auto_confirm_ms", idle)
+        self.assertIn("vmc_jump_auto_hold_ms", idle)
+
+    def test_manual_trigger_helpers_are_untouched(self) -> None:
+        """The pre-launch safety gates must still run before an automatic jump."""
+        source = SOURCE.read_text(encoding="utf-8")
+        idle = _function_body(source, "vmc_jump_update")
+        self.assertIn(
+            "vmc_jump_start_is_allowed()",
+            idle,
+            "the attitude/feedback/enable gate must still guard the launch",
+        )
+
+
+class AutoJumpTuningTest(unittest.TestCase):
+    """The gate thresholds are runtime tunable, not compile-time only.
+
+    They are re-tuned from the LQR tuner web UI while the robot is running, so
+    the live values must come from vmc_control.  Reading the macros directly
+    would make the web controls silently do nothing.
+    """
+
+    RUNTIME_KEYS = (
+        "jump_auto_speed_min",
+        "jump_auto_dist_min_cm",
+        "jump_auto_dist_max_cm",
+        "jump_auto_confirm_ms",
+    )
+
+    def test_gate_reads_runtime_values_not_the_macros(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        gate = _function_body(source, "vmc_jump_auto_ready")
+        for key in self.RUNTIME_KEYS[:3]:
+            with self.subTest(key=key):
+                self.assertIn(
+                    f"vmc_control.{key}",
+                    gate,
+                    f"{key} must be read from vmc_control so the web UI works",
+                )
+        # The confirmation time is used by the state machine instead.
+        idle = _function_body(source, "vmc_jump_update")
+        self.assertIn("vmc_control.jump_auto_confirm_ms", idle)
+
+    def test_every_runtime_key_is_parsed_from_rtt(self) -> None:
+        rtt = (ROOT / "App" / "Src" / "vmc_lqr_rtt.c").read_text(encoding="utf-8")
+        for key in self.RUNTIME_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(
+                    f'"{key}"',
+                    rtt,
+                    f"{key} must be accepted over RTT to be web-tunable",
+                )
+
+    def test_every_runtime_key_is_initialised(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        init = _function_body(source, "vmc_control_init")
+        for key in self.RUNTIME_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(f"vmc_control.{key} =", init)
+
+    def test_tuner_exposes_every_runtime_key(self) -> None:
+        from tools.lqr_tuner.server import (
+            BALANCE_PARAM_DEFAULT_MACROS,
+            _firmware_balance_params,
+        )
+
+        resolved = _firmware_balance_params()
+        for key in self.RUNTIME_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(key, BALANCE_PARAM_DEFAULT_MACROS)
+                self.assertIn(key, resolved)
+        # The values must match the firmware defaults, not a stale copy.
+        self.assertAlmostEqual(resolved["jump_auto_speed_min"],
+                               _macro("VMC_JUMP_AUTO_SPEED_MIN"))
+        self.assertAlmostEqual(resolved["jump_auto_dist_min_cm"],
+                               _macro("VMC_JUMP_AUTO_DIST_MIN_CM"))
+        self.assertAlmostEqual(resolved["jump_auto_dist_max_cm"],
+                               _macro("VMC_JUMP_AUTO_DIST_MAX_CM"))
+        self.assertAlmostEqual(resolved["jump_auto_confirm_ms"],
+                               _macro("VMC_JUMP_AUTO_CONFIRM_MS"))
 
 
 if __name__ == "__main__":

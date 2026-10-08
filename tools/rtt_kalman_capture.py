@@ -272,11 +272,11 @@ FORMAT_V11_PROFILE = Profile(
     },
 )
 
-# Measured control-loop timing added (schema 8).  The loop is not fixed-rate;
-# loop_dt_us is the instantaneous measured period and loop_count an iteration
-# counter, so a recording yields the true average rate over any window.
-FORMAT_PROFILE = Profile(
-    name="format",
+# Measured control-loop timing added (schema 8), without the TF02 fields.
+# Kept as its own layout so recordings made before the laser telemetry was
+# added still parse.
+FORMAT_V12_PROFILE = Profile(
+    name="format-v12",
     field_count=136,
     channels={
         **FORMAT_V11_PROFILE.channels,
@@ -307,6 +307,20 @@ FORMAT_PROFILE = Profile(
     },
 )
 
+# TF02-Pro laser telemetry added (schema 9).  The automatic jump gate fires on
+# the laser reading strictly inside (80, 100) cm, so a capture has to carry the
+# distance and the health flag: otherwise "the window was never satisfied" and
+# "the laser was not answering" look identical in a recording.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=138,
+    channels={
+        **FORMAT_V12_PROFILE.channels,
+        "tf02_distance_cm": 136,
+        "tf02_connected": 137,
+    },
+)
+
 # NOTE: the liuche development line has its own VMCVOFA layout.  A profile for
 # it was previously guessed here from that branch's source and was wrong, as
 # well as colliding with a format field count.  Do not reintroduce a layout
@@ -325,6 +339,7 @@ PROFILES = {
     "format-v9": FORMAT_V9_PROFILE,
     "format-v10": FORMAT_V10_PROFILE,
     "format-v11": FORMAT_V11_PROFILE,
+    "format-v12": FORMAT_V12_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -338,6 +353,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V9_PROFILE,
     FORMAT_V10_PROFILE,
     FORMAT_V11_PROFILE,
+    FORMAT_V12_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -352,6 +368,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V9_PROFILE.field_count: FORMAT_V9_PROFILE,
     FORMAT_V10_PROFILE.field_count: FORMAT_V10_PROFILE,
     FORMAT_V11_PROFILE.field_count: FORMAT_V11_PROFILE,
+    FORMAT_V12_PROFILE.field_count: FORMAT_V12_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -431,6 +448,10 @@ CSV_FIELDS = [
     "lqr_theta",
     "roll_rate",
     "pitch_rate",
+    # TF02-Pro laser range and health.  The automatic jump gate needs the
+    # distance inside (80, 100) cm, so both are recorded here.
+    "tf02_distance_cm",
+    "tf02_connected",
     # Torque observations.  Appended so every older CSV keeps its column order.
     "left_wheel_torque_raw",
     "right_wheel_torque_raw",
@@ -550,6 +571,10 @@ class KalmanSample:
     lqr_theta: float = INVALID_VALUE
     roll_rate: float = INVALID_VALUE
     pitch_rate: float = INVALID_VALUE
+    # TF02-Pro laser: distance in centimetres and the driver's health flag.
+    # distance_cm == 0 with connected == 0 means "no reading", not "zero".
+    tf02_distance_cm: float = INVALID_VALUE
+    tf02_connected: float = INVALID_VALUE
     # Torque observations.  Tp is a virtual-leg torque; each joint receives
     # half of it, so a joint is at its rating when |Tp| reaches 108.
     left_wheel_torque_raw: float = INVALID_VALUE
@@ -895,6 +920,8 @@ def parse_vmcvoa_line(
         lqr_theta=channel("lqr_theta"),
         roll_rate=channel("roll_rate"),
         pitch_rate=channel("pitch_rate"),
+        tf02_distance_cm=channel("tf02_distance_cm"),
+        tf02_connected=channel("tf02_connected"),
         left_wheel_torque_raw=channel("left_wheel_torque_raw"),
         right_wheel_torque_raw=channel("right_wheel_torque_raw"),
         left_tp_theta_term=channel("left_tp_theta_term"),
@@ -1810,6 +1837,8 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 lqr_theta=_safe_float(row.get("lqr_theta", "")),
                 roll_rate=_safe_float(row.get("roll_rate", "")),
                 pitch_rate=_safe_float(row.get("pitch_rate", "")),
+                tf02_distance_cm=_safe_float(row.get("tf02_distance_cm", "")),
+                tf02_connected=_safe_float(row.get("tf02_connected", "")),
                 left_wheel_torque_raw=_safe_float(
                     row.get("left_wheel_torque_raw", "")
                 ),
@@ -2486,6 +2515,7 @@ def build_parser() -> argparse.ArgumentParser:
             "format-v9",
             "format-v10",
             "format-v11",
+            "format-v12",
         ),
         default=DEFAULT_PROFILE,
         help="VMCVOFA layout; auto detects by field count",

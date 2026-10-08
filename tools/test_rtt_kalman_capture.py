@@ -14,6 +14,7 @@ from tools.rtt_kalman_capture import (
     CSV_FIELDS,
     FORMAT_LEGACY_PROFILE,
     FORMAT_PROFILE,
+    FORMAT_V12_PROFILE,
     KalmanSample,
     analyze_samples,
     analyze_continuity,
@@ -69,6 +70,12 @@ def format_line(**updates: float) -> str:
     )
     fields[FORMAT_PROFILE.channels["schema_version"]] = updates.get(
         "schema_version", 5.0
+    )
+    fields[FORMAT_PROFILE.channels["tf02_distance_cm"]] = updates.get(
+        "tf02_distance_cm", 91.0
+    )
+    fields[FORMAT_PROFILE.channels["tf02_connected"]] = updates.get(
+        "tf02_connected", 1.0
     )
     return "VMCVOFA," + ",".join(str(value) for value in fields)
 
@@ -232,6 +239,36 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(profile.name, "format")
         self.assertAlmostEqual(sample.loop_dt_us, 2207.0)
         self.assertAlmostEqual(sample.loop_count, 123456.0)
+
+    def test_tf02_laser_channels_parse(self) -> None:
+        """Schema 9 carries the laser range and its health flag.
+
+        The automatic jump gate fires on the laser reading strictly inside
+        (80, 100) cm, so a capture without these cannot show why a jump did
+        not fire.
+        """
+        parsed = parse_vmcvoa_line(format_line(tf02_distance_cm=91.0,
+                                               tf02_connected=1.0))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertEqual(profile.field_count, 138)
+        self.assertAlmostEqual(sample.tf02_distance_cm, 91.0)
+        self.assertAlmostEqual(sample.tf02_connected, 1.0)
+
+    def test_v12_layout_still_parses(self) -> None:
+        """The 136-field layout (schema 8) predates the laser fields."""
+        fields = [0.001] * FORMAT_V12_PROFILE.field_count
+        fields[FORMAT_V12_PROFILE.channels["kf_x"]] = 1.0
+        fields[FORMAT_V12_PROFILE.channels["schema_version"]] = 8.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v12")
+        self.assertAlmostEqual(sample.schema_version, 8.0)
+        # The laser channels do not exist on this layout.
+        self.assertFalse(math.isfinite(sample.tf02_distance_cm))
+        self.assertFalse(math.isfinite(sample.tf02_connected))
 
     def test_torque_channels_parse(self) -> None:
         """The Tp decomposition and wheel torque are recorded verbatim.

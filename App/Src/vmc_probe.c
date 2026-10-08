@@ -29,6 +29,7 @@ static float vmc_yaw_unwrapped;
 static uint8_t vmc_yaw_unwrap_initialized;
 static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
+static uint32_t vmc_jump_auto_hold_ms;
 /* Gravity-compensation sign calibration; see VMC_GRAVITY_SIGN_ALPHA. */
 static float vmc_gravity_dot_lpf;
 static int8_t vmc_gravity_sign;
@@ -1138,6 +1139,7 @@ static void vmc_jump_finish(uint8_t stage, uint8_t reason, uint32_t now)
     vmc_control.jump_abort_reason = VMC_JUMP_ABORT_NONE;
   }
   vmc_control.jump_armed = 0U;
+  vmc_jump_auto_hold_ms = 0U;
   vmc_control.jump_last_finish_ms = now;
   vmc_control.jump_land_contact_ms = 0U;
   /* Drop the airborne latch the jump itself asserted.
@@ -1216,6 +1218,42 @@ static uint8_t vmc_jump_abort_reason(void)
   return VMC_JUMP_ABORT_NONE;
 }
 
+/* Automatic jump gate: are the two measurable conditions satisfied?
+ *
+ * S1 is the third condition and is checked by the caller, because it is also
+ * the switch the normal drive logic reads.
+ *
+ * Speed is the FUSED body velocity rather than the stick demand: the operator
+ * asked for the robot to be actually travelling at 1 m/s, not for the stick to
+ * be asking for it.  kf_dx is signed by travel direction, so the magnitude is
+ * what matters.
+ *
+ * The laser has to be fresh.  tf02_connected is cleared after 100 ms without a
+ * frame, and a stale echo must never arm a jump - tf02_distance_cm would
+ * otherwise hold whatever the last valid reading happened to be.  The window
+ * is exclusive at both ends, matching "小于 100 大于 80". */
+static uint8_t vmc_jump_auto_ready(void)
+{
+  const double speed = fabs(vmc_probe_state.motion.kf_dx);
+  const double distance_cm = (double)tf02_distance_cm;
+  /* Read from vmc_control rather than the macros: these are runtime tunable
+   * over RTT so the gate can be re-tuned from the web UI without a reflash. */
+  const double speed_min = (double)vmc_control.jump_auto_speed_min;
+  const double dist_min = (double)vmc_control.jump_auto_dist_min_cm;
+  const double dist_max = (double)vmc_control.jump_auto_dist_max_cm;
+
+  if (tf02_connected == 0U) {
+    return 0U;
+  }
+  if (speed < speed_min) {
+    return 0U;
+  }
+  if (distance_cm <= dist_min || distance_cm >= dist_max) {
+    return 0U;
+  }
+  return 1U;
+}
+
 static void vmc_jump_update(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -1247,21 +1285,37 @@ static void vmc_jump_update(void)
   if (vmc_control.jump_stage == VMC_JUMP_STAGE_IDLE) {
     const uint8_t cooled_down =
         ((now - vmc_control.jump_last_finish_ms) >= cooldown_ms) ? 1U : 0U;
+    const uint8_t auto_now =
+        (cooled_down != 0U && s1_is_up != 0U && vmc_jump_auto_ready() != 0U)
+            ? 1U
+            : 0U;
 
     vmc_control.jump_abort_reason = VMC_JUMP_ABORT_NONE;
-    if (s1_mid != 0U && cooled_down != 0U) {
-      vmc_control.jump_armed = 1U;
-    } else if (s1_is_up == 0U) {
-      vmc_control.jump_armed = 0U;
-    }
 
-    if (s1_is_up != 0U && vmc_control.jump_armed != 0U) {
-      if (vmc_jump_start_is_allowed() != 0U) {
-        vmc_control.jump_trigger_count++;
-        vmc_control.jump_start_ms = now;
-        vmc_jump_enter_stage(VMC_JUMP_STAGE_COMPRESS, now);
+    /* Require the conditions to hold continuously for a short window: the
+     * laser is one echo per frame and the speed estimate can spike on a single
+     * sample, so no single frame may launch a jump.
+     *
+     * jump_armed is kept as the telemetry-visible "about to fire" indication:
+     * 1 means S1 is up, the robot is at speed, the laser is in the window and
+     * the confirmation has elapsed. */
+    if (auto_now != 0U) {
+      if (vmc_jump_auto_hold_ms < vmc_control.jump_auto_confirm_ms) {
+        vmc_jump_auto_hold_ms += dt_ms;
       }
-      vmc_control.jump_armed = 0U;
+    } else {
+      vmc_jump_auto_hold_ms = 0U;
+    }
+    vmc_control.jump_armed =
+        (auto_now != 0U && vmc_jump_auto_hold_ms >= vmc_control.jump_auto_confirm_ms)
+            ? 1U
+            : 0U;
+
+    if (vmc_control.jump_armed != 0U && vmc_jump_start_is_allowed() != 0U) {
+      vmc_control.jump_trigger_count++;
+      vmc_control.jump_start_ms = now;
+      vmc_jump_auto_hold_ms = 0U;
+      vmc_jump_enter_stage(VMC_JUMP_STAGE_COMPRESS, now);
     }
     return;
   }
@@ -1277,10 +1331,11 @@ static void vmc_jump_update(void)
       vmc_control.jump_stage_start_ms = 0U;
       vmc_control.jump_stage_ms = 0U;
       vmc_control.jump_abort_reason = VMC_JUMP_ABORT_NONE;
-      vmc_control.jump_armed = 1U;
-    } else {
-      vmc_control.jump_armed = 0U;
     }
+    /* Not armed here: with the automatic gate the jump fires from IDLE as soon
+     * as the three conditions hold, so "armed" is computed there. */
+    vmc_control.jump_armed = 0U;
+    vmc_jump_auto_hold_ms = 0U;
     return;
   }
 
@@ -1600,8 +1655,9 @@ static void vmc_update_remote_mode(void)
   if (remote_control.s[1] == RC_SW_UP ||
       remote_control.s[1] == RC_SW_MID) {
     vmc_control.enabled = 1U;
-    /* S1 up becomes a jump trigger, then falls through to the normal S1 mid
-     * drive logic after the jump is finished. */
+    /* Both positions drive.  S1 up additionally enables the automatic jump
+     * gate (see vmc_jump_auto_ready); S1 mid is normal driving, so moving the
+     * switch back to mid is what disarms the next jump. */
     vmc_balance.wheel_output_enable =
         (vmc_getup_fully_fallen == 0U && vmc_getup_is_active() == 0U) ? 1U : 0U;
   } else {
@@ -3094,6 +3150,10 @@ void vmc_control_init(void)
   vmc_control.jump_attitude_limit = VMC_JUMP_ATTITUDE_LIMIT_DEFAULT;
   vmc_control.jump_land_torque_threshold = VMC_JUMP_LAND_TORQUE_THRESHOLD_DEFAULT;
   vmc_control.jump_land_confirm_ms = VMC_JUMP_LAND_CONFIRM_MS_DEFAULT;
+  vmc_control.jump_auto_speed_min = VMC_JUMP_AUTO_SPEED_MIN;
+  vmc_control.jump_auto_dist_min_cm = VMC_JUMP_AUTO_DIST_MIN_CM;
+  vmc_control.jump_auto_dist_max_cm = VMC_JUMP_AUTO_DIST_MAX_CM;
+  vmc_control.jump_auto_confirm_ms = VMC_JUMP_AUTO_CONFIRM_MS;
   vmc_control.ramped_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.length_ramp_rate = VMC_LEG_LENGTH_RAMP_RATE_DEFAULT;
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
@@ -3125,6 +3185,7 @@ void vmc_control_init(void)
   vmc_fall_monitor_armed = 0U;
   vmc_fall_prev_fully_fallen = 0U;
   vmc_jump_last_update_ms = 0U;
+  vmc_jump_auto_hold_ms = 0U;
   vmc_control.ramp_active = 0U;
 }
 

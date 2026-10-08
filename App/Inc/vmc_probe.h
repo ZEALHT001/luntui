@@ -185,6 +185,35 @@ extern "C" {
 #define VMC_JUMP_LAND_TORQUE_THRESHOLD_DEFAULT 3.0f
 #define VMC_JUMP_LAND_CONFIRM_MS_DEFAULT     80U
 #define VMC_JUMP_LENGTH_READY_TOL            0.015f
+
+/* Automatic jump gate.
+ *
+ * The jump used to be fired by flipping S1 up; it now fires by itself once all
+ * three operator conditions hold at once:
+ *
+ *   - S1 is UP (RC_SW_UP);
+ *   - the machine is actually travelling at >= VMC_JUMP_AUTO_SPEED_MIN m/s;
+ *   - the TF02 laser reads strictly inside the (min, max) window in cm.
+ *
+ * Speed is the FUSED body velocity (kf_dx, m/s), not the stick demand: the
+ * requirement is that the robot is really moving, not that the operator asked
+ * for it.  The laser must be fresh - tf02_connected drops after 100 ms without
+ * a frame - so a stale echo can never arm a jump.
+ *
+ * A short confirmation is required before firing.  The laser returns one echo
+ * per frame and the speed estimate can spike on a single sample, so one frame
+ * must not be able to launch a jump; 20 ms is about nine control cycles at
+ * 450 Hz.  The existing stage timeouts, attitude gate, feedback gate, abort
+ * logic and landing cooldown all still apply unchanged.
+ *
+ * These are the POWER-ON defaults.  The live values live in vmc_control
+ * (jump_auto_speed_min / jump_auto_dist_min_cm / jump_auto_dist_max_cm /
+ * jump_auto_confirm_ms) and are tunable over RTT from the LQR tuner web UI. */
+#define VMC_JUMP_AUTO_SPEED_MIN    1.0f   /* m/s */
+#define VMC_JUMP_AUTO_DIST_MIN_CM  80.0f  /* exclusive */
+#define VMC_JUMP_AUTO_DIST_MAX_CM  100.0f /* exclusive */
+#define VMC_JUMP_AUTO_CONFIRM_MS   20U
+
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -780,6 +809,12 @@ typedef struct {
   float jump_attitude_limit;
   float jump_land_torque_threshold;
   uint32_t jump_land_confirm_ms;
+  /* Automatic jump gate, runtime tunable over RTT (see vmc_jump_auto_ready).
+   * The macros above are only the power-on defaults. */
+  float jump_auto_speed_min;    /* m/s   */
+  float jump_auto_dist_min_cm;  /* cm    */
+  float jump_auto_dist_max_cm;  /* cm    */
+  uint32_t jump_auto_confirm_ms;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;

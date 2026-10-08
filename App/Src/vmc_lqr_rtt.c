@@ -3,6 +3,7 @@
 #include "SEGGER_RTT.h"
 #include "board_comm.h"
 #include "remote_control.h"
+#include "tf02_pro.h"
 #include "stm32f4xx_hal.h"
 #include "vmc_probe.h"
 #include "vmc_math.h"
@@ -44,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 8U
+#define VMC_LQR_RTT_SCHEMA_VERSION 9U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -600,6 +601,37 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "jump_land_confirm_ms", &value) != 0U) {
     vmc_control.jump_land_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
+    applied = 1U;
+  }
+  /* Automatic jump gate.  The speed floor is clamped above zero so a typo
+   * cannot make the gate fire while the robot is stationary; the distance
+   * bounds are clamped to the sensor's usable span. */
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_auto_speed_min", &value) != 0U) {
+    vmc_control.jump_auto_speed_min =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 5.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_auto_dist_min_cm", &value) != 0U) {
+    vmc_control.jump_auto_dist_min_cm =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 500.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_auto_dist_max_cm", &value) != 0U) {
+    vmc_control.jump_auto_dist_max_cm =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 500.0f);
+    applied = 1U;
+  }
+  /* Keep the window satisfiable.  A payload may set max before min, and an
+   * inverted pair would silently disable the automatic jump forever with no
+   * error anywhere, so normalise instead. */
+  if (vmc_control.jump_auto_dist_max_cm < vmc_control.jump_auto_dist_min_cm) {
+    const float swap = vmc_control.jump_auto_dist_min_cm;
+    vmc_control.jump_auto_dist_min_cm = vmc_control.jump_auto_dist_max_cm;
+    vmc_control.jump_auto_dist_max_cm = swap;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "jump_auto_confirm_ms", &value) != 0U) {
+    vmc_control.jump_auto_confirm_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
     applied = 1U;
   }
@@ -1360,6 +1392,19 @@ void vmc_lqr_rtt_telemetry_update(void)
                                   vmc_probe_state.loop_dt_us);
   offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
                                   vmc_probe_state.loop_count);
+
+  /* VMCVOFA fields 136..137: TF02-Pro laser range and its health flag.
+   *
+   * The automatic jump gate requires the laser to read strictly inside
+   * (80, 100) cm, so without these two the reason a jump did not fire cannot
+   * be told apart from a distance that simply never satisfied the window -
+   * or from a laser that was not answering at all.  Distance is in
+   * centimetres, exactly as the driver reports it; 0 with connected == 0
+   * means "no reading", not "an object at zero". */
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  (uint32_t)tf02_distance_cm);
+  offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
+                                  (uint32_t)tf02_connected);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

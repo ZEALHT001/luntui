@@ -65,11 +65,32 @@ def main() -> int:
     target = [num(r, "leg_length_target") for r in rows]
     armed = [num(r, "jump_armed") for r in rows]
     triggers = [num(r, "jump_trigger_count") for r in rows]
+    distance = [num(r, "tf02_distance_cm") for r in rows]
+    connected = [num(r, "tf02_connected") for r in rows]
 
     print(f"samples {len(rows)}, span {t[-1]:.1f} s")
     print(f"leg length  min {min(length):.4f}  max {max(length):.4f} m")
     print(f"jump triggers seen: {max(triggers):.0f}")
     print()
+
+    # Automatic-gate conditions.  Without these the report cannot say whether a
+    # missing jump was a speed, distance, or sensor problem.
+    import math as _math
+
+    if any(_math.isfinite(v) for v in distance):
+        live = [v for v, c in zip(distance, connected) if c == 1.0 and _math.isfinite(v)]
+        print("automatic jump gate inputs:")
+        print(f"  laser connected: {sum(1 for c in connected if c == 1.0)}/{len(connected)} frames")
+        if live:
+            print(f"  distance while connected: min {min(live):.0f}  max {max(live):.0f} cm")
+            inside = sum(1 for v in live if 80.0 < v < 100.0)
+            print(f"  inside (80, 100) cm: {inside}/{len(live)} frames")
+        else:
+            print("  distance: NEVER CONNECTED - the automatic jump gate can "
+                  "never fire without a live laser")
+        print()
+    else:
+        print("automatic jump gate inputs: not in this capture (pre-schema-9)\n")
 
     # Stage sequence, one line per contiguous run.
     print("stage sequence:")
@@ -96,8 +117,14 @@ def main() -> int:
         print("completed without an abort")
     elif max(triggers) <= 0:
         print("NEVER TRIGGERED: jump_trigger_count stayed 0.")
-        print("  The jump only fires on a transition INTO S1-up while already armed.")
-        print("  Put S1 in the MIDDLE first (arms it), then move it UP (fires).")
+        print("  The jump is automatic: it fires from IDLE once ALL of these hold")
+        print("  for the confirmation window at the same time -")
+        print("    - S1 is UP (not MID) and the remote is fresh,")
+        print("    - |kf_dx| >= VMC_JUMP_AUTO_SPEED_MIN (1.0 m/s),")
+        print("    - the TF02 laser reads strictly inside (80, 100) cm.")
+        print("  Check jump_armed in the capture: it reads 1 only while the gate")
+        print("  is satisfied.  Also check jump_abort_reason - REMOTE means S1")
+        print("  was not up, or the transmitter was stale.")
     else:
         print("triggered but never reached FINISHED; see the stage sequence above")
 
