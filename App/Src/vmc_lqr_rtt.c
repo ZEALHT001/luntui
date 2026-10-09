@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 12U
+#define VMC_LQR_RTT_SCHEMA_VERSION 13U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -680,6 +680,12 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_roll_deadband", &value) != 0U) {
     vmc_control.leg_follow_roll_deadband =
         vmc_lqr_rtt_clamp_float(value, 0.0f, 0.50f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_episode_timeout_ms",
+                                    &value) != 0U) {
+    vmc_control.leg_follow_episode_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 60000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_return_rate", &value) != 0U) {
@@ -1494,6 +1500,14 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_episode_active);
+  /* VMCVOFA field 145: whether the follow scope has actually been settled for
+   * this episode.  Without it a recording cannot tell "per-leg because the
+   * unloaded side is low" from "per-leg because the sign is still inside the
+   * deadband and nothing has been decided yet" - and that distinction is the
+   * whole reason the decision is deferred instead of taken on the latch. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_scope_resolved);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

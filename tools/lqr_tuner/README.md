@@ -108,13 +108,17 @@ diagnostics below:
 | 142 | ground-following extension, right | metres, already included in field 140 |
 | 143 | follow scope resolved for this unload episode | `1` = both legs extend, `0` = only the unloaded leg |
 | 144 | unload episode in progress | `0` or `1` |
+| 145 | follow scope actually settled | `0` = still pending (inside the deadband), `1` = decided |
 
-Fields 143/144 were added with schema 12.  The follow scope is no longer a
+Fields 143..145 were added with schema 12/13.  The follow scope is no longer a
 setting the operator dialled in: it is resolved from the roll direction when a
 side unloads, so without publishing the resolved value a recording cannot show
 which mode was actually active.  Field 122 already carries `roll`, so the two
-together reconstruct why the scope came out the way it did.  The 143-field
-layout is still parsed as `format-v15`.
+together reconstruct why the scope came out the way it did.  Field 145
+separates "per-leg because the unloaded side is low" from "per-leg because the
+sign is still inside the deadband and nothing has been decided yet" - a
+pending scope reads `0` too, and the two must not be confused.  The 143-field
+layout is parsed as `format-v15` and the 145-field one as `format-v16`.
 
 Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
 (`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg

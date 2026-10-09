@@ -3177,10 +3177,14 @@ void vmc_control_init(void)
   vmc_control.leg_follow_auto_scope = VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT;
   vmc_control.leg_follow_roll_deadband =
       VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT;
+  vmc_control.leg_follow_episode_timeout_ms =
+      VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT;
   vmc_control.leg_follow_scope_machine_wide =
       VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
   vmc_control.leg_follow_episode_active = 0U;
-  vmc_control.leg_follow_scope_valid = 0U;
+  vmc_control.leg_follow_scope_resolved = 0U;
+  vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
+  vmc_control.leg_follow_episode_ms = 0U;
   vmc_control.leg_follow_rate = VMC_LEG_FOLLOW_RATE_DEFAULT;
   vmc_control.leg_follow_return_rate = VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT;
   vmc_control.leg_follow_offset_left = 0.0f;
@@ -3231,61 +3235,43 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg)
   leg->joint_torque_back = 0.0;
 }
 
-/* Resolve the ground-following scope for one unload episode.
+/* Scope implied by the roll sign, if the sign is decisive yet.
  *
- * Returns 1 for whole-machine (both legs extend) and 0 for per-leg (only the
- * unloaded leg extends).  See VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT for why the
- * roll SIGN, not just which side unloaded, is what distinguishes the two
- * situations - and why the answer has to be latched per episode rather than
- * recomputed every cycle.
+ *   0  per-leg      the unloaded side is the LOW one: it went over an edge
+ *   1  whole machine the unloaded side is the HIGH one: the machine was lifted
+ *   2  undecided    |roll| is inside the deadband
  *
  * body.roll is positive when the RIGHT side is high, so the unloaded side's
  * signed roll is +roll when the right side unloaded and -roll when the left
  * did; positive therefore means "the unloaded side is the high one".
  *
- * ``auto_scope`` 0 falls straight through to ``fixed_machine_wide`` so the
- * old fixed-scope behaviour is still reachable without a reflash.
+ * This is split out from the episode state machine so the sign convention can
+ * be tested on its own - getting it backwards inverts both cases.
  */
-static uint8_t vmc_leg_follow_resolve_scope(uint8_t auto_scope,
-                                            uint8_t fixed_machine_wide,
-                                            uint8_t left_unloaded,
-                                            uint8_t right_unloaded,
-                                            double roll,
-                                            double deadband,
-                                            uint8_t have_previous,
-                                            uint8_t previous_machine_wide)
+static uint8_t vmc_leg_follow_scope_from_roll(uint8_t left_unloaded,
+                                              uint8_t right_unloaded,
+                                              double roll,
+                                              double deadband)
 {
   double signed_roll;
-
-  if (auto_scope == 0U) {
-    return (fixed_machine_wide != 0U) ? 1U : 0U;
-  }
-
-  if (left_unloaded == 0U && right_unloaded == 0U) {
-    /* Nothing is unloaded, so this is not an episode at all. */
-    return (have_previous != 0U) ? previous_machine_wide : 0U;
-  }
 
   if (left_unloaded != 0U && right_unloaded != 0U) {
     /* Both sides unloaded: the whole machine is off the ground, so there is
      * no grounded leg to lever against either way. */
     return 1U;
   }
+  if (left_unloaded == 0U && right_unloaded == 0U) {
+    return 2U;
+  }
 
   signed_roll = (right_unloaded != 0U) ? roll : -roll;
   if (signed_roll > deadband) {
-    /* The unloaded side is the HIGH side: the machine was lifted. */
     return 1U;
   }
   if (signed_roll < -deadband) {
-    /* The unloaded side is the LOW side: it went over an edge. */
     return 0U;
   }
-
-  /* Near level - genuinely ambiguous, so keep the previous answer.  With no
-   * history, per-leg is the safe default: it never levers the grounded leg
-   * while the machine may be going over an edge. */
-  return (have_previous != 0U) ? previous_machine_wide : 0U;
+  return 2U;
 }
 
 static void update_leg_length_control(volatile vmc_leg_state_t *leg,
@@ -3406,6 +3392,9 @@ void vmc_control_update(void)
     vmc_control.leg_follow_offset_left = 0.0f;
     vmc_control.leg_follow_offset_right = 0.0f;
     vmc_control.leg_follow_episode_active = 0U;
+    vmc_control.leg_follow_scope_resolved = 0U;
+    vmc_control.leg_follow_episode_ms = 0U;
+    vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -3488,24 +3477,26 @@ void vmc_control_update(void)
    * The offset is capped at the remaining stroke, so the target can never be
    * driven past VMC_LEG_LENGTH_MAX; once there the leg is fully extended and
    * further lifting is genuine flight, which the airborne detector handles.
-   * The unloaded decision reuses the per-side load latch, so it inherits that
-   * detector's confirmation and release hysteresis rather than adding a
-   * second, independently tuned threshold.
    *
-   * Scope is switchable (leg_follow_machine_wide):
+   * Scope comes from the roll direction and is decided ONCE per episode; see
+   * VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT for why the sign, and why it stays
+   * pending until the sign is decisive.
    *
-   *   per leg      only the unloaded leg extends.  Right for driving, where a
-   *                knocked-up wheel must not drag the grounded one with it.
-   *   whole machine (default) BOTH legs extend as soon as EITHER side unloads.
-   *                Required for a slow hand lift, because that does not spin
-   *                the lifted wheel - so the per-leg detector may never latch -
-   *                and the grounded leg reads MORE load, not less, so it can
-   *                never latch either.  Without whole-machine scope neither
-   *                leg follows and the machine just twists. */
+   * The episode outlives the load latch on purpose.  Extending the leg raises
+   * the joint torque, which trips the very latch the follow is waiting on, so
+   * a naive "follow while latched" loop extended ~14 mm, released itself,
+   * unwound 102 mm and started over - it never accumulated enough reach to
+   * touch anything.  An episode therefore persists while the body is still
+   * tilted and only unwinds once it is level again (or the timeout expires,
+   * so a machine parked on an edge cannot hold its extension forever). */
   if (vmc_control.leg_follow_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       jump_override == 0U) {
     const double dt = vmc_loop_dt();
+    const double deadband =
+        clamp_double(vmc_control.leg_follow_roll_deadband, 0.0, 0.5);
+    const double roll_now = (double)vmc_probe_state.body.roll;
+    const uint8_t body_level = (fabs(roll_now) <= deadband) ? 1U : 0U;
     const double follow_step =
         clamp_double(vmc_control.leg_follow_rate, 0.0, 1.0) * dt;
     const double return_step =
@@ -3516,33 +3507,106 @@ void vmc_control_update(void)
         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT];
     const uint8_t any_unloaded =
         (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
+    /* Side-low flags, from the same sign convention as the scope: roll is
+     * positive when the RIGHT side is high, so the LEFT side is the low one
+     * when roll is positive. */
+    const uint8_t left_low = (roll_now > deadband) ? 1U : 0U;
+    const uint8_t right_low = (roll_now < -deadband) ? 1U : 0U;
+    const uint32_t episode_timeout_ms =
+        (vmc_control.leg_follow_episode_timeout_ms > 60000U)
+            ? 60000U
+            : vmc_control.leg_follow_episode_timeout_ms;
     uint8_t machine_wide;
     uint8_t follow_left;
     uint8_t follow_right;
 
-    /* One decision per unload episode, taken on the rising edge and held
-     * until both sides reload; re-deciding every cycle would flip the scope
-     * as the body swings through level in the middle of a lift. */
-    if (any_unloaded != 0U && vmc_control.leg_follow_episode_active == 0U) {
-      vmc_control.leg_follow_scope_machine_wide = vmc_leg_follow_resolve_scope(
-          vmc_control.leg_follow_auto_scope,
-          vmc_control.leg_follow_machine_wide,
-          left_unloaded,
-          right_unloaded,
-          (double)vmc_probe_state.body.roll,
-          clamp_double(vmc_control.leg_follow_roll_deadband, 0.0, 0.5),
-          vmc_control.leg_follow_scope_valid,
-          vmc_control.leg_follow_scope_machine_wide);
-      vmc_control.leg_follow_scope_valid = 1U;
-      vmc_control.leg_follow_episode_active = 1U;
-    } else if (any_unloaded == 0U) {
-      vmc_control.leg_follow_episode_active = 0U;
+    /* --- episode lifetime --------------------------------------------- */
+    if (any_unloaded != 0U) {
+      if (vmc_control.leg_follow_episode_active == 0U) {
+        /* Fresh episode: clear everything inherited from the last one, and
+         * default to per-leg until the sign is decisive.  Remember which side
+         * triggered it - the latch cannot be asked again once it lets go, but
+         * the scope decision and the per-leg reach both still need to know. */
+        vmc_control.leg_follow_episode_active = 1U;
+        vmc_control.leg_follow_scope_resolved = 0U;
+        vmc_control.leg_follow_scope_machine_wide = 0U;
+        if (left_unloaded != 0U && right_unloaded != 0U) {
+          vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
+        } else {
+          vmc_control.leg_follow_episode_side = (right_unloaded != 0U)
+                                                    ? VMC_AIRBORNE_SIDE_RIGHT
+                                                    : VMC_AIRBORNE_SIDE_LEFT;
+        }
+      }
+      vmc_control.leg_follow_episode_ms = 0U;
+    } else if (vmc_control.leg_follow_episode_active != 0U) {
+      if (vmc_control.leg_follow_episode_ms < episode_timeout_ms) {
+        vmc_control.leg_follow_episode_ms += (uint32_t)(dt * 1000.0);
+      }
+      /* Hold the episode while the body is still tilted, so the extension
+       * this feature just paid for is not given straight back. */
+      if (body_level != 0U ||
+          vmc_control.leg_follow_episode_ms >= episode_timeout_ms) {
+        vmc_control.leg_follow_episode_active = 0U;
+        vmc_control.leg_follow_scope_resolved = 0U;
+        vmc_control.leg_follow_episode_ms = 0U;
+      }
     }
 
+    /* --- scope, settled once the sign is decisive --------------------- */
+    {
+      /* Both sides latched at any point in the episode means real flight, so
+       * there is no grounded leg to lever against. */
+      const uint8_t both_latched =
+          (left_unloaded != 0U && right_unloaded != 0U) ? 1U : 0U;
+
+      if (vmc_control.leg_follow_auto_scope == 0U) {
+        vmc_control.leg_follow_scope_machine_wide =
+            (vmc_control.leg_follow_machine_wide != 0U) ? 1U : 0U;
+        vmc_control.leg_follow_scope_resolved = 1U;
+      } else if (both_latched != 0U ||
+                 vmc_control.leg_follow_episode_side ==
+                     VMC_LEG_FOLLOW_SIDE_NONE) {
+        vmc_control.leg_follow_scope_machine_wide = 1U;
+        vmc_control.leg_follow_scope_resolved = 1U;
+      } else if (vmc_control.leg_follow_episode_active != 0U &&
+                 vmc_control.leg_follow_scope_resolved == 0U) {
+        /* Evaluate the sign against the side that actually unloaded, using
+         * the remembered side - not the instantaneous latch, which is
+         * already gone by the time the body has tilted enough to be
+         * decisive. */
+        const uint8_t decided = vmc_leg_follow_scope_from_roll(
+            (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_LEFT)
+                ? 1U
+                : 0U,
+            (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_RIGHT)
+                ? 1U
+                : 0U,
+            roll_now, deadband);
+        if (decided != 2U) {
+          vmc_control.leg_follow_scope_machine_wide = decided;
+          vmc_control.leg_follow_scope_resolved = 1U;
+        }
+      }
+    }
+
+    /* --- which legs extend -------------------------------------------- */
     machine_wide = vmc_control.leg_follow_scope_machine_wide;
     if (machine_wide != 0U) {
-      follow_left = (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
-      follow_right = follow_left;
+      /* A lift has to take the whole body with it, so both legs follow while
+       * the episode is live rather than only while a latch happens to be on -
+       * the latch releases as soon as the legs start carrying load. */
+      follow_left = vmc_control.leg_follow_episode_active;
+      follow_right = vmc_control.leg_follow_episode_active;
+    } else if (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_LEFT) {
+      /* Per-leg: the side that unloaded keeps reaching while it is the LOW
+       * one, even after its latch let go - reaching for ground is the point,
+       * and the latch drops as soon as the leg starts pushing. */
+      follow_left = (left_unloaded != 0U || left_low != 0U) ? 1U : 0U;
+      follow_right = 0U;
+    } else if (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_RIGHT) {
+      follow_left = 0U;
+      follow_right = (right_unloaded != 0U || right_low != 0U) ? 1U : 0U;
     } else {
       follow_left = left_unloaded;
       follow_right = right_unloaded;

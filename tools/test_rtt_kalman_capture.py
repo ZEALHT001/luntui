@@ -17,6 +17,8 @@ from tools.rtt_kalman_capture import (
     FORMAT_V12_PROFILE,
     FORMAT_V13_PROFILE,
     FORMAT_V14_PROFILE,
+    FORMAT_V15_PROFILE,
+    FORMAT_V16_PROFILE,
     KalmanSample,
     analyze_samples,
     analyze_continuity,
@@ -99,6 +101,9 @@ def format_line(**updates: float) -> str:
     )
     fields[FORMAT_PROFILE.channels["leg_follow_episode_active"]] = updates.get(
         "leg_follow_episode_active", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["leg_follow_scope_resolved"]] = updates.get(
+        "leg_follow_scope_resolved", 0.0
     )
     fields[FORMAT_PROFILE.channels["roll"]] = updates.get("roll", 0.0)
     return "VMCVOFA," + ",".join(str(value) for value in fields)
@@ -359,12 +364,14 @@ class ParseTests(unittest.TestCase):
         parsed = parse_vmcvoa_line(
             format_line(leg_follow_scope_machine_wide=1.0,
                         leg_follow_episode_active=1.0,
+                        leg_follow_scope_resolved=1.0,
                         roll=0.12)
         )
         self.assertIsNotNone(parsed)
         _profile, sample = parsed  # type: ignore[misc]
         self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 1.0)
         self.assertAlmostEqual(sample.leg_follow_episode_active, 1.0)
+        self.assertAlmostEqual(sample.leg_follow_scope_resolved, 1.0)
         self.assertAlmostEqual(sample.roll, 0.12)
 
     def test_scope_is_absent_on_a_schema_11_capture(self) -> None:
@@ -380,6 +387,24 @@ class ParseTests(unittest.TestCase):
         profile, sample = parsed  # type: ignore[misc]
         self.assertEqual(profile.name, "format-v15")
         self.assertFalse(math.isfinite(sample.leg_follow_scope_machine_wide))
+
+    def test_resolution_flag_is_absent_on_a_schema_12_capture(self) -> None:
+        """145 fields = schema 12: scope present, settled flag not yet.
+
+        A capture from that layout must still parse; the flag reads invalid
+        rather than silently defaulting to zero, because a pending scope also
+        reads zero and the two must not be confused.
+        """
+        fields = [0.001] * FORMAT_V16_PROFILE.field_count
+        for name, index in FORMAT_V16_PROFILE.channels.items():
+            fields[index] = 0.0
+        fields[FORMAT_V16_PROFILE.channels["mcu_time_ms"]] = 1234.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v16")
+        self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 0.0)
+        self.assertFalse(math.isfinite(sample.leg_follow_scope_resolved))
 
     def test_v14_layout_still_parses(self) -> None:
         """The 141-field layout (schema 10) predates the leg-follow fields."""

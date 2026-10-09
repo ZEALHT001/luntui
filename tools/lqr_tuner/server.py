@@ -148,6 +148,11 @@ _BALANCE_PARAM_FALLBACK = {
     # leg).  Overrides leg_follow_machine_wide while set.
     "leg_follow_auto_scope": 1.0,
     "leg_follow_roll_deadband": 0.05,
+    # How long an unload episode survives with nothing latched.  The follow
+    # feature raises joint torque as it pushes, which trips the same load latch
+    # it waits on, so the episode has to outlive the latch or the extension is
+    # given back before it has reached anything.
+    "leg_follow_episode_timeout_ms": 3000.0,
     "leg_follow_rate": 0.20,
     "leg_follow_return_rate": 0.05,
     "kp_phi0": 50.0,
@@ -257,6 +262,10 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "leg_follow_machine_wide": ("VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT", "uint"),
     "leg_follow_auto_scope": ("VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT", "uint"),
     "leg_follow_roll_deadband": ("VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT", "float"),
+    "leg_follow_episode_timeout_ms": (
+        "VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT",
+        "uint_value",
+    ),
     "leg_follow_rate": ("VMC_LEG_FOLLOW_RATE_DEFAULT", "float"),
     "leg_follow_return_rate": ("VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT", "float"),
     "kp_phi0": ("VMC_LEG_PHI0_KP_DEFAULT", "float"),

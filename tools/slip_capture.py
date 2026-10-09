@@ -304,6 +304,7 @@ def _enable_payload(
     leg_follow_machine_wide: bool | None = None,
     leg_follow_auto_scope: bool | None = None,
     leg_follow_roll_deadband: float | None = None,
+    leg_follow_episode_timeout_ms: float | None = None,
 ) -> str:
     """Build the RTT parameter payload for one capture.
 
@@ -341,6 +342,10 @@ def _enable_payload(
         payload["leg_follow_auto_scope"] = 1 if leg_follow_auto_scope else 0
     if leg_follow_roll_deadband is not None:
         payload["leg_follow_roll_deadband"] = float(leg_follow_roll_deadband)
+    if leg_follow_episode_timeout_ms is not None:
+        payload["leg_follow_episode_timeout_ms"] = float(
+            leg_follow_episode_timeout_ms
+        )
 
     if mode == "slow":
         payload.update(
@@ -689,6 +694,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--leg-follow-episode-timeout-ms",
+        type=float,
+        default=None,
+        help=(
+            "how long an unload episode survives with nothing latched, so the "
+            "reach is not unwound before it arrives (firmware default 3000)"
+        ),
+    )
+    parser.add_argument(
         "--leg-follow-rate",
         type=float,
         default=None,
@@ -768,6 +782,10 @@ def main() -> int:
         0.0 <= args.leg_follow_roll_deadband <= 0.5
     ):
         parser.error("--leg-follow-roll-deadband must be in [0, 0.5] rad")
+    if args.leg_follow_episode_timeout_ms is not None and not (
+        0.0 <= args.leg_follow_episode_timeout_ms <= 60000.0
+    ):
+        parser.error("--leg-follow-episode-timeout-ms must be in [0, 60000]")
     leg_follow_enable = (
         None if args.leg_follow is None else (args.leg_follow == "on")
     )
@@ -832,6 +850,7 @@ def main() -> int:
                 leg_follow_machine_wide,
                 leg_follow_auto_scope,
                 args.leg_follow_roll_deadband,
+                args.leg_follow_episode_timeout_ms,
             ),
             "VMC_BALANCE_PARAMS OK",
         ):
@@ -881,6 +900,7 @@ def main() -> int:
             or args.leg_follow_rate is not None
             or args.leg_follow_return_rate is not None
             or args.leg_follow_roll_deadband is not None
+            or args.leg_follow_episode_timeout_ms is not None
         ):
             print(
                 "leg follow set: "
@@ -906,6 +926,12 @@ def main() -> int:
                     f"roll_deadband {args.leg_follow_roll_deadband:g} rad"
                     if args.leg_follow_roll_deadband is not None
                     else "roll_deadband unchanged"
+                )
+                + ", "
+                + (
+                    f"episode_timeout {args.leg_follow_episode_timeout_ms:g} ms"
+                    if args.leg_follow_episode_timeout_ms is not None
+                    else "episode_timeout unchanged"
                 )
                 + ", "
                 + (
@@ -1099,6 +1125,7 @@ def main() -> int:
             "machine_wide": leg_follow_machine_wide,
             "auto_scope": leg_follow_auto_scope,
             "roll_deadband": args.leg_follow_roll_deadband,
+            "episode_timeout_ms": args.leg_follow_episode_timeout_ms,
             "rate": args.leg_follow_rate,
             "return_rate": args.leg_follow_return_rate,
         },

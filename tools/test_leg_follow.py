@@ -58,6 +58,16 @@ def _body(source: str, name: str) -> str:
     raise AssertionError(f"unterminated body for {name}")
 
 
+def _has(haystack: str, needle: str, why: str) -> None:
+    """Assert membership without dumping the whole function body on failure.
+
+    unittest's own assertIn message quotes the entire haystack, which for a
+    control-loop body is hundreds of lines of noise around a one-line failure.
+    """
+    if needle not in haystack:
+        raise AssertionError(f"{why}\n  missing: {needle}")
+
+
 class DefaultsTest(unittest.TestCase):
     def test_enable_is_a_flag(self) -> None:
         """The macro is only the power-on default; the web UI writes it.
@@ -91,36 +101,40 @@ class ControlPathTest(unittest.TestCase):
             "vmc_control.leg_follow_return_rate",
         ):
             with self.subTest(key=key):
-                self.assertIn(key, body)
+                _has(body, key, "the follow offsets are not applied to the target")
 
     def test_follow_is_gated_per_side_on_the_load_latch(self) -> None:
         """Only the leg that lost the ground may extend."""
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("VMC_AIRBORNE_SIDE_LEFT", body)
-        self.assertIn("VMC_AIRBORNE_SIDE_RIGHT", body)
-        self.assertIn("airborne_side_active", body)
+        _has(body, "VMC_AIRBORNE_SIDE_LEFT", "left side is not distinguished")
+        _has(body, "VMC_AIRBORNE_SIDE_RIGHT", "right side is not distinguished")
+        _has(body, "airborne_side_active", "the per-side load latch is unused")
 
     def test_whole_machine_scope_extends_both_legs(self) -> None:
-        """With the machine-wide switch on, either side unloading extends both.
+        """Whole-machine scope hands the same decision to both legs.
 
-        The per-leg branch must still exist so the driving case can be
-        restored without a reflash.
+        The scope is no longer read straight from leg_follow_machine_wide -
+        it is either forced to that value by auto_scope = 0, or resolved from
+        the roll direction - but the hand-off to both legs is unchanged.
         """
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("leg_follow_machine_wide", body)
-        # Both sides OR-ed into one decision, and that decision handed to both.
-        self.assertIn("follow_left = (left_unloaded != 0U || right_unloaded != 0U)",
-                      body)
-        self.assertIn("follow_right = follow_left;", body)
-        # The per-leg path survives.
-        self.assertIn("follow_left = left_unloaded;", body)
-        self.assertIn("follow_right = right_unloaded;", body)
+        _has(body, "follow_left = vmc_control.leg_follow_episode_active;",
+             "whole-machine scope must hand the episode state to the left leg")
+        _has(body, "follow_right = vmc_control.leg_follow_episode_active;",
+             "whole-machine scope must hand the episode state to the right leg")
+        # The per-leg path survives, one branch per remembered side.
+        _has(body, "leg_follow_episode_side == VMC_AIRBORNE_SIDE_LEFT",
+             "the per-leg left branch is missing")
+        _has(body, "leg_follow_episode_side == VMC_AIRBORNE_SIDE_RIGHT",
+             "the per-leg right branch is missing")
 
     def test_each_leg_is_capped_by_its_own_remaining_stroke(self) -> None:
         """A leg near full extension must stop there, not be dragged further."""
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("VMC_LEG_LENGTH_MAX - left_target_length", body)
-        self.assertIn("VMC_LEG_LENGTH_MAX - right_target_length", body)
+        _has(body, "VMC_LEG_LENGTH_MAX - left_target_length",
+             "the left leg is not capped by its own remaining stroke")
+        _has(body, "VMC_LEG_LENGTH_MAX - right_target_length",
+             "the right leg is not capped by its own remaining stroke")
 
     def test_offset_cannot_exceed_the_stroke(self) -> None:
         """The whole point is that extension stops at VMC_LEG_LENGTH_MAX.
@@ -130,14 +144,16 @@ class ControlPathTest(unittest.TestCase):
         would not return correctly once it reloaded.
         """
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("VMC_LEG_LENGTH_MAX - left_target_length", body)
-        self.assertIn("VMC_LEG_LENGTH_MAX - right_target_length", body)
+        _has(body, "VMC_LEG_LENGTH_MAX - left_target_length",
+             "the left offset is not bounded by the stroke")
+        _has(body, "VMC_LEG_LENGTH_MAX - right_target_length",
+             "the right offset is not bounded by the stroke")
 
     def test_follow_is_suspended_for_jump_and_recovery(self) -> None:
         """A jump and the self-righting sequence own the leg outright."""
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("vmc_getup_is_active() == 0U", body)
-        self.assertIn("jump_override == 0U", body)
+        _has(body, "vmc_getup_is_active() == 0U", "follow is not gated on recovery")
+        _has(body, "jump_override == 0U", "follow is not gated on a jump")
 
     def test_offsets_reset_when_the_feature_stops_applying(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
@@ -150,24 +166,39 @@ class ControlPathTest(unittest.TestCase):
         for key in (
             "leg_follow_enable",
             "leg_follow_machine_wide",
+            "leg_follow_auto_scope",
+            "leg_follow_roll_deadband",
+            "leg_follow_episode_timeout_ms",
+            "leg_follow_scope_resolved",
+            "leg_follow_episode_side",
+            "leg_follow_episode_ms",
             "leg_follow_rate",
             "leg_follow_return_rate",
             "leg_follow_offset_left",
             "leg_follow_offset_right",
         ):
             with self.subTest(key=key):
-                self.assertIn(f"vmc_control.{key} =", body)
+                self.assertTrue(
+                    f"vmc_control.{key} =" in body,
+                    f"vmc_control_init does not initialise {key}",
+                )
 
     def test_every_key_is_tunable_over_rtt(self) -> None:
         source = RTT.read_text(encoding="utf-8")
         for key in (
             "leg_follow_enable",
             "leg_follow_machine_wide",
+            "leg_follow_auto_scope",
+            "leg_follow_roll_deadband",
+            "leg_follow_episode_timeout_ms",
             "leg_follow_rate",
             "leg_follow_return_rate",
         ):
             with self.subTest(key=key):
-                self.assertIn(f'"{key}"', source)
+                self.assertTrue(
+                    f'"{key}"' in source,
+                    f"{key} is not parsed from the RTT payload",
+                )
 
     def test_tuner_exposes_every_key(self) -> None:
         from tools.lqr_tuner.server import (
@@ -207,17 +238,19 @@ class AutoScopeTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.body = _body(SOURCE.read_text(encoding="utf-8"),
-                          "vmc_leg_follow_resolve_scope")
+                          "vmc_leg_follow_scope_from_roll")
 
     def test_positive_roll_for_the_unloaded_side_extends_both(self) -> None:
         """Unloaded side HIGH => lifted => whole machine."""
-        self.assertIn("signed_roll > deadband", self.body)
-        self.assertIn("return 1U;", self.body)
+        _has(self.body, "signed_roll > deadband",
+             "the lifted case is not tested against the deadband")
+        _has(self.body, "return 1U;", "the lifted case does not return whole-machine")
 
     def test_negative_roll_for_the_unloaded_side_extends_only_it(self) -> None:
         """Unloaded side LOW => over an edge => that leg only."""
-        self.assertIn("signed_roll < -deadband", self.body)
-        self.assertIn("return 0U;", self.body)
+        _has(self.body, "signed_roll < -deadband",
+             "the dropped case is not tested against the deadband")
+        _has(self.body, "return 0U;", "the dropped case does not return per-leg")
 
     def test_right_uses_roll_and_left_uses_minus_roll(self) -> None:
         """body.roll is positive when the RIGHT side is high.
@@ -225,64 +258,104 @@ class AutoScopeTest(unittest.TestCase):
         Getting this backwards would invert both cases, so the mapping is
         asserted rather than left to a comment.
         """
-        self.assertIn("signed_roll = (right_unloaded != 0U) ? roll : -roll;",
-                      self.body)
+        _has(self.body, "signed_roll = (right_unloaded != 0U) ? roll : -roll;",
+             "the roll sign is not mapped to the correct side")
 
     def test_deadband_holds_the_previous_episode_decision(self) -> None:
-        """Near level is genuinely ambiguous, so do not flip mid-lift."""
-        self.assertIn("have_previous", self.body)
-        self.assertIn("previous_machine_wide", self.body)
-
-    def test_no_history_defaults_to_per_leg(self) -> None:
-        """The safe default: never lever the grounded leg on the first episode.
-
-        Held at the level of the final fallback, which must not be 1U.
-        """
-        tail = self.body.rstrip().rstrip("}")
-        self.assertIn("return (have_previous != 0U) ? previous_machine_wide : 0U;",
-                      tail)
+        """Near level is ambiguous, so report "undecided" rather than a guess."""
+        _has(self.body, "return 2U;", "the deadband does not report undecided")
 
     def test_both_sides_unloaded_is_whole_machine(self) -> None:
         """A genuine flight has no grounded leg to lever against."""
-        self.assertIn("left_unloaded != 0U && right_unloaded != 0U", self.body)
-
-    def test_fixed_scope_is_still_reachable(self) -> None:
-        """auto_scope = 0 must fall back to the old fixed behaviour."""
-        self.assertIn("auto_scope == 0U", self.body)
-        self.assertIn("fixed_machine_wide", self.body)
+        _has(self.body, "left_unloaded != 0U && right_unloaded != 0U",
+             "the both-sides-latched case is not handled")
 
     def test_decision_is_latched_per_episode(self) -> None:
         """Re-deciding every cycle would flip the scope through level."""
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("leg_follow_episode_active == 0U", body)
-        self.assertIn("leg_follow_scope_machine_wide = vmc_leg_follow_resolve_scope",
-                      body)
-        self.assertIn("leg_follow_episode_active = 0U;", body)
+        _has(body, "leg_follow_scope_resolved == 0U",
+             "the scope is not held once decided")
+        _has(body, "vmc_leg_follow_scope_from_roll",
+             "the scope is not derived from the roll sign")
+        _has(body, "leg_follow_episode_active = 0U;",
+             "an episode never ends")
 
-    def test_history_bit_is_not_the_episode_flag(self) -> None:
-        """The deadband fallback needs the previous EPISODE's answer.
+    def test_a_new_episode_inherits_nothing(self) -> None:
+        """A brief noise latch must not poison the next real lift.
 
-        On the rising edge the episode flag is still 0 by construction, so
-        reusing it as "have previous" would make the fallback dead code.  The
-        two flags have to be separate.
+        Measured: a 0.2 s spurious latch left the scope on per-leg, and the
+        next real lift - whose own first latch landed at roll +0.047, inside
+        the deadband - inherited that stale answer and extended one leg.
         """
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertIn("vmc_control.leg_follow_scope_valid,", body)
-        self.assertNotIn("vmc_control.leg_follow_episode_active,\n"
-                         "          vmc_control.leg_follow_scope_machine_wide);",
-                         body)
-        self.assertIn("vmc_control.leg_follow_scope_valid = 1U;", body)
+        start = body.index("Fresh episode")
+        window = body[start:start + 700]
+        _has(window, "leg_follow_scope_resolved = 0U;",
+             "a new episode inherits the previous scope resolution")
+        _has(window, "leg_follow_scope_machine_wide = 0U;",
+             "a new episode inherits the previous scope")
+
+    def test_fixed_scope_is_still_reachable(self) -> None:
+        """auto_scope = 0 must fall back to the old fixed behaviour."""
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        _has(body, "leg_follow_auto_scope == 0U",
+             "the fixed-scope fallback is gone")
+        _has(body, "leg_follow_machine_wide != 0U",
+             "the fixed-scope value is no longer read")
+
+    def test_scope_is_settled_after_the_latch_lets_go(self) -> None:
+        """The decision must not depend on the instantaneous latch.
+
+        On a lift the wheel leaves the ground BEFORE the body has tilted, and
+        the latch drops again as soon as the legs carry load - so the sign has
+        to be evaluated against the REMEMBERED side while the episode is live.
+        """
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        _has(body, "leg_follow_episode_side ==",
+             "the decision ignores which side unloaded")
+        _has(body, "VMC_LEG_FOLLOW_SIDE_NONE",
+             "the both-sides-at-once case is not recognised")
+
+    def test_episode_outlives_the_latch(self) -> None:
+        """Follow must not undo itself.
+
+        Extending the leg raises joint torque, which trips the same load latch
+        the follow waits on.  Measured: extend ~14 mm, release, unwind 102 mm,
+        repeat - it never accumulated enough reach to touch anything.
+        """
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        # The episode only ends once the body is level (or the timeout fires).
+        _has(body, "body_level != 0U",
+             "the episode ends without waiting for the body to level")
+        _has(body, "leg_follow_episode_timeout_ms",
+             "there is no timeout for an episode that never levels")
+        _has(body, "leg_follow_episode_ms",
+             "the episode age is not tracked")
+
+    def test_reach_continues_while_the_side_is_still_low(self) -> None:
+        """Per-leg scope keeps reaching after the latch lets go."""
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        _has(body, "left_low", "the left side-low condition is missing")
+        _has(body, "right_low", "the right side-low condition is missing")
+        _has(body, "(right_unloaded != 0U || right_low != 0U)",
+             "the right leg stops reaching when its latch lets go")
+        _has(body, "(left_unloaded != 0U || left_low != 0U)",
+             "the left leg stops reaching when its latch lets go")
 
     def test_scope_is_published_to_telemetry(self) -> None:
         """A recording must show which mode was active, not just what was asked."""
         source = RTT.read_text(encoding="utf-8")
-        self.assertIn("leg_follow_scope_machine_wide", source)
+        _has(source, "leg_follow_scope_machine_wide",
+             "the resolved scope is not published")
+        _has(source, "leg_follow_scope_resolved",
+             "the settled flag is not published")
 
     def test_scope_keys_are_tunable_over_rtt(self) -> None:
         source = RTT.read_text(encoding="utf-8")
-        for key in ("leg_follow_auto_scope", "leg_follow_roll_deadband"):
+        for key in ("leg_follow_auto_scope", "leg_follow_roll_deadband",
+                    "leg_follow_episode_timeout_ms"):
             with self.subTest(key=key):
-                self.assertIn(f'"{key}"', source)
+                _has(source, f'"{key}"', f"{key} is not parsed from RTT")
 
 
 if __name__ == "__main__":

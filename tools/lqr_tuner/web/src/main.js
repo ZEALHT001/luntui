@@ -88,6 +88,7 @@ const balanceParamIds = [
   ["legFollowAutoScope", "leg_follow_auto_scope"],
   ["legFollowMachineWide", "leg_follow_machine_wide"],
   ["legFollowRollDeadband", "leg_follow_roll_deadband"],
+  ["legFollowEpisodeTimeoutMs", "leg_follow_episode_timeout_ms"],
   ["legFollowRate", "leg_follow_rate"],
   ["legFollowReturnRate", "leg_follow_return_rate"],
   ["kpPhi0", "kp_phi0"],

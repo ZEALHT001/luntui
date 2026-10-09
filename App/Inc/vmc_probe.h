@@ -172,17 +172,40 @@ extern "C" {
  * positive means that side is the high one.
  *
  * The decision is taken ONCE per unload episode, on the rising edge, and held
- * until both sides reload.  Re-deciding every cycle would flip the scope as
- * the body swings through level mid-lift.  Near-level is genuinely ambiguous,
- * so inside the deadband the previous episode's decision is kept; with no
- * history the answer is per-leg, which is the safe choice - it never levers
- * the grounded leg against a machine that is going over an edge.
+ * until the episode ends.  Re-deciding every cycle would flip the scope as
+ * the body swings through level mid-lift.
+ *
+ * Near-level the sign is genuinely ambiguous, and on a lift the wheel usually
+ * leaves the ground BEFORE the body has tilted: the first latch of a real
+ * lift was measured at roll +0.047, inside the deadband.  Deciding only at the
+ * rising edge therefore read that lift as per-leg and it extended one leg.
+ * So the decision stays PENDING while the sign is ambiguous and is settled as
+ * soon as the body passes the deadband, which it always does if the tilt is
+ * real.  While pending the answer is per-leg - the safe choice, because it
+ * never levers the grounded leg against a machine that may be going over an
+ * edge - and nothing is inherited from a previous episode, so a brief noise
+ * latch cannot poison the next real one.
  *
  * Set leg_follow_auto_scope to 0 to go back to a fixed scope chosen by
  * leg_follow_machine_wide. */
 #define VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT   1U
 /* |roll| below this cannot be told apart from level.  0.05 rad = 2.9 deg. */
 #define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.05f
+/* How long an episode survives with NOTHING latched.
+ *
+ * While a side is still low the extension must not be given back: the follow
+ * feature raises the joint torque as it pushes, which trips the same load
+ * latch it is waiting on, and the measured result was a loop that extended
+ * ~14 mm, released itself, unwound 102 mm and started again - it never
+ * accumulated enough reach to touch anything.  So the episode persists while
+ * the body is still tilted, and the extension is only unwound once the body
+ * is level again.
+ *
+ * This timeout is the escape hatch for the case where it never levels: a
+ * machine parked on an edge would otherwise hold its extension forever. */
+#define VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT 3000U
+/* "Neither side in particular" - both latched at once, i.e. real flight. */
+#define VMC_LEG_FOLLOW_SIDE_NONE 2U
 
 /* S2 selects among these three presets: UP -> LONG, MID -> MID, DOWN ->
  * SHORT.  Units are metres; VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp
@@ -983,16 +1006,23 @@ typedef struct {
   uint8_t leg_follow_auto_scope;
   /* |roll| below this is treated as level; see the macro. */
   float leg_follow_roll_deadband;
-  /* Scope resolved for the episode in progress, and whether one is in
-   * progress.  Published to telemetry so a recording can show which mode was
-   * actually active rather than only what was requested. */
+  /* How long an episode may survive with nothing latched.  See
+   * VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT. */
+  uint32_t leg_follow_episode_timeout_ms;
+  /* Scope resolved for the episode in progress, whether one is in progress,
+   * and whether the sign has actually been settled yet.  Published to
+   * telemetry so a recording can show which mode was active - and, when it
+   * reads per-leg, whether that was a real decision or still pending. */
   uint8_t leg_follow_scope_machine_wide;
   uint8_t leg_follow_episode_active;
-  /* Whether a scope has ever been resolved.  The deadband fallback needs the
-   * PREVIOUS EPISODE's answer, and on the rising edge of an episode
-   * leg_follow_episode_active is by construction still 0, so that flag cannot
-   * serve as the history bit. */
-  uint8_t leg_follow_scope_valid;
+  uint8_t leg_follow_scope_resolved;
+  /* Which side triggered the episode (VMC_AIRBORNE_SIDE_LEFT/RIGHT, or
+   * VMC_LEG_FOLLOW_SIDE_NONE when both latched at once).  The scope decision
+   * and the per-leg reach both need to know this even after the load latch
+   * has let go, and the latch cannot be asked again once it has. */
+  uint8_t leg_follow_episode_side;
+  /* Millisecond counter for the episode timeout. */
+  uint32_t leg_follow_episode_ms;
   float leg_follow_rate;
   float leg_follow_return_rate;
   float leg_follow_offset_left;

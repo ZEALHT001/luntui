@@ -345,18 +345,30 @@ FORMAT_V15_PROFILE = Profile(
     },
 )
 
-# Roll-selected follow scope added (schema 12).  The scope is no longer a
-# fixed setting - it is resolved from the roll direction when a side unloads -
-# so the resolved value and the episode flag have to be recorded, otherwise a
-# capture cannot show which mode was actually active.  roll itself is field
-# 122, so the two together reconstruct why the scope came out as it did.
-FORMAT_PROFILE = Profile(
-    name="format",
+# Roll-selected follow scope added (schema 12), without the "settled" flag.
+FORMAT_V16_PROFILE = Profile(
+    name="format-v16",
     field_count=145,
     channels={
         **FORMAT_V15_PROFILE.channels,
         "leg_follow_scope_machine_wide": 143,
         "leg_follow_episode_active": 144,
+    },
+)
+
+# Follow-scope resolution flag added (schema 13).  The scope is no longer a
+# fixed setting - it is resolved from the roll direction when a side unloads -
+# so the resolved value, the episode flag and whether the sign has actually
+# been settled all have to be recorded.  Without the last one a capture cannot
+# tell "per-leg because the unloaded side is low" from "per-leg because the
+# sign is still inside the deadband and nothing has been decided yet".  roll
+# itself is field 122, so the three together reconstruct the decision.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=146,
+    channels={
+        **FORMAT_V16_PROFILE.channels,
+        "leg_follow_scope_resolved": 145,
     },
 )
 
@@ -382,6 +394,7 @@ PROFILES = {
     "format-v13": FORMAT_V13_PROFILE,
     "format-v14": FORMAT_V14_PROFILE,
     "format-v15": FORMAT_V15_PROFILE,
+    "format-v16": FORMAT_V16_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -399,6 +412,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V13_PROFILE,
     FORMAT_V14_PROFILE,
     FORMAT_V15_PROFILE,
+    FORMAT_V16_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -417,6 +431,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V13_PROFILE.field_count: FORMAT_V13_PROFILE,
     FORMAT_V14_PROFILE.field_count: FORMAT_V14_PROFILE,
     FORMAT_V15_PROFILE.field_count: FORMAT_V15_PROFILE,
+    FORMAT_V16_PROFILE.field_count: FORMAT_V16_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -516,6 +531,9 @@ CSV_FIELDS = [
     # show which mode was actually active.
     "leg_follow_scope_machine_wide",
     "leg_follow_episode_active",
+    # Whether the scope was actually settled for this episode.  A pending
+    # scope reads per-leg too, and the two must not be confused.
+    "leg_follow_scope_resolved",
     # Torque observations.  Appended so every older CSV keeps its column order.
     "left_wheel_torque_raw",
     "right_wheel_torque_raw",
@@ -652,6 +670,7 @@ class KalmanSample:
     # whether one is running.  Absent before schema 12.
     leg_follow_scope_machine_wide: float = INVALID_VALUE
     leg_follow_episode_active: float = INVALID_VALUE
+    leg_follow_scope_resolved: float = INVALID_VALUE
     # Torque observations.  Tp is a virtual-leg torque; each joint receives
     # half of it, so a joint is at its rating when |Tp| reaches 108.
     left_wheel_torque_raw: float = INVALID_VALUE
@@ -1006,6 +1025,7 @@ def parse_vmcvoa_line(
         leg_follow_offset_right=channel("leg_follow_offset_right"),
         leg_follow_scope_machine_wide=channel("leg_follow_scope_machine_wide"),
         leg_follow_episode_active=channel("leg_follow_episode_active"),
+        leg_follow_scope_resolved=channel("leg_follow_scope_resolved"),
         left_wheel_torque_raw=channel("left_wheel_torque_raw"),
         right_wheel_torque_raw=channel("right_wheel_torque_raw"),
         left_tp_theta_term=channel("left_tp_theta_term"),
@@ -1937,6 +1957,9 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 leg_follow_episode_active=_safe_float(
                     row.get("leg_follow_episode_active", "")
+                ),
+                leg_follow_scope_resolved=_safe_float(
+                    row.get("leg_follow_scope_resolved", "")
                 ),
                 left_wheel_torque_raw=_safe_float(
                     row.get("left_wheel_torque_raw", "")
