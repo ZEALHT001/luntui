@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 9U
+#define VMC_LQR_RTT_SCHEMA_VERSION 11U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -648,11 +648,34 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_limit", &value) != 0U) {
-    vmc_control.roll_comp_limit = vmc_lqr_rtt_clamp_float(value, 0.0f, 0.10f);
+    vmc_control.roll_comp_limit = vmc_lqr_rtt_clamp_float(
+        value, 0.0f, VMC_ROLL_LENGTH_COMP_LIMIT_MAX);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_ramp_rate", &value) != 0U) {
     vmc_control.roll_comp_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  /* Ground-following leg extension. */
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_enable", &value) != 0U) {
+    vmc_control.leg_follow_enable = (value > 0.5f) ? 1U : 0U;
+    if (vmc_control.leg_follow_enable == 0U) {
+      vmc_control.leg_follow_offset_left = 0.0f;
+      vmc_control.leg_follow_offset_right = 0.0f;
+    }
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_rate", &value) != 0U) {
+    vmc_control.leg_follow_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_machine_wide", &value) != 0U) {
+    vmc_control.leg_follow_machine_wide = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_return_rate", &value) != 0U) {
+    vmc_control.leg_follow_return_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "kp_phi0", &value) != 0U) {
@@ -1405,6 +1428,47 @@ void vmc_lqr_rtt_telemetry_update(void)
                                   (uint32_t)tf02_distance_cm);
   offset = vmc_lqr_rtt_append_u32(line, offset, (int)sizeof(line),
                                   (uint32_t)tf02_connected);
+
+  /* VMCVOFA fields 138..140: roll-compensation output and the per-leg length
+   * targets it produces.
+   *
+   * These three are the only way to tell WHY the roll compensator appears not
+   * to work, because the three failure modes are indistinguishable from the
+   * measured leg lengths alone:
+   *
+   *   - roll_comp_offset near zero  -> the compensator is not responding at
+   *     all (disabled, IMU invalid, ramp rate far below the disturbance).
+   *   - offset large but left/right targets equal -> the commanded offset is
+   *     being cancelled before it reaches the legs.
+   *   - offset commanded but a target pinned at VMC_LEG_LENGTH_MIN/MAX -> the
+   *     differential is being CLIPPED, which is what happens at short leg
+   *     lengths: the retract side runs out of stroke at 0.120 m while the
+   *     extend side still has 200 mm to go, so the pair silently stops
+   *     levelling and starts raising the machine instead.
+   *
+   * Field 77 already publishes ramped_target_length, but that is the COMMON
+   * target before the differential is added, so the per-leg targets were
+   * previously invisible.
+   *
+   * The logger does (long)value * 1000, so 0.120 m arrives as 0.120. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.roll_comp_offset);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.left_target_length);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.right_target_length);
+
+  /* VMCVOFA fields 141..142: ground-following extension, per side.
+   *
+   * The per-leg targets above already include this, but without it there is no
+   * way to tell a target that the operator moved with S2 from one the follow
+   * feature pushed outward because that leg had lost the ground. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_offset_left);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_offset_right);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

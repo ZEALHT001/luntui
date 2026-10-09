@@ -101,6 +101,33 @@ diagnostics below:
 | 135 | control-loop iteration counter | count |
 | 136 | TF02-Pro laser distance | centimetres, `0` with connected `0` means no reading |
 | 137 | TF02-Pro laser health flag | `0` or `1`, cleared after 100 ms without a frame |
+| 138 | roll compensation offset | metres, the commanded differential / 2 |
+| 139 | left leg length target | metres, after roll compensation and the MIN/MAX clamp |
+| 140 | right leg length target | metres, after roll compensation and the MIN/MAX clamp |
+| 141 | ground-following extension, left | metres, already included in field 139 |
+| 142 | ground-following extension, right | metres, already included in field 140 |
+
+Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
+(`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg
+that has stopped carrying the machine lets its length target chase outward so
+the support feedforward pushes that wheel back down, instead of the loop
+holding the S2 preset and pulling the wheel up toward the body.  The extension
+is capped at `VMC_LEG_LENGTH_MAX`, so once the leg is fully extended further
+lifting is real flight and the airborne detector takes over.  Off by default.
+The 141-field layout is still parsed as `format-v14`.
+
+Fields 138..140 were added with schema 10.  Field 77 is the COMMON ramped
+target before the differential is added, so it could not show whether the roll
+compensator was running, whether its differential reached the legs, or whether
+a target was pinned on the stroke limit.  Those three faults look identical
+from the measured leg lengths alone, and the third one is exactly what happens
+at short leg lengths: the retract side runs out of stroke at 0.120 m while the
+extend side still has 200 mm to go, so the pair stops levelling and starts
+raising the machine instead.
+
+Use `tools/roll_comp_report.py <kalman_samples.csv>` to read those three
+fields straight into a verdict.  The 138-field layout is still parsed as
+`format-v13`.
 
 Fields 136/137 were added with schema 9.  The automatic jump gate fires on the
 laser reading strictly inside (80, 100) cm while S1 is UP and the fused speed is

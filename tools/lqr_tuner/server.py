@@ -33,6 +33,7 @@ sys.path.insert(0, str(SCRIPTS))
 from derive_vmc_lqr_abk import (  # noqa: E402
     PRESETS,
     emit_c,
+    emit_metadata,
     fit_schedule,
     k_at_length,
 )
@@ -131,8 +132,18 @@ _BALANCE_PARAM_FALLBACK = {
     "roll_comp_enable": 1.0,
     "roll_target": 0.0,
     "roll_comp_gain": 0.10,
-    "roll_comp_limit": 0.04,
+    "roll_comp_limit": 0.1125,
     "roll_comp_ramp_rate": 0.054,
+    # Ground-following leg extension.  Off by default: the unloaded leg's
+    # target chases outward so the wheel is pushed back to the ground instead
+    # of being pulled up toward the body.
+    "leg_follow_enable": 0.0,
+    # 1 = both legs extend when either side unloads.  Required for a slow hand
+    # lift, which never spins the lifted wheel, so the per-leg detector cannot
+    # latch; the grounded leg then carries everything and reads more load.
+    "leg_follow_machine_wide": 1.0,
+    "leg_follow_rate": 0.20,
+    "leg_follow_return_rate": 0.05,
     "kp_phi0": 50.0,
     "kd_phi0": 0.5,
     "max_phi0_torque": 108.0,
@@ -236,6 +247,10 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "roll_comp_gain": ("VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT", "float"),
     "roll_comp_limit": ("VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT", "float"),
     "roll_comp_ramp_rate": ("VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT", "float"),
+    "leg_follow_enable": ("VMC_LEG_FOLLOW_ENABLE_DEFAULT", "uint"),
+    "leg_follow_machine_wide": ("VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT", "uint"),
+    "leg_follow_rate": ("VMC_LEG_FOLLOW_RATE_DEFAULT", "float"),
+    "leg_follow_return_rate": ("VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT", "float"),
     "kp_phi0": ("VMC_LEG_PHI0_KP_DEFAULT", "float"),
     "kd_phi0": ("VMC_LEG_PHI0_KD_DEFAULT", "float"),
     "max_phi0_torque": ("VMC_LEG_PHI0_TORQUE_MAX_DEFAULT", "float"),
@@ -558,20 +573,17 @@ def _read_lqr_weights(lqr_path: Path) -> tuple[list[float] | None, list[float] |
 
 
 def _emit_lqr_c_source(coeffs: np.ndarray, preset_name: str, preset: Any) -> str:
-    """Emit K schedule C code with Q/R weights preserved in a comment."""
-    q_values = ", ".join(f"{float(value):.17g}" for value in np.diag(preset.q))
-    r_values = ", ".join(f"{float(value):.17g}" for value in np.diag(preset.r))
-    metadata = "\n".join(
-        [
-            "/* VMC_LQR_TUNER_METADATA",
-            f" * preset: {preset_name}",
-            f" * VMC_LQR_TUNER_Q: [{q_values}]",
-            f" * VMC_LQR_TUNER_R: [{r_values}]",
-            " */",
-            "",
-        ]
-    )
-    return metadata + emit_c(coeffs)
+    """Emit K schedule C code with the full plant metadata preserved.
+
+    This used to write its own reduced comment block carrying only preset/Q/R.
+    Saving from the web UI therefore silently deleted the recorded plant
+    parameters - body_com_to_hip, gear_ratio, rotor_inertia, the drivetrain
+    inertias and the viscous drag - and that broke
+    tools/test_derive_vmc_lqr_abk.py, which regenerates the shipped schedule
+    from exactly those numbers.  Delegate to the derivation script's own
+    emitter so there is a single source of truth for the block.
+    """
+    return emit_metadata(preset_name, preset) + emit_c(coeffs)
 
 
 def _read_firmware_defaults() -> dict[str, Any]:

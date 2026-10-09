@@ -50,7 +50,23 @@ extern "C" {
 #define VMC_LEG_TP_MAX            108.0f
 
 #define VMC_LEG_LENGTH_DEFAULT     0.280f
-#define VMC_LEG_LENGTH_MIN         0.120f
+/* Physical leg-length travel, in metres.
+ *
+ * MIN was 0.120 until this was actually measured.  On the vehicle the leg
+ * cannot get shorter than 0.160 m: commanded to 0.119 m it sat at
+ * 0.161 +-1 mm for 40 s, which is a mechanical end stop, not a control
+ * limitation.  A tape measure confirmed 0.160 m.  The old value let every
+ * length target be driven 40 mm below the hard stop, which silently turned
+ * "retract this leg" into "hold the stop" and made the roll compensator look
+ * far weaker than it is - the target was pinned at MIN while the leg was
+ * pinned against metal.
+ *
+ * MAX stays 0.385; the leg reaches the end of its stroke there.
+ *
+ * CONSEQUENCE - the headroom each preset leaves is much smaller than it
+ * looked, especially downward.  See the table at
+ * VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT below, which is the same arithmetic. */
+#define VMC_LEG_LENGTH_MIN         0.160f
 #define VMC_LEG_LENGTH_MAX         0.385f
 #define VMC_LEG_LENGTH_KP_DEFAULT  2000.0f
 #define VMC_LEG_LENGTH_KD_DEFAULT  100.0f
@@ -72,7 +88,7 @@ extern "C" {
 #define VMC_LEG_PHI0_KD_DEFAULT     0.5f
 #define VMC_LEG_PHI0_TORQUE_MAX_DEFAULT 108.0f /* = VMC_LEG_TP_MAX */
 #define VMC_LEG_PHI0_PID_DIRECTION  1.0f
-#define VMC_LEG_SUPPORT_FORCE_DEFAULT 120.0f
+#define VMC_LEG_SUPPORT_FORCE_DEFAULT 50.0f
 /* Ceiling on the constant leg feedforward, used by both the standing support
  * term and the jump's extension feedforward.
  *
@@ -85,7 +101,55 @@ extern "C" {
  * stands. */
 #define VMC_LEG_SUPPORT_FORCE_MAX     250.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
-#define VMC_LEG_TARGET_SHORT      0.180f
+/* Ground-following leg extension.
+ *
+ * Off by default.  While a leg is NOT carrying the machine - the per-side
+ * load latch is set - its length target chases outward at leg_follow_rate
+ * (m/s) instead of holding the S2 preset.  The existing support feedforward
+ * then pushes that wheel back down toward the ground, so a body that is
+ * slowly lifted keeps its wheels in contact until the leg runs out of stroke
+ * at VMC_LEG_LENGTH_MAX.  Only then does further lifting take the wheel off
+ * the ground, which is what the airborne detector is for.
+ *
+ * Without this the loop holds a fixed length and treats the lift as an error,
+ * so it pulls the wheel UP toward the body and the leg stops following long
+ * before it reaches the stroke limit.
+ *
+ * Once the leg loads again the extra offset returns to zero at
+ * leg_follow_return_rate, so the machine settles back to its normal stance
+ * height instead of ratcheting taller on every lift.
+ *
+ * The unloaded decision comes from the same per-side latch the airborne
+ * detector uses, so the airborne detector must be enabled for this to act;
+ * with it off the latch stays 0 and the feature is inert. */
+#define VMC_LEG_FOLLOW_ENABLE_DEFAULT       1U
+#define VMC_LEG_FOLLOW_RATE_DEFAULT         0.2f /* m/s outward */
+#define VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT  0.05f /* m/s back to the preset */
+/* Trigger scope.
+ *
+ * 0 = per leg: only the leg that lost the ground extends.  Correct for
+ *     driving, where one wheel is knocked up and the other must keep
+ *     balancing at its normal length.
+ * 1 = whole machine (default): if EITHER side is unloaded, BOTH legs extend.
+ *     This is what makes a slow, quasi-static lift behave.  Raising one side
+ *     by hand does not spin that wheel, so the per-leg detector may never
+ *     latch, and the grounded leg - now carrying the whole machine - reads
+ *     MORE load, never less, so it can never latch either.  Extending both
+ *     lets the grounded leg push its wheel down while the lifted side
+ *     follows, so the machine rises as a whole instead of twisting.
+ *
+ * The cost of mode 1 is that the grounded leg actively pushes the machine up.
+ * Each leg is still capped by its own remaining stroke, so the extension stops
+ * at VMC_LEG_LENGTH_MAX rather than running away. */
+#define VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT 1U
+
+/* S2 selects among these three presets: UP -> LONG, MID -> MID, DOWN ->
+ * SHORT.  Units are metres; VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp
+ * whatever is chosen here.
+ *
+ * SHORT is also the length the self-righting sequence stands up on
+ * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too. */
+#define VMC_LEG_TARGET_SHORT      0.170f
 #define VMC_LEG_TARGET_MID        0.230f
 #define VMC_LEG_TARGET_LONG       0.280f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
@@ -209,15 +273,48 @@ extern "C" {
  * These are the POWER-ON defaults.  The live values live in vmc_control
  * (jump_auto_speed_min / jump_auto_dist_min_cm / jump_auto_dist_max_cm /
  * jump_auto_confirm_ms) and are tunable over RTT from the LQR tuner web UI. */
-#define VMC_JUMP_AUTO_SPEED_MIN    1.0f   /* m/s */
-#define VMC_JUMP_AUTO_DIST_MIN_CM  80.0f  /* exclusive */
-#define VMC_JUMP_AUTO_DIST_MAX_CM  100.0f /* exclusive */
+#define VMC_JUMP_AUTO_SPEED_MIN    1.5f   /* m/s */
+#define VMC_JUMP_AUTO_DIST_MIN_CM  90.0f  /* exclusive */
+#define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
 
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
-#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.08f
+/* Roll length compensation ceiling, in metres of symmetric leg-length offset.
+ *
+ * The compensator drives the two targets symmetrically about the preset:
+ *
+ *     left_target  = clamp(ramped + offset)
+ *     right_target = clamp(ramped - offset)
+ *
+ * so the largest offset that can NEVER be clipped is half the travel:
+ *
+ *     (VMC_LEG_LENGTH_MAX - VMC_LEG_LENGTH_MIN) / 2
+ *         = (0.385 - 0.160) / 2 = 0.1125 m
+ *
+ * That is only reachable when the preset sits exactly at the travel centre
+ * (0.2725 m).  Every real preset is off-centre, so the binding limit is the
+ * SMALLER of the two headrooms, which is not always the retract side:
+ *
+ *     preset   retract   extend   symmetric ceiling
+ *     SHORT    10 mm     215 mm   10 mm
+ *     MID      70 mm     155 mm   70 mm
+ *     LONG    120 mm     105 mm   105 mm
+ *
+ * On SHORT the retract headroom, not this constant, is therefore what limits
+ * levelling - 10 mm is almost nothing, so the symmetric pair is effectively
+ * one-sided there while the extend side still has 215 mm.  An offset larger
+ * than the ceiling is not rejected, it is silently clipped per leg, and while
+ * it is being clipped the pair stops levelling and starts raising the machine
+ * instead - so this is the physical limit, not a tuning preference.  With the
+ * gain at 0.4 the clamp engages past 0.1125 / 0.4 = 0.281 rad (16.1 deg) of
+ * roll, where it used to saturate at 0.08 / 0.4 = 0.200 rad (11.5 deg).
+ *
+ * Plain literals on purpose: the LQR tuner and its tests read these tokens as
+ * numbers and cannot evaluate macro arithmetic. */
+#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.1125f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_MAX     0.1125f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.054f
 /* Fallback control period in seconds, used before the first measurement and
@@ -833,6 +930,16 @@ typedef struct {
   float roll_comp_offset;
   float left_target_length;
   float right_target_length;
+  /* Ground-following extension: extra length added to each side's target
+   * while that leg is unloaded, and the two rates that drive it.  See
+   * VMC_LEG_FOLLOW_RATE_DEFAULT. */
+  uint8_t leg_follow_enable;
+  /* 0 = per leg, 1 = both legs when either side is unloaded. */
+  uint8_t leg_follow_machine_wide;
+  float leg_follow_rate;
+  float leg_follow_return_rate;
+  float leg_follow_offset_left;
+  float leg_follow_offset_right;
   uint8_t getup_state;
   int8_t getup_turn_direction;
   uint8_t getup_lqr_release_pending;

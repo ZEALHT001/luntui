@@ -320,19 +320,19 @@
           </label>
           <label>
             压腿腿长 / jump_compress_length (m)
-            <input id="jumpCompressLength" type="number" step="0.005" min="0.12" max="0.385" value="0.18" />
+            <input id="jumpCompressLength" type="number" step="0.005" min="0.16" max="0.385" value="0.18" />
           </label>
           <label>
             伸腿腿长 / jump_extend_length (m)
-            <input id="jumpExtendLength" type="number" step="0.005" min="0.12" max="0.385" value="0.32" />
+            <input id="jumpExtendLength" type="number" step="0.005" min="0.16" max="0.385" value="0.32" />
           </label>
           <label>
             收腿腿长 / jump_retract_length (m)
-            <input id="jumpRetractLength" type="number" step="0.005" min="0.12" max="0.385" value="0.18" />
+            <input id="jumpRetractLength" type="number" step="0.005" min="0.16" max="0.385" value="0.18" />
           </label>
           <label>
             落地腿长 / jump_land_length (m)
-            <input id="jumpLandLength" type="number" step="0.005" min="0.12" max="0.385" value="0.23" />
+            <input id="jumpLandLength" type="number" step="0.005" min="0.16" max="0.385" value="0.23" />
           </label>
           <label>
             跳跃 KP / jump_kp_length
@@ -424,11 +424,31 @@
           </label>
           <label>
             Roll 腿长补偿限幅 / roll_comp_limit (m)
-            <input id="rollCompLimit" type="number" step="0.005" min="0" value="0.04" />
+            <input id="rollCompLimit" type="number" step="0.005" min="0" value="0.1125" />
           </label>
           <label>
             Roll 补偿斜坡 / roll_comp_ramp_rate
             <input id="rollCompRampRate" type="number" step="0.01" min="0" value="0.054" />
+          </label>
+        </div>
+
+        <h3>跟随接地伸长</h3>
+        <div class="params">
+          <label>
+            使能 / leg_follow_enable
+            <input id="legFollowEnable" type="number" step="1" min="0" max="1" value="0" />
+          </label>
+          <label>
+            触发范围 / leg_follow_machine_wide（1=任一腿脱空则双腿伸长）
+            <input id="legFollowMachineWide" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            伸出速率 / leg_follow_rate (m/s)
+            <input id="legFollowRate" type="number" step="0.01" min="0" max="1" value="0.2" />
+          </label>
+          <label>
+            回位速率 / leg_follow_return_rate (m/s)
+            <input id="legFollowReturnRate" type="number" step="0.01" min="0" max="1" value="0.05" />
           </label>
         </div>
 

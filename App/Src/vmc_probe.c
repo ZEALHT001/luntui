@@ -3172,6 +3172,12 @@ void vmc_control_init(void)
   vmc_control.roll_comp_offset = 0.0f;
   vmc_control.left_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.leg_follow_enable = VMC_LEG_FOLLOW_ENABLE_DEFAULT;
+  vmc_control.leg_follow_machine_wide = VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
+  vmc_control.leg_follow_rate = VMC_LEG_FOLLOW_RATE_DEFAULT;
+  vmc_control.leg_follow_return_rate = VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT;
+  vmc_control.leg_follow_offset_left = 0.0f;
+  vmc_control.leg_follow_offset_right = 0.0f;
   vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
   vmc_control.getup_turn_direction = 0;
   vmc_control.getup_lqr_release_pending = 0U;
@@ -3333,6 +3339,8 @@ void vmc_control_update(void)
       remote_control_allows_joint_enable() == 0U) {
     vmc_control.ramp_active = 0U;
     vmc_control.roll_comp_offset = 0.0f;
+    vmc_control.leg_follow_offset_left = 0.0f;
+    vmc_control.leg_follow_offset_right = 0.0f;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -3373,7 +3381,9 @@ void vmc_control_update(void)
   }
   vmc_control.ramped_target_length = (float)ramped_target_length;
 
-  roll_comp_limit = clamp_double(vmc_control.roll_comp_limit, 0.0, 0.10);
+  roll_comp_limit =
+      clamp_double(vmc_control.roll_comp_limit, 0.0,
+                   (double)VMC_ROLL_LENGTH_COMP_LIMIT_MAX);
   roll_error = (double)vmc_probe_state.body.roll - (double)vmc_control.roll_target;
   roll_comp_desired =
       (vmc_control.roll_comp_enable != 0U &&
@@ -3400,6 +3410,94 @@ void vmc_control_update(void)
       clamp_double(ramped_target_length - roll_comp_offset,
                    VMC_LEG_LENGTH_MIN,
                    VMC_LEG_LENGTH_MAX);
+
+  /* Ground-following extension.  A leg that has stopped carrying the machine
+   * lets its target chase outward so the support feedforward can push that
+   * wheel back down to the ground; a loaded leg returns to the preset.
+   *
+   * This is what makes a slowly lifted body behave: without it the loop holds
+   * a fixed length, treats the lift as a position error, and pulls the wheel
+   * UP toward the body - so the leg stops following long before it reaches
+   * the stroke limit and the wheel leaves the ground early.
+   *
+   * The offset is capped at the remaining stroke, so the target can never be
+   * driven past VMC_LEG_LENGTH_MAX; once there the leg is fully extended and
+   * further lifting is genuine flight, which the airborne detector handles.
+   * The unloaded decision reuses the per-side load latch, so it inherits that
+   * detector's confirmation and release hysteresis rather than adding a
+   * second, independently tuned threshold.
+   *
+   * Scope is switchable (leg_follow_machine_wide):
+   *
+   *   per leg      only the unloaded leg extends.  Right for driving, where a
+   *                knocked-up wheel must not drag the grounded one with it.
+   *   whole machine (default) BOTH legs extend as soon as EITHER side unloads.
+   *                Required for a slow hand lift, because that does not spin
+   *                the lifted wheel - so the per-leg detector may never latch -
+   *                and the grounded leg reads MORE load, not less, so it can
+   *                never latch either.  Without whole-machine scope neither
+   *                leg follows and the machine just twists. */
+  if (vmc_control.leg_follow_enable != 0U &&
+      vmc_getup_is_active() == 0U &&
+      jump_override == 0U) {
+    const double dt = vmc_loop_dt();
+    const double follow_step =
+        clamp_double(vmc_control.leg_follow_rate, 0.0, 1.0) * dt;
+    const double return_step =
+        clamp_double(vmc_control.leg_follow_return_rate, 0.0, 1.0) * dt;
+    const uint8_t left_unloaded =
+        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT];
+    const uint8_t right_unloaded =
+        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT];
+    uint8_t follow_left;
+    uint8_t follow_right;
+
+    if (vmc_control.leg_follow_machine_wide != 0U) {
+      follow_left = (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
+      follow_right = follow_left;
+    } else {
+      follow_left = left_unloaded;
+      follow_right = right_unloaded;
+    }
+
+    double offset_left = (double)vmc_control.leg_follow_offset_left;
+    double offset_right = (double)vmc_control.leg_follow_offset_right;
+
+    /* Each side is still capped by its OWN remaining stroke, so a leg that is
+     * already near full extension stops there while the other keeps
+     * following. */
+    if (follow_left != 0U) {
+      offset_left = clamp_double(offset_left + follow_step,
+                                 0.0,
+                                 VMC_LEG_LENGTH_MAX - left_target_length);
+    } else {
+      offset_left = vmc_step_towards(offset_left, 0.0, return_step);
+    }
+    if (follow_right != 0U) {
+      offset_right = clamp_double(offset_right + follow_step,
+                                  0.0,
+                                  VMC_LEG_LENGTH_MAX - right_target_length);
+    } else {
+      offset_right = vmc_step_towards(offset_right, 0.0, return_step);
+    }
+
+    vmc_control.leg_follow_offset_left = (float)offset_left;
+    vmc_control.leg_follow_offset_right = (float)offset_right;
+    left_target_length += offset_left;
+    right_target_length += offset_right;
+  } else {
+    /* Disabled, or a jump / recovery owns the leg: drop the extra extension
+     * so the preset is restored the moment this stops applying. */
+    vmc_control.leg_follow_offset_left = 0.0f;
+    vmc_control.leg_follow_offset_right = 0.0f;
+  }
+
+  left_target_length = clamp_double(left_target_length,
+                                    VMC_LEG_LENGTH_MIN,
+                                    VMC_LEG_LENGTH_MAX);
+  right_target_length = clamp_double(right_target_length,
+                                     VMC_LEG_LENGTH_MIN,
+                                     VMC_LEG_LENGTH_MAX);
   vmc_control.left_target_length = (float)left_target_length;
   vmc_control.right_target_length = (float)right_target_length;
 
