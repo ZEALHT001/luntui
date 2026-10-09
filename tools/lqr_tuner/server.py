@@ -147,7 +147,12 @@ _BALANCE_PARAM_FALLBACK = {
     # both), on the LOW side means it went over an edge (extend only that
     # leg).  Overrides leg_follow_machine_wide while set.
     "leg_follow_auto_scope": 1.0,
-    "leg_follow_roll_deadband": 0.05,
+    "leg_follow_roll_deadband": 0.10,
+    # How long a side-classification must hold before it is believed.  A
+    # single frame is not evidence: pushing one side off a platform unloaded
+    # the PLATFORM side for 120 ms, and that side is in the high half whenever
+    # the other has gone down.
+    "leg_follow_scope_confirm_ms": 250.0,
     # How long an unload episode survives with nothing latched.  The follow
     # feature raises joint torque as it pushes, which trips the same load latch
     # it waits on, so the episode has to outlive the latch or the extension is
@@ -264,6 +269,10 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "leg_follow_roll_deadband": ("VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT", "float"),
     "leg_follow_episode_timeout_ms": (
         "VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT",
+        "uint_value",
+    ),
+    "leg_follow_scope_confirm_ms": (
+        "VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT",
         "uint_value",
     ),
     "leg_follow_rate": ("VMC_LEG_FOLLOW_RATE_DEFAULT", "float"),

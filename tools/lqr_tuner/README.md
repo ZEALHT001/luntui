@@ -106,19 +106,25 @@ diagnostics below:
 | 140 | right leg length target | metres, after roll compensation and the MIN/MAX clamp |
 | 141 | ground-following extension, left | metres, already included in field 139 |
 | 142 | ground-following extension, right | metres, already included in field 140 |
-| 143 | follow scope resolved for this unload episode | `1` = both legs extend, `0` = only the unloaded leg |
+| 143 | side the follow feature is extending | `0` left, `1` right, `2` none |
 | 144 | unload episode in progress | `0` or `1` |
-| 145 | follow scope actually settled | `0` = still pending (inside the deadband), `1` = decided |
+| 145 | side classification settled | `0` = still being timed out, `1` = decided |
+| 146 | classification being timed out | same encoding as 143 |
 
-Fields 143..145 were added with schema 12/13.  The follow scope is no longer a
-setting the operator dialled in: it is resolved from the roll direction when a
-side unloads, so without publishing the resolved value a recording cannot show
-which mode was actually active.  Field 122 already carries `roll`, so the two
-together reconstruct why the scope came out the way it did.  Field 145
-separates "per-leg because the unloaded side is low" from "per-leg because the
-sign is still inside the deadband and nothing has been decided yet" - a
-pending scope reads `0` too, and the two must not be confused.  The 143-field
-layout is parsed as `format-v15` and the 145-field one as `format-v16`.
+Fields 143..146 were added with schema 12..14.  What the feature acts on is
+which side is LOW, classified from the roll direction over a confirmation
+window and then held, so it is neither a setting the operator dialled in nor
+something the instantaneous latches show.  Without publishing it a recording
+cannot tell "the wrong leg is pushing" from "no leg is pushing yet"; roll is
+field 122 and the per-side latches are 130..133.
+
+Field 146 is what makes the confirmation window verifiable: it shows a
+transient WAS seen and deliberately not believed.
+
+NOTE field 143 changed meaning in schema 14 - it used to carry the
+per-leg/whole-machine flag.  That is why the layout gained a field instead of
+reusing its count: 146 fields (schemas 12/13) parses as `format-v17`, and 147
+(schema 14) is the current `format`.  143 fields parses as `format-v15`.
 
 Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
 (`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg

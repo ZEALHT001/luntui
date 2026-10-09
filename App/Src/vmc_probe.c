@@ -3179,11 +3179,15 @@ void vmc_control_init(void)
       VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT;
   vmc_control.leg_follow_episode_timeout_ms =
       VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT;
+  vmc_control.leg_follow_scope_confirm_ms =
+      VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT;
   vmc_control.leg_follow_scope_machine_wide =
       VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
   vmc_control.leg_follow_episode_active = 0U;
   vmc_control.leg_follow_scope_resolved = 0U;
-  vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
+  vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
+  vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
+  vmc_control.leg_follow_candidate_ms = 0U;
   vmc_control.leg_follow_episode_ms = 0U;
   vmc_control.leg_follow_rate = VMC_LEG_FOLLOW_RATE_DEFAULT;
   vmc_control.leg_follow_return_rate = VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT;
@@ -3235,43 +3239,26 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg)
   leg->joint_torque_back = 0.0;
 }
 
-/* Scope implied by the roll sign, if the sign is decisive yet.
+/* Which side is DOWN, if the body is tilted enough to say.
  *
- *   0  per-leg      the unloaded side is the LOW one: it went over an edge
- *   1  whole machine the unloaded side is the HIGH one: the machine was lifted
- *   2  undecided    |roll| is inside the deadband
+ *   VMC_AIRBORNE_SIDE_LEFT   the left side is low  (roll > +deadband)
+ *   VMC_AIRBORNE_SIDE_RIGHT  the right side is low (roll < -deadband)
+ *   VMC_LEG_FOLLOW_SIDE_NONE the body is level, so the reading is ambiguous
  *
- * body.roll is positive when the RIGHT side is high, so the unloaded side's
- * signed roll is +roll when the right side unloaded and -roll when the left
- * did; positive therefore means "the unloaded side is the high one".
- *
- * This is split out from the episode state machine so the sign convention can
- * be tested on its own - getting it backwards inverts both cases.
+ * body.roll is positive when the RIGHT side is high, which is what makes the
+ * mapping the way round it is.  Split out from the episode state machine so
+ * the sign convention can be tested on its own: backwards, it extends the
+ * wrong leg in every case.
  */
-static uint8_t vmc_leg_follow_scope_from_roll(uint8_t left_unloaded,
-                                              uint8_t right_unloaded,
-                                              double roll,
-                                              double deadband)
+static uint8_t vmc_leg_follow_low_side_from_roll(double roll, double deadband)
 {
-  double signed_roll;
-
-  if (left_unloaded != 0U && right_unloaded != 0U) {
-    /* Both sides unloaded: the whole machine is off the ground, so there is
-     * no grounded leg to lever against either way. */
-    return 1U;
+  if (roll > deadband) {
+    return VMC_AIRBORNE_SIDE_LEFT;
   }
-  if (left_unloaded == 0U && right_unloaded == 0U) {
-    return 2U;
+  if (roll < -deadband) {
+    return VMC_AIRBORNE_SIDE_RIGHT;
   }
-
-  signed_roll = (right_unloaded != 0U) ? roll : -roll;
-  if (signed_roll > deadband) {
-    return 1U;
-  }
-  if (signed_roll < -deadband) {
-    return 0U;
-  }
-  return 2U;
+  return VMC_LEG_FOLLOW_SIDE_NONE;
 }
 
 static void update_leg_length_control(volatile vmc_leg_state_t *leg,
@@ -3394,7 +3381,9 @@ void vmc_control_update(void)
     vmc_control.leg_follow_episode_active = 0U;
     vmc_control.leg_follow_scope_resolved = 0U;
     vmc_control.leg_follow_episode_ms = 0U;
-    vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
+    vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
+    vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
+    vmc_control.leg_follow_candidate_ms = 0U;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -3516,6 +3505,14 @@ void vmc_control_update(void)
         (vmc_control.leg_follow_episode_timeout_ms > 60000U)
             ? 60000U
             : vmc_control.leg_follow_episode_timeout_ms;
+    const uint32_t scope_confirm_ms =
+        (vmc_control.leg_follow_scope_confirm_ms > 5000U)
+            ? 5000U
+            : vmc_control.leg_follow_scope_confirm_ms;
+    /* Which side is down right now.  This is the signal the feature acts on;
+     * the load latches only ever corroborate it. */
+    const uint8_t low_side_now = vmc_leg_follow_low_side_from_roll(
+        roll_now, deadband);
     uint8_t machine_wide;
     uint8_t follow_left;
     uint8_t follow_right;
@@ -3523,20 +3520,14 @@ void vmc_control_update(void)
     /* --- episode lifetime --------------------------------------------- */
     if (any_unloaded != 0U) {
       if (vmc_control.leg_follow_episode_active == 0U) {
-        /* Fresh episode: clear everything inherited from the last one, and
-         * default to per-leg until the sign is decisive.  Remember which side
-         * triggered it - the latch cannot be asked again once it lets go, but
-         * the scope decision and the per-leg reach both still need to know. */
+        /* Fresh episode: inherit nothing, and stay undecided until a
+         * classification has held long enough to be believed. */
         vmc_control.leg_follow_episode_active = 1U;
         vmc_control.leg_follow_scope_resolved = 0U;
         vmc_control.leg_follow_scope_machine_wide = 0U;
-        if (left_unloaded != 0U && right_unloaded != 0U) {
-          vmc_control.leg_follow_episode_side = VMC_LEG_FOLLOW_SIDE_NONE;
-        } else {
-          vmc_control.leg_follow_episode_side = (right_unloaded != 0U)
-                                                    ? VMC_AIRBORNE_SIDE_RIGHT
-                                                    : VMC_AIRBORNE_SIDE_LEFT;
-        }
+        vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
+        vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
+        vmc_control.leg_follow_candidate_ms = 0U;
       }
       vmc_control.leg_follow_episode_ms = 0U;
     } else if (vmc_control.leg_follow_episode_active != 0U) {
@@ -3553,63 +3544,67 @@ void vmc_control_update(void)
       }
     }
 
-    /* --- scope, settled once the sign is decisive --------------------- */
-    {
-      /* Both sides latched at any point in the episode means real flight, so
-       * there is no grounded leg to lever against. */
-      const uint8_t both_latched =
-          (left_unloaded != 0U && right_unloaded != 0U) ? 1U : 0U;
-
-      if (vmc_control.leg_follow_auto_scope == 0U) {
-        vmc_control.leg_follow_scope_machine_wide =
-            (vmc_control.leg_follow_machine_wide != 0U) ? 1U : 0U;
-        vmc_control.leg_follow_scope_resolved = 1U;
-      } else if (both_latched != 0U ||
-                 vmc_control.leg_follow_episode_side ==
-                     VMC_LEG_FOLLOW_SIDE_NONE) {
-        vmc_control.leg_follow_scope_machine_wide = 1U;
-        vmc_control.leg_follow_scope_resolved = 1U;
-      } else if (vmc_control.leg_follow_episode_active != 0U &&
-                 vmc_control.leg_follow_scope_resolved == 0U) {
-        /* Evaluate the sign against the side that actually unloaded, using
-         * the remembered side - not the instantaneous latch, which is
-         * already gone by the time the body has tilted enough to be
-         * decisive. */
-        const uint8_t decided = vmc_leg_follow_scope_from_roll(
-            (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_LEFT)
-                ? 1U
-                : 0U,
-            (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_RIGHT)
-                ? 1U
-                : 0U,
-            roll_now, deadband);
-        if (decided != 2U) {
-          vmc_control.leg_follow_scope_machine_wide = decided;
+    /* --- settle which side is down, then hold it ----------------------
+     *
+     * A single frame is not evidence: pushing one side off a platform
+     * unloaded the PLATFORM side for 120 ms on the way through, and that side
+     * is in the high half whenever the other has gone down.  Believing it
+     * meant extending the platform side, which levers the machine further
+     * over the edge.  So a classification has to hold for
+     * leg_follow_scope_confirm_ms before it is used. */
+    if (vmc_control.leg_follow_auto_scope == 0U) {
+      vmc_control.leg_follow_scope_machine_wide =
+          (vmc_control.leg_follow_machine_wide != 0U) ? 1U : 0U;
+      vmc_control.leg_follow_scope_resolved = 1U;
+      vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
+      vmc_control.leg_follow_candidate_ms = 0U;
+    } else if (vmc_control.leg_follow_episode_active != 0U) {
+      if (vmc_control.leg_follow_scope_resolved != 0U) {
+        /* Already settled this episode; the body swings through level while
+         * this feature pushes it around, so do not reconsider. */
+        vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
+        vmc_control.leg_follow_candidate_ms = 0U;
+      } else if (low_side_now == vmc_control.leg_follow_candidate_side) {
+        if (vmc_control.leg_follow_candidate_ms < scope_confirm_ms) {
+          vmc_control.leg_follow_candidate_ms += (uint32_t)(dt * 1000.0);
+        }
+        if (vmc_control.leg_follow_candidate_ms >= scope_confirm_ms) {
+          vmc_control.leg_follow_low_side = vmc_control.leg_follow_candidate_side;
           vmc_control.leg_follow_scope_resolved = 1U;
         }
+      } else {
+        /* Candidate changed (including to "level"), so the clock restarts. */
+        vmc_control.leg_follow_candidate_side = low_side_now;
+        vmc_control.leg_follow_candidate_ms = 0U;
       }
     }
 
     /* --- which legs extend -------------------------------------------- */
     machine_wide = vmc_control.leg_follow_scope_machine_wide;
-    if (machine_wide != 0U) {
-      /* A lift has to take the whole body with it, so both legs follow while
-       * the episode is live rather than only while a latch happens to be on -
-       * the latch releases as soon as the legs start carrying load. */
-      follow_left = vmc_control.leg_follow_episode_active;
-      follow_right = vmc_control.leg_follow_episode_active;
-    } else if (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_LEFT) {
-      /* Per-leg: the side that unloaded keeps reaching while it is the LOW
-       * one, even after its latch let go - reaching for ground is the point,
-       * and the latch drops as soon as the leg starts pushing. */
-      follow_left = (left_unloaded != 0U || left_low != 0U) ? 1U : 0U;
-      follow_right = 0U;
-    } else if (vmc_control.leg_follow_episode_side == VMC_AIRBORNE_SIDE_RIGHT) {
-      follow_left = 0U;
-      follow_right = (right_unloaded != 0U || right_low != 0U) ? 1U : 0U;
+    if (vmc_control.leg_follow_auto_scope == 0U) {
+      /* Legacy fixed scope, kept for contrast runs. */
+      if (machine_wide != 0U) {
+        follow_left = vmc_control.leg_follow_episode_active;
+        follow_right = vmc_control.leg_follow_episode_active;
+      } else {
+        follow_left = left_unloaded;
+        follow_right = right_unloaded;
+      }
+    } else if (vmc_control.leg_follow_scope_resolved != 0U) {
+      /* Extend the LOW side, and keep extending it while the episode lasts.
+       * The load latch drops as soon as the leg starts carrying load, so
+       * gating on it here would release the reach this feature just paid
+       * for. */
+      follow_left =
+          (vmc_control.leg_follow_low_side == VMC_AIRBORNE_SIDE_LEFT) ? 1U : 0U;
+      follow_right =
+          (vmc_control.leg_follow_low_side == VMC_AIRBORNE_SIDE_RIGHT) ? 1U : 0U;
     } else {
-      follow_left = left_unloaded;
-      follow_right = right_unloaded;
+      /* Not settled yet: only reach on a side that is both unloaded and low,
+       * which is the case the follow exists for.  Conservative by
+       * construction - it never pushes the high side over an edge. */
+      follow_left = (left_unloaded != 0U && left_low != 0U) ? 1U : 0U;
+      follow_right = (right_unloaded != 0U && right_low != 0U) ? 1U : 0U;
     }
 
     double offset_left = (double)vmc_control.leg_follow_offset_left;

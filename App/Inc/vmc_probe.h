@@ -144,53 +144,56 @@ extern "C" {
 #define VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT 1U
 /* Automatic scope selection from the direction of the roll.
  *
- * A single fixed scope cannot be right, because "one side unloaded" covers
- * two opposite situations and they need opposite responses:
+ * What the feature acts on is WHICH WAY THE MACHINE IS TIPPING, not which
+ * side unloaded - the latch is only ever a symptom of that.
  *
- *   LIFTED SIDE (the unloaded side is the HIGH side)
- *     The machine was raised - by hand, by a step, by the far wheel riding
- *     up on something.  The body must rise with it, so BOTH legs extend.
- *     Extending only the unloaded leg would just let it float while the body
- *     keeps rotating.
+ * The response is always "extend the LOW side":
  *
- *   DROPPED SIDE (the unloaded side is the LOW side)
- *     The machine has one wheel over an edge, a step down or off a platform.
- *     That leg must reach down for ground, and the grounded leg must NOT be
- *     lengthened - doing so levers the body further over the edge.  Only the
- *     unloaded leg extends.
+ *   LOW side reaching down
+ *     A wheel is over an edge, a step down, or off a platform, and that leg
+ *     has to find ground.  This is the case a fixed rule got wrong: pushing
+ *     one side off a platform unloaded the PLATFORM side first (see
+ *     VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT), and extending that side levered
+ *     the body further over the edge.
  *
- * Both cases exist in the recordings, with the SAME side unloaded and
- * OPPOSITE roll signs, which is what makes the sign the usable discriminator:
+ *   LOW side as the grounded leg
+ *     The machine is being lifted on the other side, so the grounded side is
+ *     the low one.  Extending it raises the machine as a whole, which is the
+ *     wanted lift response.
  *
- *   logs/slip_20261009_174626  right unloaded, roll +0.122, right leg SHORTER
- *                              (0.199 vs 0.222) -> lifted
- *   logs/slip_20261009_223938  right unloaded, roll -0.282, right leg LONGER
- *                              (0.295 vs 0.166) -> dropped
+ * Both cases are the same action, so this needs no lift/drop classifier at
+ * all - only a reliable reading of which side is down.  That also makes the
+ * undecided window safe: extending the low side cannot lever the machine over
+ * an edge, so the worst case before a classification confirms is "no follow
+ * yet", not "the wrong leg is pushing".
  *
- * body.roll is positive when the RIGHT side is high, so for the unloaded side
- * the signed test is  roll  (right unloaded)  or  -roll  (left unloaded):
- * positive means that side is the high one.
+ * Because of that, the scope is NO LONGER a choice between per-leg and
+ * whole-machine: leg_follow_machine_wide is only consulted when auto_scope is
+ * 0, where it restores the old fixed behaviour for a contrast run.
  *
- * The decision is taken ONCE per unload episode, on the rising edge, and held
- * until the episode ends.  Re-deciding every cycle would flip the scope as
- * the body swings through level mid-lift.
- *
- * Near-level the sign is genuinely ambiguous, and on a lift the wheel usually
- * leaves the ground BEFORE the body has tilted: the first latch of a real
- * lift was measured at roll +0.047, inside the deadband.  Deciding only at the
- * rising edge therefore read that lift as per-leg and it extended one leg.
- * So the decision stays PENDING while the sign is ambiguous and is settled as
- * soon as the body passes the deadband, which it always does if the tilt is
- * real.  While pending the answer is per-leg - the safe choice, because it
- * never levers the grounded leg against a machine that may be going over an
- * edge - and nothing is inherited from a previous episode, so a brief noise
- * latch cannot poison the next real one.
+ * The side is classified over VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT and then
+ * HELD for the rest of the episode, because the body swings through level
+ * while this feature's own extension pushes it around.
  *
  * Set leg_follow_auto_scope to 0 to go back to a fixed scope chosen by
  * leg_follow_machine_wide. */
 #define VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT   1U
-/* |roll| below this cannot be told apart from level.  0.05 rad = 2.9 deg. */
-#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.05f
+/* |roll| below this cannot be told apart from level.  0.10 rad = 5.7 deg. */
+#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.10f
+/* How long a side-classification must hold before it is believed.
+ *
+ * One frame of "this side is unloaded" is not evidence.  Measured pushing one
+ * side off a platform: the lift that propagated through the machine unloaded
+ * the PLATFORM side first (its torque dipped to 1.9 N.m, just under the
+ * 2.0 N.m set threshold, while the body swung), and that side is in the HIGH
+ * half whenever the other one has gone down.  Classified on the first frame,
+ * the drop therefore came out as "the high side unloaded, so the machine was
+ * LIFTED" and both legs extended - the machine kept tipping and the two legs
+ * ran to their stroke limit, 38.7 deg of roll, without reaching anything.
+ *
+ * The transient lasted 120 ms there.  250 ms rejects it and still leaves the
+ * real classification settled well before the body has travelled far. */
+#define VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT 250U
 /* How long an episode survives with NOTHING latched.
  *
  * While a side is still low the extension must not be given back: the follow
@@ -204,7 +207,8 @@ extern "C" {
  * This timeout is the escape hatch for the case where it never levels: a
  * machine parked on an edge would otherwise hold its extension forever. */
 #define VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT 3000U
-/* "Neither side in particular" - both latched at once, i.e. real flight. */
+/* "Neither side in particular": the body is level, so which side is low
+ * cannot be read.  Distinct from VMC_AIRBORNE_SIDE_LEFT/RIGHT. */
 #define VMC_LEG_FOLLOW_SIDE_NONE 2U
 
 /* S2 selects among these three presets: UP -> LONG, MID -> MID, DOWN ->
@@ -1009,18 +1013,23 @@ typedef struct {
   /* How long an episode may survive with nothing latched.  See
    * VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT. */
   uint32_t leg_follow_episode_timeout_ms;
-  /* Scope resolved for the episode in progress, whether one is in progress,
-   * and whether the sign has actually been settled yet.  Published to
-   * telemetry so a recording can show which mode was active - and, when it
-   * reads per-leg, whether that was a real decision or still pending. */
+  /* How long a side-classification must hold before it is believed.  See
+   * VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT. */
+  uint32_t leg_follow_scope_confirm_ms;
+  /* Scope legacy flag (fixed per-leg / whole-machine, auto_scope = 0 only),
+   * whether an episode is in progress, and whether the side has been settled
+   * yet.  Published to telemetry so a recording can show what was active -
+   * and, while the side is undecided, that it was undecided. */
   uint8_t leg_follow_scope_machine_wide;
   uint8_t leg_follow_episode_active;
   uint8_t leg_follow_scope_resolved;
-  /* Which side triggered the episode (VMC_AIRBORNE_SIDE_LEFT/RIGHT, or
-   * VMC_LEG_FOLLOW_SIDE_NONE when both latched at once).  The scope decision
-   * and the per-leg reach both need to know this even after the load latch
-   * has let go, and the latch cannot be asked again once it has. */
-  uint8_t leg_follow_episode_side;
+  /* Which side is the LOW one for this episode, held once settled.  This is
+   * the side the feature extends - see VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT. */
+  uint8_t leg_follow_low_side;
+  /* Pending classification: how long the current candidate has held, and what
+   * it is.  Cleared whenever the candidate changes. */
+  uint32_t leg_follow_candidate_ms;
+  uint8_t leg_follow_candidate_side;
   /* Millisecond counter for the episode timeout. */
   uint32_t leg_follow_episode_ms;
   float leg_follow_rate;

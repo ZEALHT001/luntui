@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 13U
+#define VMC_LQR_RTT_SCHEMA_VERSION 14U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -686,6 +686,12 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
                                     &value) != 0U) {
     vmc_control.leg_follow_episode_timeout_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 60000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_scope_confirm_ms",
+                                    &value) != 0U) {
+    vmc_control.leg_follow_scope_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_return_rate", &value) != 0U) {
@@ -1485,18 +1491,17 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_offset_right);
 
-  /* VMCVOFA fields 143..144: the ground-following scope resolved for the
-   * episode in progress (1 = both legs extend, 0 = only the unloaded leg),
-   * and whether an episode is in progress at all.
+  /* VMCVOFA fields 143..144: which side the follow feature is extending and
+   * whether an episode is in progress.
    *
-   * The scope is no longer a fixed setting the operator chose - it is decided
-   * from the roll direction when a side unloads - so without publishing the
-   * resolved value a recording cannot tell which mode was active.  roll is
-   * already in field 122, so this plus that field is everything needed to
-   * reconstruct why the scope came out the way it did. */
+   * The side is classified from the roll direction over a confirmation window
+   * and then held, so it is not something the operator set and not something
+   * the instantaneous latches show.  Publishing it is the only way a recording
+   * can tell "the wrong leg is pushing" from "no leg is pushing yet"; roll is
+   * field 122 and the per-side latches are 130..133. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_scope_machine_wide);
+      (double)vmc_control.leg_follow_low_side);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_episode_active);
@@ -1508,6 +1513,13 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_scope_resolved);
+  /* VMCVOFA field 146: the classification still being timed out.  Publishing
+   * it is what makes the confirmation window verifiable - a recording can show
+   * that the platform-side transient WAS seen and deliberately not believed,
+   * rather than the firmware never having noticed it. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_candidate_side);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

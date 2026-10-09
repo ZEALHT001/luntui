@@ -356,19 +356,32 @@ FORMAT_V16_PROFILE = Profile(
     },
 )
 
-# Follow-scope resolution flag added (schema 13).  The scope is no longer a
-# fixed setting - it is resolved from the roll direction when a side unloads -
-# so the resolved value, the episode flag and whether the sign has actually
-# been settled all have to be recorded.  Without the last one a capture cannot
-# tell "per-leg because the unloaded side is low" from "per-leg because the
-# sign is still inside the deadband and nothing has been decided yet".  roll
-# itself is field 122, so the three together reconstruct the decision.
-FORMAT_PROFILE = Profile(
-    name="format",
+# Scope-resolution flag added (schema 13), while field 143 still carried the
+# per-leg/whole-machine flag.
+FORMAT_V17_PROFILE = Profile(
+    name="format-v17",
     field_count=146,
     channels={
         **FORMAT_V16_PROFILE.channels,
         "leg_follow_scope_resolved": 145,
+    },
+)
+
+# Low-side selection (schema 14).  Field 143 CHANGED MEANING: it used to carry
+# the per-leg/whole-machine flag and now carries the side the follow feature is
+# extending - VMC_AIRBORNE_SIDE_LEFT (0), RIGHT (1) or
+# VMC_LEG_FOLLOW_SIDE_NONE (2).  That is why this layout had to gain a field
+# rather than reuse the count: the two are not distinguishable by length.
+#
+# Field 146 publishes the classification still being timed out, so a recording
+# can show that a transient WAS seen and deliberately not believed.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=147,
+    channels={
+        **FORMAT_V17_PROFILE.channels,
+        "leg_follow_low_side": 143,
+        "leg_follow_candidate_side": 146,
     },
 )
 
@@ -395,6 +408,7 @@ PROFILES = {
     "format-v14": FORMAT_V14_PROFILE,
     "format-v15": FORMAT_V15_PROFILE,
     "format-v16": FORMAT_V16_PROFILE,
+    "format-v17": FORMAT_V17_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -413,6 +427,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V14_PROFILE,
     FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE,
+    FORMAT_V17_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -432,6 +447,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V14_PROFILE.field_count: FORMAT_V14_PROFILE,
     FORMAT_V15_PROFILE.field_count: FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE.field_count: FORMAT_V16_PROFILE,
+    FORMAT_V17_PROFILE.field_count: FORMAT_V17_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -525,15 +541,20 @@ CSV_FIELDS = [
     # recorded separately so the report can tell it from an S2 change.
     "leg_follow_offset_left",
     "leg_follow_offset_right",
-    # Follow scope resolved for the current unload episode (1 = both legs,
-    # 0 = only the unloaded leg) and whether an episode is in progress.  The
-    # scope is chosen from the roll direction, so these plus roll are what
-    # show which mode was actually active.
-    "leg_follow_scope_machine_wide",
+    # Which side the follow feature is extending (0 left, 1 right, 2 none),
+    # whether an unload episode is in progress, and whether the side has been
+    # settled yet.  The side is classified from the roll direction over a
+    # confirmation window, so these plus roll are what show which leg was
+    # actually pushing.
+    "leg_follow_low_side",
     "leg_follow_episode_active",
-    # Whether the scope was actually settled for this episode.  A pending
-    # scope reads per-leg too, and the two must not be confused.
+    # Whether the side was actually settled.  While undecided the follow only
+    # pushes a side that is both unloaded and low, and that must not be
+    # confused with a settled decision.
     "leg_follow_scope_resolved",
+    # The classification still being timed out.  Lets a recording show that a
+    # transient was SEEN and deliberately not believed.
+    "leg_follow_candidate_side",
     # Torque observations.  Appended so every older CSV keeps its column order.
     "left_wheel_torque_raw",
     "right_wheel_torque_raw",
@@ -668,9 +689,14 @@ class KalmanSample:
     leg_follow_offset_right: float = INVALID_VALUE
     # Scope the follow feature resolved for the current unload episode, and
     # whether one is running.  Absent before schema 12.
-    leg_follow_scope_machine_wide: float = INVALID_VALUE
+    leg_follow_low_side: float = INVALID_VALUE
     leg_follow_episode_active: float = INVALID_VALUE
     leg_follow_scope_resolved: float = INVALID_VALUE
+    leg_follow_candidate_side: float = INVALID_VALUE
+    # Legacy channel for the schema 12/13 layouts, where field 143 held the
+    # per-leg/whole-machine flag instead of the low side.  Not written to CSV;
+    # kept so those recordings stay inspectable.
+    leg_follow_scope_machine_wide: float = INVALID_VALUE
     # Torque observations.  Tp is a virtual-leg torque; each joint receives
     # half of it, so a joint is at its rating when |Tp| reaches 108.
     left_wheel_torque_raw: float = INVALID_VALUE
@@ -1023,9 +1049,11 @@ def parse_vmcvoa_line(
         leg_target_right=channel("leg_target_right"),
         leg_follow_offset_left=channel("leg_follow_offset_left"),
         leg_follow_offset_right=channel("leg_follow_offset_right"),
-        leg_follow_scope_machine_wide=channel("leg_follow_scope_machine_wide"),
+        leg_follow_low_side=channel("leg_follow_low_side"),
         leg_follow_episode_active=channel("leg_follow_episode_active"),
         leg_follow_scope_resolved=channel("leg_follow_scope_resolved"),
+        leg_follow_candidate_side=channel("leg_follow_candidate_side"),
+        leg_follow_scope_machine_wide=channel("leg_follow_scope_machine_wide"),
         left_wheel_torque_raw=channel("left_wheel_torque_raw"),
         right_wheel_torque_raw=channel("right_wheel_torque_raw"),
         left_tp_theta_term=channel("left_tp_theta_term"),
@@ -1952,14 +1980,17 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 leg_follow_offset_right=_safe_float(
                     row.get("leg_follow_offset_right", "")
                 ),
-                leg_follow_scope_machine_wide=_safe_float(
-                    row.get("leg_follow_scope_machine_wide", "")
+                leg_follow_low_side=_safe_float(
+                    row.get("leg_follow_low_side", "")
                 ),
                 leg_follow_episode_active=_safe_float(
                     row.get("leg_follow_episode_active", "")
                 ),
                 leg_follow_scope_resolved=_safe_float(
                     row.get("leg_follow_scope_resolved", "")
+                ),
+                leg_follow_candidate_side=_safe_float(
+                    row.get("leg_follow_candidate_side", "")
                 ),
                 left_wheel_torque_raw=_safe_float(
                     row.get("left_wheel_torque_raw", "")

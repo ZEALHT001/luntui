@@ -96,14 +96,17 @@ def format_line(**updates: float) -> str:
     fields[FORMAT_PROFILE.channels["leg_follow_offset_right"]] = updates.get(
         "leg_follow_offset_right", 0.0
     )
-    fields[FORMAT_PROFILE.channels["leg_follow_scope_machine_wide"]] = updates.get(
-        "leg_follow_scope_machine_wide", 0.0
+    fields[FORMAT_PROFILE.channels["leg_follow_low_side"]] = updates.get(
+        "leg_follow_low_side", 2.0
     )
     fields[FORMAT_PROFILE.channels["leg_follow_episode_active"]] = updates.get(
         "leg_follow_episode_active", 0.0
     )
     fields[FORMAT_PROFILE.channels["leg_follow_scope_resolved"]] = updates.get(
         "leg_follow_scope_resolved", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["leg_follow_candidate_side"]] = updates.get(
+        "leg_follow_candidate_side", 2.0
     )
     fields[FORMAT_PROFILE.channels["roll"]] = updates.get("roll", 0.0)
     return "VMCVOFA," + ",".join(str(value) for value in fields)
@@ -355,23 +358,26 @@ class ParseTests(unittest.TestCase):
         )
 
     def test_leg_follow_scope_channels_parse(self) -> None:
-        """Schema 12 adds the scope the follow feature resolved.
+        """Schema 14 records which side the follow feature is extending.
 
-        The scope is chosen from the roll direction when a side unloads, so it
-        is not a setting the operator dialled in - the only way to know which
-        mode was active is to record it.
+        The side is classified from the roll direction over a confirmation
+        window, so it is neither a setting the operator dialled in nor the
+        instantaneous latch - recording it is the only way to know which leg
+        was actually pushing.
         """
         parsed = parse_vmcvoa_line(
-            format_line(leg_follow_scope_machine_wide=1.0,
+            format_line(leg_follow_low_side=1.0,
                         leg_follow_episode_active=1.0,
                         leg_follow_scope_resolved=1.0,
+                        leg_follow_candidate_side=2.0,
                         roll=0.12)
         )
         self.assertIsNotNone(parsed)
         _profile, sample = parsed  # type: ignore[misc]
-        self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 1.0)
+        self.assertAlmostEqual(sample.leg_follow_low_side, 1.0)
         self.assertAlmostEqual(sample.leg_follow_episode_active, 1.0)
         self.assertAlmostEqual(sample.leg_follow_scope_resolved, 1.0)
+        self.assertAlmostEqual(sample.leg_follow_candidate_side, 2.0)
         self.assertAlmostEqual(sample.roll, 0.12)
 
     def test_scope_is_absent_on_a_schema_11_capture(self) -> None:
@@ -386,14 +392,15 @@ class ParseTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         profile, sample = parsed  # type: ignore[misc]
         self.assertEqual(profile.name, "format-v15")
-        self.assertFalse(math.isfinite(sample.leg_follow_scope_machine_wide))
+        self.assertFalse(math.isfinite(sample.leg_follow_low_side))
 
-    def test_resolution_flag_is_absent_on_a_schema_12_capture(self) -> None:
-        """145 fields = schema 12: scope present, settled flag not yet.
+    def test_schema_13_layout_still_parses_under_its_old_channel(self) -> None:
+        """145 fields = schema 12/13, where 143 was NOT the low side.
 
-        A capture from that layout must still parse; the flag reads invalid
-        rather than silently defaulting to zero, because a pending scope also
-        reads zero and the two must not be confused.
+        Schema 14 changed field 143's meaning, so the two layouts are told
+        apart by field count (146 vs 147).  A 145-field line must not be read
+        as if 143 carried the low side, and the channels it lacks must read
+        invalid rather than silently defaulting.
         """
         fields = [0.001] * FORMAT_V16_PROFILE.field_count
         for name, index in FORMAT_V16_PROFILE.channels.items():
@@ -405,6 +412,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(profile.name, "format-v16")
         self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 0.0)
         self.assertFalse(math.isfinite(sample.leg_follow_scope_resolved))
+        self.assertFalse(math.isfinite(sample.leg_follow_low_side))
 
     def test_v14_layout_still_parses(self) -> None:
         """The 141-field layout (schema 10) predates the leg-follow fields."""

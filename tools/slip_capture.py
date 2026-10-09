@@ -305,6 +305,7 @@ def _enable_payload(
     leg_follow_auto_scope: bool | None = None,
     leg_follow_roll_deadband: float | None = None,
     leg_follow_episode_timeout_ms: float | None = None,
+    leg_follow_scope_confirm_ms: float | None = None,
 ) -> str:
     """Build the RTT parameter payload for one capture.
 
@@ -345,6 +346,10 @@ def _enable_payload(
     if leg_follow_episode_timeout_ms is not None:
         payload["leg_follow_episode_timeout_ms"] = float(
             leg_follow_episode_timeout_ms
+        )
+    if leg_follow_scope_confirm_ms is not None:
+        payload["leg_follow_scope_confirm_ms"] = float(
+            leg_follow_scope_confirm_ms
         )
 
     if mode == "slow":
@@ -703,6 +708,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--leg-follow-scope-confirm-ms",
+        type=float,
+        default=None,
+        help=(
+            "how long a low-side classification must hold before it is "
+            "believed; one frame is not evidence (firmware default 250)"
+        ),
+    )
+    parser.add_argument(
         "--leg-follow-rate",
         type=float,
         default=None,
@@ -786,6 +800,10 @@ def main() -> int:
         0.0 <= args.leg_follow_episode_timeout_ms <= 60000.0
     ):
         parser.error("--leg-follow-episode-timeout-ms must be in [0, 60000]")
+    if args.leg_follow_scope_confirm_ms is not None and not (
+        0.0 <= args.leg_follow_scope_confirm_ms <= 5000.0
+    ):
+        parser.error("--leg-follow-scope-confirm-ms must be in [0, 5000]")
     leg_follow_enable = (
         None if args.leg_follow is None else (args.leg_follow == "on")
     )
@@ -851,6 +869,7 @@ def main() -> int:
                 leg_follow_auto_scope,
                 args.leg_follow_roll_deadband,
                 args.leg_follow_episode_timeout_ms,
+                args.leg_follow_scope_confirm_ms,
             ),
             "VMC_BALANCE_PARAMS OK",
         ):
@@ -901,6 +920,7 @@ def main() -> int:
             or args.leg_follow_return_rate is not None
             or args.leg_follow_roll_deadband is not None
             or args.leg_follow_episode_timeout_ms is not None
+            or args.leg_follow_scope_confirm_ms is not None
         ):
             print(
                 "leg follow set: "
@@ -932,6 +952,12 @@ def main() -> int:
                     f"episode_timeout {args.leg_follow_episode_timeout_ms:g} ms"
                     if args.leg_follow_episode_timeout_ms is not None
                     else "episode_timeout unchanged"
+                )
+                + ", "
+                + (
+                    f"scope_confirm {args.leg_follow_scope_confirm_ms:g} ms"
+                    if args.leg_follow_scope_confirm_ms is not None
+                    else "scope_confirm unchanged"
                 )
                 + ", "
                 + (
@@ -1126,6 +1152,7 @@ def main() -> int:
             "auto_scope": leg_follow_auto_scope,
             "roll_deadband": args.leg_follow_roll_deadband,
             "episode_timeout_ms": args.leg_follow_episode_timeout_ms,
+            "scope_confirm_ms": args.leg_follow_scope_confirm_ms,
             "rate": args.leg_follow_rate,
             "return_rate": args.leg_follow_return_rate,
         },

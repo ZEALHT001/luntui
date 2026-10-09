@@ -291,6 +291,7 @@ class PayloadTest(unittest.TestCase):
             "leg_follow_auto_scope",
             "leg_follow_roll_deadband",
             "leg_follow_episode_timeout_ms",
+            "leg_follow_scope_confirm_ms",
             "leg_follow_rate",
             "leg_follow_return_rate",
         ):
@@ -308,12 +309,14 @@ class PayloadTest(unittest.TestCase):
                 leg_follow_machine_wide=True,
                 leg_follow_roll_deadband=0.08,
                 leg_follow_episode_timeout_ms=5000.0,
+                leg_follow_scope_confirm_ms=300.0,
             )
         )
         self.assertEqual(payload["leg_follow_auto_scope"], 0)
         self.assertEqual(payload["leg_follow_machine_wide"], 1)
         self.assertEqual(payload["leg_follow_roll_deadband"], 0.08)
         self.assertEqual(payload["leg_follow_episode_timeout_ms"], 5000.0)
+        self.assertEqual(payload["leg_follow_scope_confirm_ms"], 300.0)
 
 
 class SummaryTest(unittest.TestCase):
