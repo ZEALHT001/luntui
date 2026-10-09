@@ -72,6 +72,62 @@ SLOW_PERIOD_MS = 20.0
 SEGMENT_GAP_MS = 1000.0
 
 
+def port_listener_pid(port: int) -> int | None:
+    """Best-effort PID of the process already listening on ``port``.
+
+    Used only to make a startup failure actionable.  ``lsof`` is present on
+    macOS and most Linux hosts; when it is missing the caller still gets a
+    clear message, just without the PID.
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for token in result.stdout.split():
+        if token.isdigit():
+            return int(token)
+    return None
+
+
+def port_in_use(port: int, timeout: float = 0.3) -> bool:
+    """Return True when something already accepts connections on ``port``."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def check_ports_free(gdb_port: int, rtt_port: int) -> None:
+    """Fail fast, and explain what to do, when the ports are already claimed.
+
+    A leaked ``JLinkGDBServerCLExe`` from an earlier capture - or an IDE debug
+    session (Cortex-Debug, Ozone) attached to the same probe - holds these
+    ports.  Without this check the symptom is an opaque "no RTT telemetry"
+    timeout or a server that dies with "Failed to open listener port".
+    """
+    for port, label in ((gdb_port, "GDB server"), (rtt_port, "RTT telnet")):
+        if not port_in_use(port):
+            continue
+        pid = port_listener_pid(port)
+        holder = f" by PID {pid}" if pid is not None else ""
+        kill_hint = (
+            f"kill {pid}" if pid is not None else "kill <pid>"
+        )
+        raise RuntimeError(
+            f"{label} port {port} is already in use{holder}.  Either an IDE "
+            "debug session is attached to the same J-Link, or a previous "
+            "capture leaked its server.  Stop the debug session, then "
+            f"`{kill_hint}`, and retry."
+        )
+
+
 def _finite(value: float) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(value)
 
@@ -282,55 +338,69 @@ class GdbServerRttReader:
             "-silent",
             "-nogui",
         ]
+        # Refuse to start on top of someone else's server.  Checking first
+        # keeps the failure legible: the alternative is spending the whole
+        # connect timeout attached to a stale relay that never emits frames.
+        check_ports_free(self.gdb_port, self.rtt_port)
         if self.server_log is not None:
             self._server_log_handle = self.server_log.open("w", encoding="utf-8")
         else:
             self._server_log_handle = subprocess.DEVNULL
-        self._server_proc = subprocess.Popen(
-            command,
-            stdout=self._server_log_handle,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            self._server_proc = subprocess.Popen(
+                command,
+                stdout=self._server_log_handle,
+                stderr=subprocess.STDOUT,
+            )
 
-        deadline = time.monotonic() + self.connect_timeout
-        while time.monotonic() < deadline:
-            if self._server_proc.poll() is not None:
-                raise RuntimeError("JLinkGDBServerCLExe exited during startup")
-            try:
-                with socket.create_connection(
-                    ("127.0.0.1", self.gdb_port), timeout=0.5
-                ):
-                    break
-            except OSError:
-                time.sleep(0.2)
-        else:
+            deadline = time.monotonic() + self.connect_timeout
+            while time.monotonic() < deadline:
+                if self._server_proc.poll() is not None:
+                    raise RuntimeError(
+                        "JLinkGDBServerCLExe exited during startup; "
+                        f"see {self.server_log or 'its log'} for the reason"
+                    )
+                try:
+                    with socket.create_connection(
+                        ("127.0.0.1", self.gdb_port), timeout=0.5
+                    ):
+                        break
+                except OSError:
+                    time.sleep(0.2)
+            else:
+                raise TimeoutError("GDB server did not open its port")
+
+            # Batch GDB only resumes the core; it never reads RTT.
+            self._gdb_proc = subprocess.Popen(
+                [
+                    self.gdb,
+                    "-q",
+                    "-batch",
+                    "-ex",
+                    "set confirm off",
+                    "-ex",
+                    f"target remote :{self.gdb_port}",
+                    "-ex",
+                    "continue",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(1.5)
+
+            self._socket = socket.create_connection(
+                ("127.0.0.1", self.rtt_port), timeout=5.0
+            )
+            self._socket.settimeout(0.05)
+            self._buffer = bytearray()
+            self.wait_for_telemetry()
+        except BaseException:
+            # __init__ never returns on this path, so the caller cannot close
+            # the reader.  Without this the spawned server outlives the failed
+            # capture, keeps ports 2331/19021 bound, and poisons every later
+            # attempt with "no RTT telemetry" or "listener port in use".
             self.close()
-            raise TimeoutError("GDB server did not open its port")
-
-        # Batch GDB only resumes the core; it never reads RTT.
-        self._gdb_proc = subprocess.Popen(
-            [
-                self.gdb,
-                "-q",
-                "-batch",
-                "-ex",
-                "set confirm off",
-                "-ex",
-                f"target remote :{self.gdb_port}",
-                "-ex",
-                "continue",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(1.5)
-
-        self._socket = socket.create_connection(
-            ("127.0.0.1", self.rtt_port), timeout=5.0
-        )
-        self._socket.settimeout(0.05)
-        self._buffer = bytearray()
-        self.wait_for_telemetry()
+            raise
 
     def wait_for_telemetry(self, timeout_s: float | None = None) -> bool:
         """Block until the target is actually emitting RTT frames.
