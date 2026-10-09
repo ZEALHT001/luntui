@@ -94,6 +94,13 @@ def format_line(**updates: float) -> str:
     fields[FORMAT_PROFILE.channels["leg_follow_offset_right"]] = updates.get(
         "leg_follow_offset_right", 0.0
     )
+    fields[FORMAT_PROFILE.channels["leg_follow_scope_machine_wide"]] = updates.get(
+        "leg_follow_scope_machine_wide", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["leg_follow_episode_active"]] = updates.get(
+        "leg_follow_episode_active", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["roll"]] = updates.get("roll", 0.0)
     return "VMCVOFA," + ",".join(str(value) for value in fields)
 
 
@@ -341,6 +348,38 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(
             sample.leg_target_right - 0.28, 0.055, places=6
         )
+
+    def test_leg_follow_scope_channels_parse(self) -> None:
+        """Schema 12 adds the scope the follow feature resolved.
+
+        The scope is chosen from the roll direction when a side unloads, so it
+        is not a setting the operator dialled in - the only way to know which
+        mode was active is to record it.
+        """
+        parsed = parse_vmcvoa_line(
+            format_line(leg_follow_scope_machine_wide=1.0,
+                        leg_follow_episode_active=1.0,
+                        roll=0.12)
+        )
+        self.assertIsNotNone(parsed)
+        _profile, sample = parsed  # type: ignore[misc]
+        self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 1.0)
+        self.assertAlmostEqual(sample.leg_follow_episode_active, 1.0)
+        self.assertAlmostEqual(sample.roll, 0.12)
+
+    def test_scope_is_absent_on_a_schema_11_capture(self) -> None:
+        """A pre-schema-12 line must still parse, with the scope unknown."""
+        fields = [0.001] * 143
+        for name, index in FORMAT_PROFILE.channels.items():
+            if index >= 143:
+                continue
+            fields[index] = 0.0
+        fields[FORMAT_PROFILE.channels["mcu_time_ms"]] = 1234.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v15")
+        self.assertFalse(math.isfinite(sample.leg_follow_scope_machine_wide))
 
     def test_v14_layout_still_parses(self) -> None:
         """The 141-field layout (schema 10) predates the leg-follow fields."""

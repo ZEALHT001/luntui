@@ -3174,6 +3174,13 @@ void vmc_control_init(void)
   vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.leg_follow_enable = VMC_LEG_FOLLOW_ENABLE_DEFAULT;
   vmc_control.leg_follow_machine_wide = VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
+  vmc_control.leg_follow_auto_scope = VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT;
+  vmc_control.leg_follow_roll_deadband =
+      VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT;
+  vmc_control.leg_follow_scope_machine_wide =
+      VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
+  vmc_control.leg_follow_episode_active = 0U;
+  vmc_control.leg_follow_scope_valid = 0U;
   vmc_control.leg_follow_rate = VMC_LEG_FOLLOW_RATE_DEFAULT;
   vmc_control.leg_follow_return_rate = VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT;
   vmc_control.leg_follow_offset_left = 0.0f;
@@ -3222,6 +3229,63 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg)
   leg->torque_phi0_command = 0.0;
   leg->joint_torque_ahead = 0.0;
   leg->joint_torque_back = 0.0;
+}
+
+/* Resolve the ground-following scope for one unload episode.
+ *
+ * Returns 1 for whole-machine (both legs extend) and 0 for per-leg (only the
+ * unloaded leg extends).  See VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT for why the
+ * roll SIGN, not just which side unloaded, is what distinguishes the two
+ * situations - and why the answer has to be latched per episode rather than
+ * recomputed every cycle.
+ *
+ * body.roll is positive when the RIGHT side is high, so the unloaded side's
+ * signed roll is +roll when the right side unloaded and -roll when the left
+ * did; positive therefore means "the unloaded side is the high one".
+ *
+ * ``auto_scope`` 0 falls straight through to ``fixed_machine_wide`` so the
+ * old fixed-scope behaviour is still reachable without a reflash.
+ */
+static uint8_t vmc_leg_follow_resolve_scope(uint8_t auto_scope,
+                                            uint8_t fixed_machine_wide,
+                                            uint8_t left_unloaded,
+                                            uint8_t right_unloaded,
+                                            double roll,
+                                            double deadband,
+                                            uint8_t have_previous,
+                                            uint8_t previous_machine_wide)
+{
+  double signed_roll;
+
+  if (auto_scope == 0U) {
+    return (fixed_machine_wide != 0U) ? 1U : 0U;
+  }
+
+  if (left_unloaded == 0U && right_unloaded == 0U) {
+    /* Nothing is unloaded, so this is not an episode at all. */
+    return (have_previous != 0U) ? previous_machine_wide : 0U;
+  }
+
+  if (left_unloaded != 0U && right_unloaded != 0U) {
+    /* Both sides unloaded: the whole machine is off the ground, so there is
+     * no grounded leg to lever against either way. */
+    return 1U;
+  }
+
+  signed_roll = (right_unloaded != 0U) ? roll : -roll;
+  if (signed_roll > deadband) {
+    /* The unloaded side is the HIGH side: the machine was lifted. */
+    return 1U;
+  }
+  if (signed_roll < -deadband) {
+    /* The unloaded side is the LOW side: it went over an edge. */
+    return 0U;
+  }
+
+  /* Near level - genuinely ambiguous, so keep the previous answer.  With no
+   * history, per-leg is the safe default: it never levers the grounded leg
+   * while the machine may be going over an edge. */
+  return (have_previous != 0U) ? previous_machine_wide : 0U;
 }
 
 static void update_leg_length_control(volatile vmc_leg_state_t *leg,
@@ -3341,6 +3405,7 @@ void vmc_control_update(void)
     vmc_control.roll_comp_offset = 0.0f;
     vmc_control.leg_follow_offset_left = 0.0f;
     vmc_control.leg_follow_offset_right = 0.0f;
+    vmc_control.leg_follow_episode_active = 0U;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -3449,10 +3514,33 @@ void vmc_control_update(void)
         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT];
     const uint8_t right_unloaded =
         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT];
+    const uint8_t any_unloaded =
+        (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
+    uint8_t machine_wide;
     uint8_t follow_left;
     uint8_t follow_right;
 
-    if (vmc_control.leg_follow_machine_wide != 0U) {
+    /* One decision per unload episode, taken on the rising edge and held
+     * until both sides reload; re-deciding every cycle would flip the scope
+     * as the body swings through level in the middle of a lift. */
+    if (any_unloaded != 0U && vmc_control.leg_follow_episode_active == 0U) {
+      vmc_control.leg_follow_scope_machine_wide = vmc_leg_follow_resolve_scope(
+          vmc_control.leg_follow_auto_scope,
+          vmc_control.leg_follow_machine_wide,
+          left_unloaded,
+          right_unloaded,
+          (double)vmc_probe_state.body.roll,
+          clamp_double(vmc_control.leg_follow_roll_deadband, 0.0, 0.5),
+          vmc_control.leg_follow_scope_valid,
+          vmc_control.leg_follow_scope_machine_wide);
+      vmc_control.leg_follow_scope_valid = 1U;
+      vmc_control.leg_follow_episode_active = 1U;
+    } else if (any_unloaded == 0U) {
+      vmc_control.leg_follow_episode_active = 0U;
+    }
+
+    machine_wide = vmc_control.leg_follow_scope_machine_wide;
+    if (machine_wide != 0U) {
       follow_left = (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
       follow_right = follow_left;
     } else {

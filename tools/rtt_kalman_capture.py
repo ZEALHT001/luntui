@@ -334,16 +334,29 @@ FORMAT_V14_PROFILE = Profile(
     },
 )
 
-# Ground-following extension added (schema 11).  The per-leg targets already
-# include it, so this is what separates "the operator moved S2" from "the leg
-# lost the ground and the follow feature pushed its target outward".
-FORMAT_PROFILE = Profile(
-    name="format",
+# Ground-following extension added (schema 11), without the scope fields.
+FORMAT_V15_PROFILE = Profile(
+    name="format-v15",
     field_count=143,
     channels={
         **FORMAT_V14_PROFILE.channels,
         "leg_follow_offset_left": 141,
         "leg_follow_offset_right": 142,
+    },
+)
+
+# Roll-selected follow scope added (schema 12).  The scope is no longer a
+# fixed setting - it is resolved from the roll direction when a side unloads -
+# so the resolved value and the episode flag have to be recorded, otherwise a
+# capture cannot show which mode was actually active.  roll itself is field
+# 122, so the two together reconstruct why the scope came out as it did.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=145,
+    channels={
+        **FORMAT_V15_PROFILE.channels,
+        "leg_follow_scope_machine_wide": 143,
+        "leg_follow_episode_active": 144,
     },
 )
 
@@ -368,6 +381,7 @@ PROFILES = {
     "format-v12": FORMAT_V12_PROFILE,
     "format-v13": FORMAT_V13_PROFILE,
     "format-v14": FORMAT_V14_PROFILE,
+    "format-v15": FORMAT_V15_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -384,6 +398,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V12_PROFILE,
     FORMAT_V13_PROFILE,
     FORMAT_V14_PROFILE,
+    FORMAT_V15_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -401,6 +416,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V12_PROFILE.field_count: FORMAT_V12_PROFILE,
     FORMAT_V13_PROFILE.field_count: FORMAT_V13_PROFILE,
     FORMAT_V14_PROFILE.field_count: FORMAT_V14_PROFILE,
+    FORMAT_V15_PROFILE.field_count: FORMAT_V15_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -494,6 +510,12 @@ CSV_FIELDS = [
     # recorded separately so the report can tell it from an S2 change.
     "leg_follow_offset_left",
     "leg_follow_offset_right",
+    # Follow scope resolved for the current unload episode (1 = both legs,
+    # 0 = only the unloaded leg) and whether an episode is in progress.  The
+    # scope is chosen from the roll direction, so these plus roll are what
+    # show which mode was actually active.
+    "leg_follow_scope_machine_wide",
+    "leg_follow_episode_active",
     # Torque observations.  Appended so every older CSV keeps its column order.
     "left_wheel_torque_raw",
     "right_wheel_torque_raw",
@@ -626,6 +648,10 @@ class KalmanSample:
     # unloaded; already included in leg_target_left/right.
     leg_follow_offset_left: float = INVALID_VALUE
     leg_follow_offset_right: float = INVALID_VALUE
+    # Scope the follow feature resolved for the current unload episode, and
+    # whether one is running.  Absent before schema 12.
+    leg_follow_scope_machine_wide: float = INVALID_VALUE
+    leg_follow_episode_active: float = INVALID_VALUE
     # Torque observations.  Tp is a virtual-leg torque; each joint receives
     # half of it, so a joint is at its rating when |Tp| reaches 108.
     left_wheel_torque_raw: float = INVALID_VALUE
@@ -978,6 +1004,8 @@ def parse_vmcvoa_line(
         leg_target_right=channel("leg_target_right"),
         leg_follow_offset_left=channel("leg_follow_offset_left"),
         leg_follow_offset_right=channel("leg_follow_offset_right"),
+        leg_follow_scope_machine_wide=channel("leg_follow_scope_machine_wide"),
+        leg_follow_episode_active=channel("leg_follow_episode_active"),
         left_wheel_torque_raw=channel("left_wheel_torque_raw"),
         right_wheel_torque_raw=channel("right_wheel_torque_raw"),
         left_tp_theta_term=channel("left_tp_theta_term"),
@@ -1903,6 +1931,12 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 leg_follow_offset_right=_safe_float(
                     row.get("leg_follow_offset_right", "")
+                ),
+                leg_follow_scope_machine_wide=_safe_float(
+                    row.get("leg_follow_scope_machine_wide", "")
+                ),
+                leg_follow_episode_active=_safe_float(
+                    row.get("leg_follow_episode_active", "")
                 ),
                 left_wheel_torque_raw=_safe_float(
                     row.get("left_wheel_torque_raw", "")

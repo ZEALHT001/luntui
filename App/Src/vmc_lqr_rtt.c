@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 11U
+#define VMC_LQR_RTT_SCHEMA_VERSION 12U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -671,6 +671,15 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_machine_wide", &value) != 0U) {
     vmc_control.leg_follow_machine_wide = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_auto_scope", &value) != 0U) {
+    vmc_control.leg_follow_auto_scope = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_roll_deadband", &value) != 0U) {
+    vmc_control.leg_follow_roll_deadband =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 0.50f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_return_rate", &value) != 0U) {
@@ -1469,6 +1478,22 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_offset_right);
+
+  /* VMCVOFA fields 143..144: the ground-following scope resolved for the
+   * episode in progress (1 = both legs extend, 0 = only the unloaded leg),
+   * and whether an episode is in progress at all.
+   *
+   * The scope is no longer a fixed setting the operator chose - it is decided
+   * from the roll direction when a side unloads - so without publishing the
+   * resolved value a recording cannot tell which mode was active.  roll is
+   * already in field 122, so this plus that field is everything needed to
+   * reconstruct why the scope came out the way it did. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_scope_machine_wide);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.leg_follow_episode_active);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

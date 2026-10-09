@@ -302,6 +302,8 @@ def _enable_payload(
     leg_follow_rate: float | None = None,
     leg_follow_return_rate: float | None = None,
     leg_follow_machine_wide: bool | None = None,
+    leg_follow_auto_scope: bool | None = None,
+    leg_follow_roll_deadband: float | None = None,
 ) -> str:
     """Build the RTT parameter payload for one capture.
 
@@ -335,6 +337,10 @@ def _enable_payload(
         payload["leg_follow_return_rate"] = float(leg_follow_return_rate)
     if leg_follow_machine_wide is not None:
         payload["leg_follow_machine_wide"] = 1 if leg_follow_machine_wide else 0
+    if leg_follow_auto_scope is not None:
+        payload["leg_follow_auto_scope"] = 1 if leg_follow_auto_scope else 0
+    if leg_follow_roll_deadband is not None:
+        payload["leg_follow_roll_deadband"] = float(leg_follow_roll_deadband)
 
     if mode == "slow":
         payload.update(
@@ -657,8 +663,29 @@ def main() -> int:
         choices=("on", "off"),
         default=None,
         help=(
-            "on (firmware default) = if EITHER side unloads, BOTH legs "
-            "extend; off = only the unloaded leg extends"
+            "fixed follow scope, used only when --leg-follow-auto-scope off; "
+            "on = if EITHER side unloads, BOTH legs extend; off = only the "
+            "unloaded leg extends"
+        ),
+    )
+    parser.add_argument(
+        "--leg-follow-auto-scope",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "on (firmware default) = choose the follow scope per unload "
+            "episode from the roll direction: unloaded side HIGH means the "
+            "machine was lifted (extend both), LOW means it went over an edge "
+            "(extend only that leg). off = use --leg-follow-machine-wide"
+        ),
+    )
+    parser.add_argument(
+        "--leg-follow-roll-deadband",
+        type=float,
+        default=None,
+        help=(
+            "|roll| below this is treated as level, so the previous episode's "
+            "scope is kept (firmware default 0.05 rad)"
         ),
     )
     parser.add_argument(
@@ -737,6 +764,10 @@ def main() -> int:
         0.0 <= args.leg_follow_return_rate <= 1.0
     ):
         parser.error("--leg-follow-return-rate must be in [0, 1] m/s")
+    if args.leg_follow_roll_deadband is not None and not (
+        0.0 <= args.leg_follow_roll_deadband <= 0.5
+    ):
+        parser.error("--leg-follow-roll-deadband must be in [0, 0.5] rad")
     leg_follow_enable = (
         None if args.leg_follow is None else (args.leg_follow == "on")
     )
@@ -744,6 +775,11 @@ def main() -> int:
         None
         if args.leg_follow_machine_wide is None
         else (args.leg_follow_machine_wide == "on")
+    )
+    leg_follow_auto_scope = (
+        None
+        if args.leg_follow_auto_scope is None
+        else (args.leg_follow_auto_scope == "on")
     )
     record_fast = args.mode in ("both", "fast")
     record_slow = args.mode in ("both", "slow")
@@ -794,6 +830,8 @@ def main() -> int:
                 args.leg_follow_rate,
                 args.leg_follow_return_rate,
                 leg_follow_machine_wide,
+                leg_follow_auto_scope,
+                args.leg_follow_roll_deadband,
             ),
             "VMC_BALANCE_PARAMS OK",
         ):
@@ -839,8 +877,10 @@ def main() -> int:
         if (
             leg_follow_enable is not None
             or leg_follow_machine_wide is not None
+            or leg_follow_auto_scope is not None
             or args.leg_follow_rate is not None
             or args.leg_follow_return_rate is not None
+            or args.leg_follow_roll_deadband is not None
         ):
             print(
                 "leg follow set: "
@@ -851,9 +891,21 @@ def main() -> int:
                 )
                 + ", "
                 + (
+                    f"auto_scope {1 if leg_follow_auto_scope else 0}"
+                    if leg_follow_auto_scope is not None
+                    else "auto_scope unchanged"
+                )
+                + ", "
+                + (
                     f"machine_wide {1 if leg_follow_machine_wide else 0}"
                     if leg_follow_machine_wide is not None
                     else "machine_wide unchanged"
+                )
+                + ", "
+                + (
+                    f"roll_deadband {args.leg_follow_roll_deadband:g} rad"
+                    if args.leg_follow_roll_deadband is not None
+                    else "roll_deadband unchanged"
                 )
                 + ", "
                 + (
@@ -1045,6 +1097,8 @@ def main() -> int:
         leg_follow_requested={
             "enable": leg_follow_enable,
             "machine_wide": leg_follow_machine_wide,
+            "auto_scope": leg_follow_auto_scope,
+            "roll_deadband": args.leg_follow_roll_deadband,
             "rate": args.leg_follow_rate,
             "return_rate": args.leg_follow_return_rate,
         },

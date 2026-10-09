@@ -179,6 +179,8 @@ class ControlPathTest(unittest.TestCase):
         for key in (
             "leg_follow_enable",
             "leg_follow_machine_wide",
+            "leg_follow_auto_scope",
+            "leg_follow_roll_deadband",
             "leg_follow_rate",
             "leg_follow_return_rate",
         ):
@@ -188,6 +190,99 @@ class ControlPathTest(unittest.TestCase):
         self.assertAlmostEqual(
             resolved["leg_follow_rate"], _macro("VMC_LEG_FOLLOW_RATE_DEFAULT")
         )
+
+
+class AutoScopeTest(unittest.TestCase):
+    """The follow scope is chosen from the roll direction, per episode.
+
+    A single fixed scope cannot be right: "one side unloaded" covers two
+    opposite situations.  Lifting one side on flat ground needs BOTH legs to
+    extend so the body rises with it; one wheel going over an edge needs ONLY
+    that leg to reach down, because lengthening the grounded leg levers the
+    body further over the edge.
+
+    Both are in the recordings, with the same side unloaded and opposite roll
+    signs, so the sign is the usable discriminator.
+    """
+
+    def setUp(self) -> None:
+        self.body = _body(SOURCE.read_text(encoding="utf-8"),
+                          "vmc_leg_follow_resolve_scope")
+
+    def test_positive_roll_for_the_unloaded_side_extends_both(self) -> None:
+        """Unloaded side HIGH => lifted => whole machine."""
+        self.assertIn("signed_roll > deadband", self.body)
+        self.assertIn("return 1U;", self.body)
+
+    def test_negative_roll_for_the_unloaded_side_extends_only_it(self) -> None:
+        """Unloaded side LOW => over an edge => that leg only."""
+        self.assertIn("signed_roll < -deadband", self.body)
+        self.assertIn("return 0U;", self.body)
+
+    def test_right_uses_roll_and_left_uses_minus_roll(self) -> None:
+        """body.roll is positive when the RIGHT side is high.
+
+        Getting this backwards would invert both cases, so the mapping is
+        asserted rather than left to a comment.
+        """
+        self.assertIn("signed_roll = (right_unloaded != 0U) ? roll : -roll;",
+                      self.body)
+
+    def test_deadband_holds_the_previous_episode_decision(self) -> None:
+        """Near level is genuinely ambiguous, so do not flip mid-lift."""
+        self.assertIn("have_previous", self.body)
+        self.assertIn("previous_machine_wide", self.body)
+
+    def test_no_history_defaults_to_per_leg(self) -> None:
+        """The safe default: never lever the grounded leg on the first episode.
+
+        Held at the level of the final fallback, which must not be 1U.
+        """
+        tail = self.body.rstrip().rstrip("}")
+        self.assertIn("return (have_previous != 0U) ? previous_machine_wide : 0U;",
+                      tail)
+
+    def test_both_sides_unloaded_is_whole_machine(self) -> None:
+        """A genuine flight has no grounded leg to lever against."""
+        self.assertIn("left_unloaded != 0U && right_unloaded != 0U", self.body)
+
+    def test_fixed_scope_is_still_reachable(self) -> None:
+        """auto_scope = 0 must fall back to the old fixed behaviour."""
+        self.assertIn("auto_scope == 0U", self.body)
+        self.assertIn("fixed_machine_wide", self.body)
+
+    def test_decision_is_latched_per_episode(self) -> None:
+        """Re-deciding every cycle would flip the scope through level."""
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        self.assertIn("leg_follow_episode_active == 0U", body)
+        self.assertIn("leg_follow_scope_machine_wide = vmc_leg_follow_resolve_scope",
+                      body)
+        self.assertIn("leg_follow_episode_active = 0U;", body)
+
+    def test_history_bit_is_not_the_episode_flag(self) -> None:
+        """The deadband fallback needs the previous EPISODE's answer.
+
+        On the rising edge the episode flag is still 0 by construction, so
+        reusing it as "have previous" would make the fallback dead code.  The
+        two flags have to be separate.
+        """
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        self.assertIn("vmc_control.leg_follow_scope_valid,", body)
+        self.assertNotIn("vmc_control.leg_follow_episode_active,\n"
+                         "          vmc_control.leg_follow_scope_machine_wide);",
+                         body)
+        self.assertIn("vmc_control.leg_follow_scope_valid = 1U;", body)
+
+    def test_scope_is_published_to_telemetry(self) -> None:
+        """A recording must show which mode was active, not just what was asked."""
+        source = RTT.read_text(encoding="utf-8")
+        self.assertIn("leg_follow_scope_machine_wide", source)
+
+    def test_scope_keys_are_tunable_over_rtt(self) -> None:
+        source = RTT.read_text(encoding="utf-8")
+        for key in ("leg_follow_auto_scope", "leg_follow_roll_deadband"):
+            with self.subTest(key=key):
+                self.assertIn(f'"{key}"', source)
 
 
 if __name__ == "__main__":

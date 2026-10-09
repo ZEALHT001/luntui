@@ -106,6 +106,15 @@ diagnostics below:
 | 140 | right leg length target | metres, after roll compensation and the MIN/MAX clamp |
 | 141 | ground-following extension, left | metres, already included in field 139 |
 | 142 | ground-following extension, right | metres, already included in field 140 |
+| 143 | follow scope resolved for this unload episode | `1` = both legs extend, `0` = only the unloaded leg |
+| 144 | unload episode in progress | `0` or `1` |
+
+Fields 143/144 were added with schema 12.  The follow scope is no longer a
+setting the operator dialled in: it is resolved from the roll direction when a
+side unloads, so without publishing the resolved value a recording cannot show
+which mode was actually active.  Field 122 already carries `roll`, so the two
+together reconstruct why the scope came out the way it did.  The 143-field
+layout is still parsed as `format-v15`.
 
 Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
 (`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg

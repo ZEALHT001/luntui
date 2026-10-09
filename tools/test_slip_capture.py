@@ -288,10 +288,29 @@ class PayloadTest(unittest.TestCase):
         for key in (
             "leg_follow_enable",
             "leg_follow_machine_wide",
+            "leg_follow_auto_scope",
+            "leg_follow_roll_deadband",
             "leg_follow_rate",
             "leg_follow_return_rate",
         ):
             self.assertNotIn(key, payload)
+
+    def test_auto_scope_and_deadband_are_sent_at_runtime(self) -> None:
+        """The scope is chosen from roll now, so a contrast run must be able
+        to pin it back to a fixed scope without a reflash."""
+        payload = json.loads(
+            _enable_payload(
+                "both",
+                4,
+                20,
+                leg_follow_auto_scope=False,
+                leg_follow_machine_wide=True,
+                leg_follow_roll_deadband=0.08,
+            )
+        )
+        self.assertEqual(payload["leg_follow_auto_scope"], 0)
+        self.assertEqual(payload["leg_follow_machine_wide"], 1)
+        self.assertEqual(payload["leg_follow_roll_deadband"], 0.08)
 
 
 class SummaryTest(unittest.TestCase):

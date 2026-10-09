@@ -142,6 +142,47 @@ extern "C" {
  * Each leg is still capped by its own remaining stroke, so the extension stops
  * at VMC_LEG_LENGTH_MAX rather than running away. */
 #define VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT 1U
+/* Automatic scope selection from the direction of the roll.
+ *
+ * A single fixed scope cannot be right, because "one side unloaded" covers
+ * two opposite situations and they need opposite responses:
+ *
+ *   LIFTED SIDE (the unloaded side is the HIGH side)
+ *     The machine was raised - by hand, by a step, by the far wheel riding
+ *     up on something.  The body must rise with it, so BOTH legs extend.
+ *     Extending only the unloaded leg would just let it float while the body
+ *     keeps rotating.
+ *
+ *   DROPPED SIDE (the unloaded side is the LOW side)
+ *     The machine has one wheel over an edge, a step down or off a platform.
+ *     That leg must reach down for ground, and the grounded leg must NOT be
+ *     lengthened - doing so levers the body further over the edge.  Only the
+ *     unloaded leg extends.
+ *
+ * Both cases exist in the recordings, with the SAME side unloaded and
+ * OPPOSITE roll signs, which is what makes the sign the usable discriminator:
+ *
+ *   logs/slip_20261009_174626  right unloaded, roll +0.122, right leg SHORTER
+ *                              (0.199 vs 0.222) -> lifted
+ *   logs/slip_20261009_223938  right unloaded, roll -0.282, right leg LONGER
+ *                              (0.295 vs 0.166) -> dropped
+ *
+ * body.roll is positive when the RIGHT side is high, so for the unloaded side
+ * the signed test is  roll  (right unloaded)  or  -roll  (left unloaded):
+ * positive means that side is the high one.
+ *
+ * The decision is taken ONCE per unload episode, on the rising edge, and held
+ * until both sides reload.  Re-deciding every cycle would flip the scope as
+ * the body swings through level mid-lift.  Near-level is genuinely ambiguous,
+ * so inside the deadband the previous episode's decision is kept; with no
+ * history the answer is per-leg, which is the safe choice - it never levers
+ * the grounded leg against a machine that is going over an edge.
+ *
+ * Set leg_follow_auto_scope to 0 to go back to a fixed scope chosen by
+ * leg_follow_machine_wide. */
+#define VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT   1U
+/* |roll| below this cannot be told apart from level.  0.05 rad = 2.9 deg. */
+#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.05f
 
 /* S2 selects among these three presets: UP -> LONG, MID -> MID, DOWN ->
  * SHORT.  Units are metres; VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp
@@ -934,8 +975,24 @@ typedef struct {
    * while that leg is unloaded, and the two rates that drive it.  See
    * VMC_LEG_FOLLOW_RATE_DEFAULT. */
   uint8_t leg_follow_enable;
-  /* 0 = per leg, 1 = both legs when either side is unloaded. */
+  /* 0 = per leg, 1 = both legs when either side is unloaded.  Only consulted
+   * when leg_follow_auto_scope is 0; otherwise the scope for the current
+   * unload episode is decided by leg_follow_resolve_scope(). */
   uint8_t leg_follow_machine_wide;
+  /* 1 = pick the scope per unload episode from the roll direction. */
+  uint8_t leg_follow_auto_scope;
+  /* |roll| below this is treated as level; see the macro. */
+  float leg_follow_roll_deadband;
+  /* Scope resolved for the episode in progress, and whether one is in
+   * progress.  Published to telemetry so a recording can show which mode was
+   * actually active rather than only what was requested. */
+  uint8_t leg_follow_scope_machine_wide;
+  uint8_t leg_follow_episode_active;
+  /* Whether a scope has ever been resolved.  The deadband fallback needs the
+   * PREVIOUS EPISODE's answer, and on the rising edge of an episode
+   * leg_follow_episode_active is by construction still 0, so that flag cannot
+   * serve as the history bit. */
+  uint8_t leg_follow_scope_valid;
   float leg_follow_rate;
   float leg_follow_return_rate;
   float leg_follow_offset_left;

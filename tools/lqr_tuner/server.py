@@ -142,6 +142,12 @@ _BALANCE_PARAM_FALLBACK = {
     # lift, which never spins the lifted wheel, so the per-leg detector cannot
     # latch; the grounded leg then carries everything and reads more load.
     "leg_follow_machine_wide": 1.0,
+    # 1 = pick the scope per unload episode from the roll direction: the
+    # unloaded side on the HIGH side means the machine was lifted (extend
+    # both), on the LOW side means it went over an edge (extend only that
+    # leg).  Overrides leg_follow_machine_wide while set.
+    "leg_follow_auto_scope": 1.0,
+    "leg_follow_roll_deadband": 0.05,
     "leg_follow_rate": 0.20,
     "leg_follow_return_rate": 0.05,
     "kp_phi0": 50.0,
@@ -249,6 +255,8 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "roll_comp_ramp_rate": ("VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT", "float"),
     "leg_follow_enable": ("VMC_LEG_FOLLOW_ENABLE_DEFAULT", "uint"),
     "leg_follow_machine_wide": ("VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT", "uint"),
+    "leg_follow_auto_scope": ("VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT", "uint"),
+    "leg_follow_roll_deadband": ("VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT", "float"),
     "leg_follow_rate": ("VMC_LEG_FOLLOW_RATE_DEFAULT", "float"),
     "leg_follow_return_rate": ("VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT", "float"),
     "kp_phi0": ("VMC_LEG_PHI0_KP_DEFAULT", "float"),
