@@ -15,6 +15,8 @@ from tools.rtt_kalman_capture import (
     FORMAT_LEGACY_PROFILE,
     FORMAT_PROFILE,
     FORMAT_V12_PROFILE,
+    FORMAT_V13_PROFILE,
+    FORMAT_V14_PROFILE,
     KalmanSample,
     analyze_samples,
     analyze_continuity,
@@ -76,6 +78,21 @@ def format_line(**updates: float) -> str:
     )
     fields[FORMAT_PROFILE.channels["tf02_connected"]] = updates.get(
         "tf02_connected", 1.0
+    )
+    fields[FORMAT_PROFILE.channels["roll_comp_offset"]] = updates.get(
+        "roll_comp_offset", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["leg_target_left"]] = updates.get(
+        "leg_target_left", 0.28
+    )
+    fields[FORMAT_PROFILE.channels["leg_target_right"]] = updates.get(
+        "leg_target_right", 0.28
+    )
+    fields[FORMAT_PROFILE.channels["leg_follow_offset_left"]] = updates.get(
+        "leg_follow_offset_left", 0.0
+    )
+    fields[FORMAT_PROFILE.channels["leg_follow_offset_right"]] = updates.get(
+        "leg_follow_offset_right", 0.0
     )
     return "VMCVOFA," + ",".join(str(value) for value in fields)
 
@@ -252,7 +269,7 @@ class ParseTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         profile, sample = parsed  # type: ignore[misc]
         self.assertEqual(profile.name, "format")
-        self.assertEqual(profile.field_count, 138)
+        self.assertEqual(profile.field_count, FORMAT_PROFILE.field_count)
         self.assertAlmostEqual(sample.tf02_distance_cm, 91.0)
         self.assertAlmostEqual(sample.tf02_connected, 1.0)
 
@@ -269,6 +286,73 @@ class ParseTests(unittest.TestCase):
         # The laser channels do not exist on this layout.
         self.assertFalse(math.isfinite(sample.tf02_distance_cm))
         self.assertFalse(math.isfinite(sample.tf02_connected))
+
+    def test_roll_compensation_channels_parse(self) -> None:
+        """Schema 10 publishes the roll compensator's output and per-leg targets.
+
+        Without these, "the compensator never ran", "the differential was
+        cancelled" and "a target was clipped at VMC_LEG_LENGTH_MIN/MAX" all
+        look the same, because field 77 is the COMMON target before the
+        differential is added.
+        """
+        parsed = parse_vmcvoa_line(
+            format_line(roll_comp_offset=-0.05,
+                        leg_target_left=0.33,
+                        leg_target_right=0.12)
+        )
+        self.assertIsNotNone(parsed)
+        _profile, sample = parsed  # type: ignore[misc]
+        self.assertAlmostEqual(sample.roll_comp_offset, -0.05)
+        self.assertAlmostEqual(sample.leg_target_left, 0.33)
+        # The short-leg clip is visible: the retract side sits on the minimum.
+        self.assertAlmostEqual(sample.leg_target_right, 0.12)
+
+    def test_v13_layout_still_parses(self) -> None:
+        """The 138-field layout (schema 9) predates the roll-comp fields."""
+        fields = [0.001] * FORMAT_V13_PROFILE.field_count
+        fields[FORMAT_V13_PROFILE.channels["kf_x"]] = 1.0
+        fields[FORMAT_V13_PROFILE.channels["tf02_distance_cm"]] = 91.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v13")
+        # The laser is present on this layout, the roll fields are not.
+        self.assertAlmostEqual(sample.tf02_distance_cm, 91.0)
+        self.assertFalse(math.isfinite(sample.roll_comp_offset))
+        self.assertFalse(math.isfinite(sample.leg_target_left))
+
+    def test_leg_follow_channels_parse(self) -> None:
+        """Schema 11 carries the ground-following extension per side.
+
+        The per-leg targets already include it; these fields are what separate
+        "the operator moved S2" from "that leg lost the ground".
+        """
+        parsed = parse_vmcvoa_line(
+            format_line(leg_follow_offset_left=0.0,
+                        leg_follow_offset_right=0.055,
+                        leg_target_left=0.28,
+                        leg_target_right=0.335)
+        )
+        self.assertIsNotNone(parsed)
+        _profile, sample = parsed  # type: ignore[misc]
+        self.assertAlmostEqual(sample.leg_follow_offset_left, 0.0)
+        self.assertAlmostEqual(sample.leg_follow_offset_right, 0.055)
+        # The target already contains the extension.
+        self.assertAlmostEqual(
+            sample.leg_target_right - 0.28, 0.055, places=6
+        )
+
+    def test_v14_layout_still_parses(self) -> None:
+        """The 141-field layout (schema 10) predates the leg-follow fields."""
+        fields = [0.001] * FORMAT_V14_PROFILE.field_count
+        fields[FORMAT_V14_PROFILE.channels["kf_x"]] = 1.0
+        fields[FORMAT_V14_PROFILE.channels["roll_comp_offset"]] = -0.02
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v14")
+        self.assertAlmostEqual(sample.roll_comp_offset, -0.02)
+        self.assertFalse(math.isfinite(sample.leg_follow_offset_left))
 
     def test_torque_channels_parse(self) -> None:
         """The Tp decomposition and wheel torque are recorded verbatim.

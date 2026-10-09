@@ -258,6 +258,41 @@ class PayloadTest(unittest.TestCase):
             payload = json.loads(_enable_payload(mode, 4, 20, 36.0))
             self.assertEqual(payload["slip_accel"], 36.0)
 
+    def test_leg_follow_params_are_sent_at_runtime(self) -> None:
+        payload = json.loads(
+            _enable_payload(
+                "both",
+                4,
+                20,
+                leg_follow_enable=True,
+                leg_follow_machine_wide=True,
+                leg_follow_rate=0.2,
+                leg_follow_return_rate=0.05,
+            )
+        )
+        self.assertEqual(payload["leg_follow_enable"], 1)
+        self.assertEqual(payload["leg_follow_machine_wide"], 1)
+        self.assertEqual(payload["leg_follow_rate"], 0.2)
+        self.assertEqual(payload["leg_follow_return_rate"], 0.05)
+        # The type tag must stay vmc_balance_params so the firmware accepts it.
+        self.assertEqual(payload["type"], "vmc_balance_params")
+
+    def test_leg_follow_off_is_sent_as_zero(self) -> None:
+        payload = json.loads(
+            _enable_payload("both", 4, 20, leg_follow_enable=False)
+        )
+        self.assertEqual(payload["leg_follow_enable"], 0)
+
+    def test_omitted_leg_follow_params_are_not_sent(self) -> None:
+        payload = json.loads(_enable_payload("both", 4, 20))
+        for key in (
+            "leg_follow_enable",
+            "leg_follow_machine_wide",
+            "leg_follow_rate",
+            "leg_follow_return_rate",
+        ):
+            self.assertNotIn(key, payload)
+
 
 class SummaryTest(unittest.TestCase):
     def test_summary_counts_dropped_fast_frames(self) -> None:

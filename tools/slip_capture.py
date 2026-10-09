@@ -35,6 +35,17 @@ Usage:
     python3 tools/slip_capture.py --duration 120 --mode fast
     python3 tools/slip_capture.py --duration 120 --mode slow
     python3 tools/slip_capture.py --source tcp --host 127.0.0.1 --port 19021
+
+Besides the stream rates, the capture can set tunables at runtime over RTT, so
+one run both configures the controller and records the result:
+
+* ``--slip-threshold`` / ``--slip-confirm-ms`` / ``--slip-gate``
+* ``--leg-follow on|off``            ground-following leg extension
+* ``--leg-follow-machine-wide on|off`` either-side-unloaded => both legs
+* ``--leg-follow-rate`` / ``--leg-follow-return-rate``
+
+Any option left unset keeps the firmware's current value, and both the
+requested and the telemetry-observed values land in ``summary.json``.
 """
 
 from __future__ import annotations
@@ -287,6 +298,10 @@ def _enable_payload(
     slip_threshold: float | None = None,
     slip_confirm_ms: float | None = None,
     slip_gate_active: bool = False,
+    leg_follow_enable: bool | None = None,
+    leg_follow_rate: float | None = None,
+    leg_follow_return_rate: float | None = None,
+    leg_follow_machine_wide: bool | None = None,
 ) -> str:
     """Build the RTT parameter payload for one capture.
 
@@ -296,6 +311,13 @@ def _enable_payload(
     latch is allowed to reject the wheel measurement feeding the Kalman
     filter; a pure data-collection run leaves it off so the recording cannot
     influence what it is measuring.
+
+    ``leg_follow_*`` set the ground-following leg extension at runtime.  The
+    firmware accepts these keys in any ``vmc_balance_params`` payload, so a
+    single capture can pin the feature on or off, change the outward / return
+    rates, and switch between per-leg and whole-machine scope.  Whatever is
+    left as ``None`` keeps the firmware's current value, so a capture never
+    silently resets a parameter the operator did not name.
     """
     payload: dict[str, object] = {
         "type": "vmc_balance_params",
@@ -305,6 +327,14 @@ def _enable_payload(
         payload["slip_accel"] = float(slip_threshold)
     if slip_confirm_ms is not None:
         payload["slip_confirm_ms"] = float(slip_confirm_ms)
+    if leg_follow_enable is not None:
+        payload["leg_follow_enable"] = 1 if leg_follow_enable else 0
+    if leg_follow_rate is not None:
+        payload["leg_follow_rate"] = float(leg_follow_rate)
+    if leg_follow_return_rate is not None:
+        payload["leg_follow_return_rate"] = float(leg_follow_return_rate)
+    if leg_follow_machine_wide is not None:
+        payload["leg_follow_machine_wide"] = 1 if leg_follow_machine_wide else 0
 
     if mode == "slow":
         payload.update(
@@ -522,6 +552,8 @@ def summarize_capture(
     demux_stats: dict[str, int] | None = None,
     slip_requested: dict[str, Any] | None = None,
     slip_applied: dict[str, Any] | None = None,
+    leg_follow_requested: dict[str, Any] | None = None,
+    leg_follow_applied: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fast_summary = _stream_summary(fast_times_ms, requested_fast_period_ms)
     if fast_loop_counts and len(fast_loop_counts) == len(fast_times_ms):
@@ -547,6 +579,8 @@ def summarize_capture(
         "demux": demux_stats or {},
         "slip_requested": slip_requested or {},
         "slip_applied": slip_applied or {},
+        "leg_follow_requested": leg_follow_requested or {},
+        "leg_follow_applied": leg_follow_applied or {},
     }
 
 
@@ -609,6 +643,43 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--leg-follow",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "runtime ground-following leg extension (firmware default on); "
+            "on = an unloaded leg extends so it keeps chasing the ground, "
+            "off = hold the S2 preset"
+        ),
+    )
+    parser.add_argument(
+        "--leg-follow-machine-wide",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "on (firmware default) = if EITHER side unloads, BOTH legs "
+            "extend; off = only the unloaded leg extends"
+        ),
+    )
+    parser.add_argument(
+        "--leg-follow-rate",
+        type=float,
+        default=None,
+        help=(
+            "outward chase rate in m/s while a leg is unloaded "
+            "(firmware default 0.2)"
+        ),
+    )
+    parser.add_argument(
+        "--leg-follow-return-rate",
+        type=float,
+        default=None,
+        help=(
+            "rate in m/s at which the extra extension returns to the preset "
+            "once the leg loads again (firmware default 0.05)"
+        ),
+    )
+    parser.add_argument(
         "--source",
         choices=("gdbserver", "auto", "tcp", "jlink"),
         default="gdbserver",
@@ -660,6 +731,20 @@ def main() -> int:
         parser.error("--slip-threshold must be in [0, 10000]")
     if args.slip_confirm_ms is not None and not (0.0 <= args.slip_confirm_ms <= 1000.0):
         parser.error("--slip-confirm-ms must be in [0, 1000]")
+    if args.leg_follow_rate is not None and not (0.0 <= args.leg_follow_rate <= 1.0):
+        parser.error("--leg-follow-rate must be in [0, 1] m/s")
+    if args.leg_follow_return_rate is not None and not (
+        0.0 <= args.leg_follow_return_rate <= 1.0
+    ):
+        parser.error("--leg-follow-return-rate must be in [0, 1] m/s")
+    leg_follow_enable = (
+        None if args.leg_follow is None else (args.leg_follow == "on")
+    )
+    leg_follow_machine_wide = (
+        None
+        if args.leg_follow_machine_wide is None
+        else (args.leg_follow_machine_wide == "on")
+    )
     record_fast = args.mode in ("both", "fast")
     record_slow = args.mode in ("both", "slow")
     active_slow_period_ms = (
@@ -691,6 +776,8 @@ def main() -> int:
     demux = RttDemux()
     applied_threshold: float | None = None
     applied_gate: float | None = None
+    applied_leg_follow_left: float | None = None
+    applied_leg_follow_right: float | None = None
 
     try:
         reader = open_reader(args)
@@ -703,6 +790,10 @@ def main() -> int:
                 args.slip_threshold,
                 args.slip_confirm_ms,
                 args.slip_gate,
+                leg_follow_enable,
+                args.leg_follow_rate,
+                args.leg_follow_return_rate,
+                leg_follow_machine_wide,
             ),
             "VMC_BALANCE_PARAMS OK",
         ):
@@ -744,6 +835,38 @@ def main() -> int:
                     else "confirm unchanged"
                 )
                 + (", gate ACTIVE" if args.slip_gate else ", gate action off")
+            )
+        if (
+            leg_follow_enable is not None
+            or leg_follow_machine_wide is not None
+            or args.leg_follow_rate is not None
+            or args.leg_follow_return_rate is not None
+        ):
+            print(
+                "leg follow set: "
+                + (
+                    f"enable {1 if leg_follow_enable else 0}"
+                    if leg_follow_enable is not None
+                    else "enable unchanged"
+                )
+                + ", "
+                + (
+                    f"machine_wide {1 if leg_follow_machine_wide else 0}"
+                    if leg_follow_machine_wide is not None
+                    else "machine_wide unchanged"
+                )
+                + ", "
+                + (
+                    f"rate {args.leg_follow_rate:g} m/s"
+                    if args.leg_follow_rate is not None
+                    else "rate unchanged"
+                )
+                + ", "
+                + (
+                    f"return {args.leg_follow_return_rate:g} m/s"
+                    if args.leg_follow_return_rate is not None
+                    else "return unchanged"
+                )
             )
         if marker.enabled:
             print("markers: c=contact s=slip_start e=slip_end r=recover b=baseline q=stop")
@@ -830,6 +953,10 @@ def main() -> int:
                         applied_threshold = sample.slip_accel_threshold
                     if sample.slip_enable == sample.slip_enable:
                         applied_gate = sample.slip_enable
+                    if sample.leg_follow_offset_left == sample.leg_follow_offset_left:
+                        applied_leg_follow_left = sample.leg_follow_offset_left
+                    if sample.leg_follow_offset_right == sample.leg_follow_offset_right:
+                        applied_leg_follow_right = sample.leg_follow_offset_right
                     row = _sample_to_row(sample)
                     row["host_time_s"] = elapsed
                     slow_writer.writerow(row)
@@ -914,6 +1041,16 @@ def main() -> int:
         slip_applied={
             "threshold": applied_threshold,
             "gate_active": applied_gate,
+        },
+        leg_follow_requested={
+            "enable": leg_follow_enable,
+            "machine_wide": leg_follow_machine_wide,
+            "rate": args.leg_follow_rate,
+            "return_rate": args.leg_follow_return_rate,
+        },
+        leg_follow_applied={
+            "offset_left": applied_leg_follow_left,
+            "offset_right": applied_leg_follow_right,
         },
     )
     summary["label"] = args.label

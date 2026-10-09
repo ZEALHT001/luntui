@@ -307,17 +307,43 @@ FORMAT_V12_PROFILE = Profile(
     },
 )
 
-# TF02-Pro laser telemetry added (schema 9).  The automatic jump gate fires on
-# the laser reading strictly inside (80, 100) cm, so a capture has to carry the
-# distance and the health flag: otherwise "the window was never satisfied" and
-# "the laser was not answering" look identical in a recording.
-FORMAT_PROFILE = Profile(
-    name="format",
+# TF02-Pro laser telemetry added (schema 9), without the roll-compensation
+# fields.  Kept as its own layout so schema-9 recordings still parse.
+FORMAT_V13_PROFILE = Profile(
+    name="format-v13",
     field_count=138,
     channels={
         **FORMAT_V12_PROFILE.channels,
         "tf02_distance_cm": 136,
         "tf02_connected": 137,
+    },
+)
+
+# Roll-compensation output added (schema 10), without the ground-following
+# fields.  Kept as its own layout so schema-10 recordings still parse.
+FORMAT_V14_PROFILE = Profile(
+    name="format-v14",
+    field_count=141,
+    channels={
+        **FORMAT_V13_PROFILE.channels,
+        "roll_comp_offset": 138,
+        # Per-leg length targets, after roll compensation and after the
+        # VMC_LEG_LENGTH_MIN/MAX clamp.
+        "leg_target_left": 139,
+        "leg_target_right": 140,
+    },
+)
+
+# Ground-following extension added (schema 11).  The per-leg targets already
+# include it, so this is what separates "the operator moved S2" from "the leg
+# lost the ground and the follow feature pushed its target outward".
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=143,
+    channels={
+        **FORMAT_V14_PROFILE.channels,
+        "leg_follow_offset_left": 141,
+        "leg_follow_offset_right": 142,
     },
 )
 
@@ -340,6 +366,8 @@ PROFILES = {
     "format-v10": FORMAT_V10_PROFILE,
     "format-v11": FORMAT_V11_PROFILE,
     "format-v12": FORMAT_V12_PROFILE,
+    "format-v13": FORMAT_V13_PROFILE,
+    "format-v14": FORMAT_V14_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -354,6 +382,8 @@ FORMAT_LAYOUTS = (
     FORMAT_V10_PROFILE,
     FORMAT_V11_PROFILE,
     FORMAT_V12_PROFILE,
+    FORMAT_V13_PROFILE,
+    FORMAT_V14_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -369,6 +399,8 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V10_PROFILE.field_count: FORMAT_V10_PROFILE,
     FORMAT_V11_PROFILE.field_count: FORMAT_V11_PROFILE,
     FORMAT_V12_PROFILE.field_count: FORMAT_V12_PROFILE,
+    FORMAT_V13_PROFILE.field_count: FORMAT_V13_PROFILE,
+    FORMAT_V14_PROFILE.field_count: FORMAT_V14_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -452,6 +484,16 @@ CSV_FIELDS = [
     # distance inside (80, 100) cm, so both are recorded here.
     "tf02_distance_cm",
     "tf02_connected",
+    # Roll compensation output.  Recorded so a levelling failure can be told
+    # apart from the compensator never running or its differential being
+    # clipped at VMC_LEG_LENGTH_MIN/MAX.
+    "roll_comp_offset",
+    "leg_target_left",
+    "leg_target_right",
+    # Ground-following extension, per side.  Included in the targets above;
+    # recorded separately so the report can tell it from an S2 change.
+    "leg_follow_offset_left",
+    "leg_follow_offset_right",
     # Torque observations.  Appended so every older CSV keeps its column order.
     "left_wheel_torque_raw",
     "right_wheel_torque_raw",
@@ -575,6 +617,15 @@ class KalmanSample:
     # distance_cm == 0 with connected == 0 means "no reading", not "zero".
     tf02_distance_cm: float = INVALID_VALUE
     tf02_connected: float = INVALID_VALUE
+    # Roll compensation: the commanded differential and the per-leg targets it
+    # produces, after the length clamp.
+    roll_comp_offset: float = INVALID_VALUE
+    leg_target_left: float = INVALID_VALUE
+    leg_target_right: float = INVALID_VALUE
+    # Ground-following extension added to each side's target while that leg is
+    # unloaded; already included in leg_target_left/right.
+    leg_follow_offset_left: float = INVALID_VALUE
+    leg_follow_offset_right: float = INVALID_VALUE
     # Torque observations.  Tp is a virtual-leg torque; each joint receives
     # half of it, so a joint is at its rating when |Tp| reaches 108.
     left_wheel_torque_raw: float = INVALID_VALUE
@@ -922,6 +973,11 @@ def parse_vmcvoa_line(
         pitch_rate=channel("pitch_rate"),
         tf02_distance_cm=channel("tf02_distance_cm"),
         tf02_connected=channel("tf02_connected"),
+        roll_comp_offset=channel("roll_comp_offset"),
+        leg_target_left=channel("leg_target_left"),
+        leg_target_right=channel("leg_target_right"),
+        leg_follow_offset_left=channel("leg_follow_offset_left"),
+        leg_follow_offset_right=channel("leg_follow_offset_right"),
         left_wheel_torque_raw=channel("left_wheel_torque_raw"),
         right_wheel_torque_raw=channel("right_wheel_torque_raw"),
         left_tp_theta_term=channel("left_tp_theta_term"),
@@ -1839,6 +1895,15 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 pitch_rate=_safe_float(row.get("pitch_rate", "")),
                 tf02_distance_cm=_safe_float(row.get("tf02_distance_cm", "")),
                 tf02_connected=_safe_float(row.get("tf02_connected", "")),
+                roll_comp_offset=_safe_float(row.get("roll_comp_offset", "")),
+                leg_target_left=_safe_float(row.get("leg_target_left", "")),
+                leg_target_right=_safe_float(row.get("leg_target_right", "")),
+                leg_follow_offset_left=_safe_float(
+                    row.get("leg_follow_offset_left", "")
+                ),
+                leg_follow_offset_right=_safe_float(
+                    row.get("leg_follow_offset_right", "")
+                ),
                 left_wheel_torque_raw=_safe_float(
                     row.get("left_wheel_torque_raw", "")
                 ),
@@ -2516,6 +2581,8 @@ def build_parser() -> argparse.ArgumentParser:
             "format-v10",
             "format-v11",
             "format-v12",
+            "format-v13",
+            "format-v14",
         ),
         default=DEFAULT_PROFILE,
         help="VMCVOFA layout; auto detects by field count",
