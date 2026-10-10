@@ -23,7 +23,7 @@ FAST_FIELDS = [
     "slip_left",
     "slip_right",
     "kf_dx",
-    "body_ax_lin_g",
+    "body_ay_lin_g",
     "wheel_left_speed",
     "wheel_right_speed",
     "leg_left_phi0",
@@ -98,7 +98,14 @@ def _write_capture(
     running = 0.0
     for i in range(1, count):
         running += accel[i] * (DT_MS / 1000.0)
-        kf[i] = wheel[i] if kf_mode == "wheel" else running
+        if kf_mode == "wheel":
+            kf[i] = wheel[i]
+        elif kf_mode == "accel":
+            kf[i] = running
+        elif kf_mode == "frozen":
+            kf[i] = 0.0
+        else:
+            raise ValueError(f"unknown kf_mode {kf_mode}")
 
     rows = []
     for i in range(count):
@@ -110,8 +117,10 @@ def _write_capture(
                 "slip_left": "1" if in_slip else "0",
                 "slip_right": "0",
                 "kf_dx": f"{kf[i]:.6f}",
-                # The channel carries g; dd_x = this * 9.80665.
-                "body_ax_lin_g": f"{accel[i] / 9.80665:.6f}",
+                # The fore-aft channel carries g and the firmware negates it:
+                # dd_x = -body_ay_lin_g * 9.80665, so store -accel to make the
+                # reconstructed dd_x equal the intended acceleration.
+                "body_ay_lin_g": f"{-accel[i] / 9.80665:.6f}",
                 # d_x_raw = (-wL - wR) * R / 2, so wL = -2E/R, wR = 0
                 # reproduces a body velocity of exactly E.
                 "wheel_left_speed": f"{-2.0 * wheel[i] / 0.060:.6f}",
@@ -272,6 +281,31 @@ class VerdictTest(unittest.TestCase):
             )
             lines = verdict([analyse(Capture(path))])
             self.assertIn("REFERENCE UNRELIABLE", " ".join(lines))
+
+    def test_a_filter_diverging_on_grip_windows_does_not_condemn_the_reference(
+        self,
+    ) -> None:
+        """The reference check must compare the wheel against the accelerometer.
+
+        Not the filter against the accelerometer.  With the gate on the filter
+        deliberately stops following the wheel, so a filter-vs-accelerometer
+        comparison would call a WORKING gate a broken reference - the exact
+        inversion of what this tool is for.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_capture(
+                Path(tmp), "frozen", True, kf_mode="frozen",
+                grip_ramp=0.6, slip_excursion=1.2,
+            )
+            result = analyse(Capture(path))
+            # The filter is pinned at zero while both the wheel and the
+            # accelerometer move, so kf_error is large on grip windows...
+            moving = max(result["grip"], key=lambda g: abs(g["dv_wheel"]))
+            self.assertGreater(abs(moving["kf_error"]), 0.3)
+            # ...while the wheel and the accelerometer agree, which is what the
+            # reference check is supposed to look at.
+            self.assertLess(abs(moving["wheel_error"]), 0.05)
+            self.assertNotIn("REFERENCE UNRELIABLE", " ".join(verdict([result])))
 
     def test_a_gate_off_run_that_tracks_the_wheel_is_diagnosed_as_inactive(
         self,

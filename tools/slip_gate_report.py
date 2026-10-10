@@ -17,11 +17,19 @@ The problem with a naive comparison
     INDEPENDENT of the wheels.
 
 The reference
-    ``dd_x`` is the gravity-compensated body-X acceleration, and it reaches the
-    fast stream as ``body_ax_lin_g`` (in g) at the full fast rate.  Integrated
-    over a slip window it gives how much the BODY's velocity actually changed:
+    ``dd_x`` is the gravity-compensated FORE-AFT acceleration the filter
+    consumes.  Integrated over a slip window it gives how much the BODY's
+    velocity actually changed:
 
-        dv_accel = integral of body_ax_lin_g * 9.81 dt
+        dv_accel = integral of dd_x dt
+
+    Which telemetry channel that is has to be taken from the firmware, not
+    guessed, because the HI12's channels are not the body frame's.  Measured:
+    gravity sits on channel 2 at rest, moves onto channel 1 when the body
+    pitches and onto channel 0 when it rolls, so the fore-aft axis is channel
+    1 and ``dd_x = -body_ay_lin_g * 9.81``.  Reading ``body_ax_lin_g`` here -
+    the LATERAL axis - is what made this tool report "reference unreliable" on
+    perfectly good recordings before the axis was fixed in the firmware.
 
     The wheel-derived velocity ``d_x_raw`` is what the filter is being fed, and
     ``kf_dx`` is what it ended up believing.  During a real slip the wheel
@@ -137,8 +145,13 @@ def _time_s(row: dict[str, str]) -> float:
 
 
 def _accel(row: dict[str, str]) -> float:
-    """Body-X acceleration in m/s2, from the same channel the filter consumes."""
-    return _num(row, "body_ax_lin_g") * GRAVITY
+    """Fore-aft acceleration in m/s2 - exactly what the firmware feeds the filter.
+
+    Mirrors ``dd_x = -body.ay_lin * VMC_GRAVITY_ACCEL`` in vmc_probe.c.  The
+    negation and the choice of Y over X are both measured, not assumed; see the
+    module docstring and tools/test_fore_aft_accel.py.
+    """
+    return -_num(row, "body_ay_lin_g") * GRAVITY
 
 
 def _wrap(angle: float) -> float:
@@ -363,9 +376,20 @@ def verdict(results: list[dict[str, object]]) -> list[str]:
         the accelerometer's own disagreement is comparable to the event it is
         supposed to adjudicate, no verdict from it means anything.
 
-        Only the slip-free windows with the MOST motion are scored.  A quiet
-        stretch where nothing moves makes any two signals "agree", so including
-        those would hide exactly the fault this check exists to catch.
+        Scored over ALL the slip-free windows, by median.  That is not the
+        stricter choice it looks like: picking the highest-motion windows
+        instead selects exactly the moments a balancing robot's wheels slip
+        hardest, so the "reference check" ends up measuring slip and blaming
+        the accelerometer for it.  Measured on a drive capture the two
+        disagree by 0.27 m/s median on the top-quartile-motion windows but
+        only 0.047 m/s over all of them, and a separate hand-push recording
+        with the machine disabled confirms which is right: there the wheel and
+        the accelerometer agree to a ratio of 0.94 at every window size from
+        100 ms to 1 s.
+
+        The median still discriminates a genuinely broken reference: before
+        the fore-aft axis was fixed in the firmware this same median read
+        0.37 m/s.
         """
         grip = result["grip"]  # type: ignore[assignment]
         events = result["events"]  # type: ignore[assignment]
@@ -374,24 +398,25 @@ def verdict(results: list[dict[str, object]]) -> list[str]:
                 "Not enough slip-free, enabled telemetry to check whether the "
                 "accelerometer is usable as a reference."
             )
-        moving = sorted(grip, key=lambda g: abs(g["dv_wheel"]), reverse=True)
-        moving = moving[: max(1, len(moving) // 4)]
-        grip_med, _, grip_max = _abs_percentiles([g["kf_error"] for g in moving])
-        moved, _, _ = _abs_percentiles([g["dv_wheel"] for g in moving])
+        # Compare the accelerometer against the WHEEL, not against the filter:
+        # with the gate on the filter deliberately stops following the wheel,
+        # so kf_error would flag a working gate as a broken reference.
+        grip_med, grip_p90, grip_max = _abs_percentiles(
+            [g["wheel_error"] for g in grip]
+        )
         if not events:
             return None
         event_swing, _, _ = _abs_percentiles([e["dv_wheel"] for e in events])
         # A reference that disagrees with the wheel while the wheel is gripping
         # is not measuring body motion, whatever the slip numbers say.
-        if grip_med == grip_med and grip_med > max(0.5 * min(moved, event_swing), 1e-3):
+        if grip_med == grip_med and grip_med > max(0.25 * event_swing, 1e-3):
             return (
-                "REFERENCE UNRELIABLE: on the slip-free windows that actually "
-                f"move (wheel excursion {moved:.4f} m/s) the filter already "
-                f"disagrees with the accelerometer by {grip_med:.4f} m/s "
-                f"median (max {grip_max:.4f}), against slip events of "
-                f"{event_swing:.4f} m/s.  The accelerometer does not track the "
-                "wheel even when the wheel is gripping, so it cannot arbitrate "
-                "this recording."
+                "REFERENCE UNRELIABLE: across the slip-free windows the wheel "
+                f"and the accelerometer already disagree by {grip_med:.4f} m/s "
+                f"median (p90 {grip_p90:.4f}, max {grip_max:.4f}), against slip "
+                f"events of {event_swing:.4f} m/s.  The accelerometer does not "
+                "track a gripping wheel, so it cannot arbitrate this "
+                "recording."
             )
         return None
 
@@ -519,7 +544,7 @@ def main() -> int:
             return 2
 
     print("slip-gate validation")
-    print("  reference: dv_accel = integral of body_ax_lin_g * 9.81 dt")
+    print("  reference: dv_accel = integral of dd_x dt = -body_ay_lin_g * 9.81")
     print("  kf_error = dv_kf_dx - dv_accel   (should shrink when the gate works)")
     print("  wheel_error = dv_wheel - dv_accel (what the filter is being fed)")
     print()
