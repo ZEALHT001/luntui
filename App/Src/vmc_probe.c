@@ -1899,9 +1899,35 @@ static void vmc_update_motion_state(void)
       vmc_probe_state.right_leg.d_length * sin(right_theta);
   vmc_probe_state.motion.d_x_raw =
       (vmc_probe_state.motion.left_body_dx + vmc_probe_state.motion.right_body_dx) * 0.5;
-  /* Gravity-compensated body-X linear acceleration in m/s2. */
+  /* Gravity-compensated fore-aft linear acceleration in m/s2.
+   *
+   * MEASURED, not assumed - the HI12's accelerometer channels are not the
+   * body frame's.  At rest gravity sits on channel 2, so that one is vertical
+   * as expected, but it moves onto channel 1 when the body PITCHES and onto
+   * channel 0 when it ROLLS.  The fore-aft axis is therefore channel 1;
+   * body.ax/ay/az above keep the IMU's own channel order, which is what the
+   * published telemetry reports.
+   *
+   * Pushing the machine by hand fixes the sign: over sixty 1-second windows of
+   * a walk-push recording,
+   *
+   *     corr(delta wheel velocity, integral of ay_lin) = -0.999
+   *     corr(delta wheel velocity, integral of ax_lin) = +0.019
+   *
+   * with the fitted scale at -0.87 against an ideal -1 (hand push, some wheel
+   * skid, and a 50 Hz integral).  So the fore-aft acceleration is -ay_lin, and
+   * the wheel kinematics agree with it to within that scale error.
+   *
+   * This used to read ax_lin, the LATERAL axis.  That is why an earlier
+   * recording showed ax_lin integrating to 0.04 m/s across a run that moved
+   * the machine 2.2 m/s: it was watching the wrong axis, and the only thing it
+   * correlated with was roll.  dd_x feeds both the prediction of the
+   * body-motion Kalman filter and condition C of the slip detector
+   * (|wheel acceleration| - |body acceleration|), so both were being fed a
+   * sideways signal - and the slip detector's one action, rejecting the wheel
+   * measurement while latched, coasts that filter on this same input. */
   vmc_probe_state.motion.dd_x =
-      (double)vmc_probe_state.body.ax_lin * (double)VMC_GRAVITY_ACCEL;
+      -(double)vmc_probe_state.body.ay_lin * (double)VMC_GRAVITY_ACCEL;
 
   if (vmc_control.enabled == 0U || vmc_probe_state.feedback_timeout_active != 0U) {
     vmc_body_motion_kf_reset();
