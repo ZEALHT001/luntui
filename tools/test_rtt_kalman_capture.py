@@ -19,6 +19,7 @@ from tools.rtt_kalman_capture import (
     FORMAT_V14_PROFILE,
     FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE,
+    FORMAT_V18_PROFILE,
     KalmanSample,
     analyze_samples,
     analyze_continuity,
@@ -109,6 +110,15 @@ def format_line(**updates: float) -> str:
         "leg_follow_candidate_side", 2.0
     )
     fields[FORMAT_PROFILE.channels["roll"]] = updates.get("roll", 0.0)
+    for channel in (
+        "body_ax_g",
+        "body_ax_lin_g",
+        "body_ay_g",
+        "body_az_g",
+        "body_ay_lin_g",
+        "body_az_lin_g",
+    ):
+        fields[FORMAT_PROFILE.channels[channel]] = updates.get(channel, 0.0)
     return "VMCVOFA," + ",".join(str(value) for value in fields)
 
 
@@ -413,6 +423,51 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(sample.leg_follow_scope_machine_wide, 0.0)
         self.assertFalse(math.isfinite(sample.leg_follow_scope_resolved))
         self.assertFalse(math.isfinite(sample.leg_follow_low_side))
+
+    def test_three_axis_accelerometer_parses(self) -> None:
+        """Schema 15 publishes the whole vector, raw and compensated.
+
+        One axis could not be diagnosed: the wrong axis, a gravity projection
+        that is not being removed, and a genuinely unmapped axis all look the
+        same from a single channel.  Gravity appears on whichever axis is
+        vertical at rest, so the raw triplet identifies the mounting.
+        """
+        parsed = parse_vmcvoa_line(
+            format_line(
+                body_ax_g=-0.019,
+                body_ax_lin_g=-0.019,
+                body_ay_g=0.004,
+                body_az_g=0.999,
+                body_ay_lin_g=0.003,
+                body_az_lin_g=-0.002,
+            )
+        )
+        self.assertIsNotNone(parsed)
+        _profile, sample = parsed  # type: ignore[misc]
+        self.assertAlmostEqual(sample.body_ax_g, -0.019)
+        self.assertAlmostEqual(sample.body_ay_g, 0.004)
+        self.assertAlmostEqual(sample.body_az_g, 0.999)
+        self.assertAlmostEqual(sample.body_ay_lin_g, 0.003)
+        self.assertAlmostEqual(sample.body_az_lin_g, -0.002)
+
+    def test_accelerometer_vector_is_absent_on_a_schema_14_capture(self) -> None:
+        """A 147-field line must not be read as if it carried Y and Z.
+
+        Those indices did not exist yet, so the channels have to read invalid
+        rather than silently picking up whatever the last fields were.
+        """
+        fields = [0.001] * FORMAT_V18_PROFILE.field_count
+        for name, index in FORMAT_V18_PROFILE.channels.items():
+            fields[index] = 0.0
+        fields[FORMAT_V18_PROFILE.channels["mcu_time_ms"]] = 1234.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v18")
+        self.assertFalse(math.isfinite(sample.body_ay_g))
+        self.assertFalse(math.isfinite(sample.body_az_g))
+        self.assertFalse(math.isfinite(sample.body_ay_lin_g))
+        self.assertFalse(math.isfinite(sample.body_az_lin_g))
 
     def test_v14_layout_still_parses(self) -> None:
         """The 141-field layout (schema 10) predates the leg-follow fields."""

@@ -110,6 +110,21 @@ diagnostics below:
 | 144 | unload episode in progress | `0` or `1` |
 | 145 | side classification settled | `0` = still being timed out, `1` = decided |
 | 146 | classification being timed out | same encoding as 143 |
+| 147 | raw Y acceleration | g |
+| 148 | raw Z acceleration | g |
+| 149 | gravity-compensated Y acceleration | g |
+| 150 | gravity-compensated Z acceleration | g |
+
+Fields 147..150 were added with schema 15, which publishes the whole
+accelerometer vector.  Only X was carried before, and that left "the
+accelerometer disagrees with the wheels" undiagnosable: the wrong axis, a
+gravity projection that is not being removed, and a genuinely unmapped axis
+all look identical from one channel.  Gravity sits on whichever axis is
+vertical at rest, so the raw triplet identifies the mounting, and the paired
+`_lin` values show whether the quaternion-based removal takes the same
+projection back out.  This matters beyond diagnostics - condition C of the slip
+detector subtracts |body acceleration| from |wheel acceleration|, and the one
+slip action coasts the estimator on this same channel.
 
 Fields 143..146 were added with schema 12..14.  What the feature acts on is
 which side is LOW, classified from the roll direction over a confirmation
@@ -123,8 +138,9 @@ transient WAS seen and deliberately not believed.
 
 NOTE field 143 changed meaning in schema 14 - it used to carry the
 per-leg/whole-machine flag.  That is why the layout gained a field instead of
-reusing its count: 146 fields (schemas 12/13) parses as `format-v17`, and 147
-(schema 14) is the current `format`.  143 fields parses as `format-v15`.
+reusing its count: 146 fields (schemas 12/13) parses as `format-v17`, 147
+(schema 14) as `format-v18`, and 151 (schema 15) is the current `format`.
+143 fields parses as `format-v15`.
 
 Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
 (`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg

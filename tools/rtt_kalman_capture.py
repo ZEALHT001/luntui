@@ -375,13 +375,32 @@ FORMAT_V17_PROFILE = Profile(
 #
 # Field 146 publishes the classification still being timed out, so a recording
 # can show that a transient WAS seen and deliberately not believed.
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V18_PROFILE = Profile(
+    name="format-v18",
     field_count=147,
     channels={
         **FORMAT_V17_PROFILE.channels,
         "leg_follow_low_side": 143,
         "leg_follow_candidate_side": 146,
+    },
+)
+
+# Full accelerometer vector (schema 15).  Only X was published before, which
+# left "the accelerometer disagrees with the wheels" undiagnosable: the wrong
+# axis, a gravity projection that is not being removed, and a genuinely
+# unmapped axis are indistinguishable from one channel.  The raw triplet
+# identifies the mounting (gravity shows up on whichever axis is vertical at
+# rest) and the paired _lin values show whether the quaternion-based removal
+# takes the same projection back out.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=151,
+    channels={
+        **FORMAT_V18_PROFILE.channels,
+        "body_ay_g": 147,
+        "body_az_g": 148,
+        "body_ay_lin_g": 149,
+        "body_az_lin_g": 150,
     },
 )
 
@@ -409,6 +428,7 @@ PROFILES = {
     "format-v15": FORMAT_V15_PROFILE,
     "format-v16": FORMAT_V16_PROFILE,
     "format-v17": FORMAT_V17_PROFILE,
+    "format-v18": FORMAT_V18_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -428,6 +448,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE,
     FORMAT_V17_PROFILE,
+    FORMAT_V18_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -448,6 +469,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V15_PROFILE.field_count: FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE.field_count: FORMAT_V16_PROFILE,
     FORMAT_V17_PROFILE.field_count: FORMAT_V17_PROFILE,
+    FORMAT_V18_PROFILE.field_count: FORMAT_V18_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -504,6 +526,13 @@ CSV_FIELDS = [
     "gravity_sign",
     "body_ax_g",
     "body_ax_lin_g",
+    # The rest of the accelerometer vector.  The raw triplet identifies the
+    # mounting (gravity sits on whichever axis is vertical at rest) and the
+    # paired _lin values show whether the gravity removal works.
+    "body_ay_g",
+    "body_az_g",
+    "body_ay_lin_g",
+    "body_az_lin_g",
     "kf_accel_update_count",
     "stick_forward",
     "speed_target",
@@ -651,6 +680,10 @@ class KalmanSample:
     gravity_sign: float = INVALID_VALUE
     body_ax_g: float = INVALID_VALUE
     body_ax_lin_g: float = INVALID_VALUE
+    body_ay_g: float = INVALID_VALUE
+    body_az_g: float = INVALID_VALUE
+    body_ay_lin_g: float = INVALID_VALUE
+    body_az_lin_g: float = INVALID_VALUE
     kf_accel_update_count: float = INVALID_VALUE
     stick_forward: float = INVALID_VALUE
     speed_target: float = INVALID_VALUE
@@ -1019,6 +1052,10 @@ def parse_vmcvoa_line(
         gravity_sign=channel("gravity_sign"),
         body_ax_g=channel("body_ax_g"),
         body_ax_lin_g=channel("body_ax_lin_g"),
+        body_ay_g=channel("body_ay_g"),
+        body_az_g=channel("body_az_g"),
+        body_ay_lin_g=channel("body_ay_lin_g"),
+        body_az_lin_g=channel("body_az_lin_g"),
         kf_accel_update_count=channel("kf_accel_update_count"),
         stick_forward=channel("stick_forward"),
         speed_target=channel("speed_target"),
@@ -1930,6 +1967,10 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 gravity_sign=_safe_float(row.get("gravity_sign", "")),
                 body_ax_g=_safe_float(row.get("body_ax_g", "")),
                 body_ax_lin_g=_safe_float(row.get("body_ax_lin_g", "")),
+                body_ay_g=_safe_float(row.get("body_ay_g", "")),
+                body_az_g=_safe_float(row.get("body_az_g", "")),
+                body_ay_lin_g=_safe_float(row.get("body_ay_lin_g", "")),
+                body_az_lin_g=_safe_float(row.get("body_az_lin_g", "")),
                 kf_accel_update_count=_safe_float(
                     row.get("kf_accel_update_count", "")
                 ),

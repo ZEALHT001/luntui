@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 14U
+#define VMC_LQR_RTT_SCHEMA_VERSION 15U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -1520,6 +1520,43 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_control.leg_follow_candidate_side);
+
+  /* VMCVOFA fields 147..150: the rest of the accelerometer vector, raw and
+   * gravity-compensated, in g.
+   *
+   * Only the X channel was published (fields 107..108), and that turned out to
+   * be uncheckable on its own.  A recording showed body_ax_lin_g sitting at
+   * ~0.2 m/s2 through a manoeuvre that moved the machine by 1.5 m/s, and its
+   * integral over a whole enabled run came to 0.04 m/s against a wheel-derived
+   * 2.2 m/s - a factor of 50 with no correlation at any frequency.  The
+   * accelerometer is alive (17x the at-rest noise while driving, 2.8 g in an
+   * impact) and it enters the estimator at only ~32 Hz, but a single axis
+   * cannot say WHY it disagrees: the wrong axis, a gravity projection that is
+   * not being removed, and a genuinely unmapped axis all look identical from
+   * one channel.
+   *
+   * The full raw vector settles it.  At rest, gravity appears on whichever
+   * axis is vertical, so the three raw channels identify the mounting directly
+   * - and the paired _lin values show whether the quaternion-based removal
+   * takes the same projection back out.
+   *
+   * This matters beyond diagnostics: condition C of the slip detector is
+   * |wheel acceleration| - |body acceleration|, so an accelerometer that
+   * under-reads makes that test degenerate into "the wheel accelerated hard",
+   * and the one slip ACTION the firmware has - rejecting the wheel
+   * measurement while latched - coasts the estimator on this same channel. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.ay);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.az);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.ay_lin);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_probe_state.body.az_lin);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
