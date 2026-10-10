@@ -603,36 +603,50 @@ extern "C" {
  * Condition C differentiates against the MEASURED control period, so this is
  * a true m/s2 figure.
  *
- * DERIVED, not guessed.  Two labelled pellet runs, 600 s of driving and 35
- * operator-marked slips in total, captured at 225 Hz on the binary VMCFAST
- * stream with zero dropped frames (see tools/slip_analyze.py):
+ * RE-DERIVED after the fore-aft axis fix, and the old value is void.  16 was
+ * calibrated while dd_x - the body-acceleration term of condition C - was
+ * still reading the LATERAL accelerometer channel, so the metric it was tuned
+ * against was not the metric the firmware computes now.
  *
- *   logs/slip_20261008_011004  300 s, 15 marked
- *   logs/slip_20261008_013344  300 s, 20 marked
+ * Two labelled runs on the corrected axis, 219 s of driving and 19
+ * operator-marked slips, captured at 225 Hz on the binary VMCFAST stream with
+ * zero dropped frames:
  *
- * Merged sweep over both runs, scoring one detection per marked event with a
- * 700 ms refractory:
+ *   logs/slip_20261011_012244  132 s, 10 marked
+ *   logs/slip_20261011_012936   87 s,  9 marked
  *
- *   threshold  confirm   recall   extra detections
- *      13        5 ms     34/35          8
- *      14       10 ms     33/35          7    <- previous default
- *      16        5 ms     33/35          4    <- this value
- *      16       20 ms     31/35          1
- *      18       10 ms     31/35          2
+ * The separation is clean and does not depend on the analysis window, which
+ * was checked because the operator's keypress lags the real peak by 0.4-2.4 s
+ * here (a 1.2 s window truncates real peaks and manufactures false positives):
  *
- * 16 with a 5 ms confirmation matches the recall of 14 while cutting the
- * extra detections from 7 to 4, and two of those four were later confirmed to
- * be genuine slips the operator never marked - so the real cost is about two
- * spurious triggers per 600 s.  Going to 18 loses two more real events for a
- * gain of two, which is not worth it.
+ *   marked event peaks                     40.9, 43.2 ... 79.6
+ *   highest unmarked excursion             36.99  (a 5 ms spike, see below)
+ *   highest unmarked outside every window  24.90
  *
- * The previous default of 9.0 sat below the noise floor and, with its 60 ms
- * confirmation, produced 11 triggers for 4 real events on an early 120 s run.
+ * Sweep over thresholds, scoring one detection per marked event:
  *
- * This is one recording.  If the machine, surface or speed changes, re-derive
- * from a fresh labelled run before trusting the margin - and prefer changing
- * it at runtime over RTT (see tools/slip_capture.py --slip-threshold). */
-#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     16.0f
+ *   threshold   recall   extra detections
+ *      25       19/19         1
+ *      33       19/19         1     <- this value
+ *      37       17/19         0
+ *
+ * 33 keeps every marked event.  37 buys the single extra detection back at the
+ * cost of two real ones, which is the wrong trade.  Also verified by
+ * leave-one-out (10/10) and by counting detections without using any event
+ * window at all - at 25 and above the runs match the marked events one-to-one.
+ *
+ * The one extra detection is a 5 ms spike that peaks at 36.99, ABOVE the
+ * weakest genuine event (35.76), so no threshold separates it - amplitude is
+ * not the discriminating axis.  Its duration is: 5 ms against 13 ms for the
+ * weakest marked event.  It is left in deliberately rather than pushed out
+ * with a longer confirmation, because the available gap is only about 10-13 ms
+ * and widening confirm_ms to reach it trades real recall on the short bursts
+ * described below.
+ *
+ * Older runs recorded 9.0 and then 16.0.  Prefer changing this at runtime over
+ * RTT (see tools/slip_capture.py --slip-threshold) and re-derive from a fresh
+ * labelled run if the machine, surface or speed changes. */
+#define VMC_BODY_MOTION_KF_SLIP_ACCEL_DEFAULT     33.0f
 /* Condition A: wheel track in metres and yaw-rate threshold in rad/s.  The
  * track width has not been measured, so A stays disabled until yaw_track is
  * set to a real value. */
@@ -643,17 +657,21 @@ extern "C" {
 #define VMC_BODY_MOTION_KF_SLIP_HOLD_MS_DEFAULT   200U
 /* Trigger confirmation time in ms.
  *
- * DERIVED alongside the threshold above.  Real slips are SHORT: a marked
- * event typically produces two above-threshold bursts of only 13-36 ms about
- * 100-120 ms apart (entry and recovery), not the "hundreds of milliseconds"
- * this comment used to claim.  A 60 ms confirmation therefore sat out entire
- * real events.
+ * Real slips are SHORT.  On the runs behind the threshold above, the longest
+ * CONTIGUOUS stretch above 33 ms was 13-40 ms for the nineteen marked events,
+ * and the metric typically fires twice per event (entry and recovery) about
+ * 100-120 ms apart rather than staying high throughout.  A 60 ms confirmation
+ * - an early default - therefore sat out entire real events.
  *
  * 5 ms is one to two control frames at 450 Hz: enough to reject a
- * single-sample transient, short enough to admit a 13 ms burst.  Raising it
- * trades recall away quickly - the merged sweep drops from 33/35 at 5 ms to
- * 31/35 at 20 ms on the same threshold.  Threshold and confirmation are a
- * pair; do not move one without re-running tools/slip_analyze.py --sweep. */
+ * single-sample transient, short enough to admit a 13 ms burst.  It is kept
+ * even though the one extra detection in those runs (5 ms wide, see the
+ * threshold comment) could be excluded by 12 ms, because the gap between 5 ms
+ * and the weakest genuine burst is only about 10-13 ms and this parameter
+ * trades real recall away fastest.
+ *
+ * Threshold and confirmation are a pair; do not move one without re-running
+ * tools/slip_analyze.py --sweep. */
 #define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 5U
 
 /* Raw joint positions captured with both legs vertical down at 385 mm.

@@ -640,7 +640,7 @@ def main() -> int:
         type=float,
         default=None,
         help=(
-            "runtime condition-C threshold (firmware default 9.0); "
+            "runtime condition-C threshold (firmware default 33.0); "
             "sets slip_accel over RTT, no reflash needed"
         ),
     )
@@ -648,7 +648,7 @@ def main() -> int:
         "--slip-confirm-ms",
         type=float,
         default=None,
-        help="runtime confirmation time in ms (firmware default 60)",
+        help="runtime confirmation time in ms (firmware default 5)",
     )
     parser.add_argument(
         "--slip-gate",
