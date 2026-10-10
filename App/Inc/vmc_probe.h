@@ -708,12 +708,42 @@ extern "C" {
  * rings after a slip, scale the rate term too - that is why it is a separate
  * parameter rather than being hard-coded to 1.0.
  *
- * Off by default: this is a first implementation of the reference and has not
- * been on the vehicle.  Enable it over RTT and compare against the same run
- * with it off. */
-#define VMC_SLIP_LQR_ENABLE_DEFAULT        0U
+ * ON by default as of the first on/off comparison run, which showed the
+ * intended effect with no limit being reached: over 21 vs 23 slip events the
+ * leg-angle disturbance fell to 78% and the roll excursion to 70% of the
+ * unswitched values, the joint torque command rose 49% (7.5 -> 11.2 of a
+ * 108 limit) and nothing saturated.  Two runs is thin evidence, so it stays
+ * switchable over RTT. */
+#define VMC_SLIP_LQR_ENABLE_DEFAULT        1U
 #define VMC_SLIP_LQR_THETA_SCALE_DEFAULT   2.0f
 #define VMC_SLIP_LQR_DTHETA_SCALE_DEFAULT  1.0f
+
+/* Slip current scaling - the second half of the reference response.
+ *
+ * The same function that does the weight switching also does:
+ *
+ *     if (flag->slip_flag[i]) joint_m[i]->A = joint_m[i]->A * 0.6f;
+ *
+ * on the FINAL motor current for the slipping side, after it has been limited
+ * and after yaw has been folded in - so it scales the whole wheel output, not
+ * just the balance term.  In this firmware the equivalent point is
+ * vmc_balance_apply_wheel_output(), where left/right_current have just been
+ * assembled from the balance command, the operator's manual current and the
+ * yaw_hold / gimbal-follow current.
+ *
+ * READ THIS BEFORE TUNING.  This is the part of the reference response that
+ * fights the machine rather than rebalancing it.  The wheel current IS the
+ * balancing authority on a wheel-leg balancer: cutting it 40% gives up 40% of
+ * the authority to arrest a pitch excursion, and it does so precisely while
+ * the machine is slipping, i.e. while it is already disturbed.  The reference
+ * machine does the same thing, so it is not a mistake - but it is the term
+ * most likely to be the wrong trade on a different machine, and it is why the
+ * scale is a parameter rather than a constant.
+ *
+ * Set it to 1.0 to keep the weight switching but drop the current reduction.
+ * It is gated by slip_lqr_enable, which is the master switch for the whole
+ * slip response. */
+#define VMC_SLIP_WHEEL_CURRENT_SCALE_DEFAULT 0.6f
 
 /* Raw joint positions captured with both legs vertical down at 385 mm.
  *
@@ -1224,6 +1254,10 @@ typedef struct {
    * recording can prove the response fired. */
   float slip_lqr_applied_left;
   float slip_lqr_applied_right;
+  /* Wheel-current scale applied per side (1.0 = not scaled). */
+  float slip_wheel_current_scale;
+  float slip_curr_applied_left;
+  float slip_curr_applied_right;
   float tp_limit;
   float tp_phi_gain;
   float tp_x_gain;

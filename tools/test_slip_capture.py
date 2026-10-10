@@ -291,8 +291,26 @@ class PayloadTest(unittest.TestCase):
             "slip_lqr_enable",
             "slip_lqr_theta_scale",
             "slip_lqr_dtheta_scale",
+            "slip_wheel_current_scale",
         ):
             self.assertNotIn(key, payload)
+
+    def test_slip_wheel_current_scale_is_sent_at_runtime(self) -> None:
+        payload = json.loads(
+            _enable_payload("both", 4, 20, slip_wheel_current_scale=0.6)
+        )
+        self.assertEqual(payload["slip_wheel_current_scale"], 0.6)
+
+    def test_slip_wheel_current_scale_can_be_disabled_with_one(self) -> None:
+        """1.0 keeps the weight switching but drops the current reduction.
+
+        That is the escape hatch if losing balancing authority turns out to be
+        the wrong trade, so it has to be reachable without a reflash.
+        """
+        payload = json.loads(
+            _enable_payload("both", 4, 20, slip_wheel_current_scale=1.0)
+        )
+        self.assertEqual(payload["slip_wheel_current_scale"], 1.0)
 
     def test_leg_follow_params_are_sent_at_runtime(self) -> None:
         payload = json.loads(

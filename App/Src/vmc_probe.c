@@ -2385,6 +2385,10 @@ void vmc_balance_init(void)
   vmc_balance.slip_lqr_enable = VMC_SLIP_LQR_ENABLE_DEFAULT;
   vmc_balance.slip_lqr_theta_scale = VMC_SLIP_LQR_THETA_SCALE_DEFAULT;
   vmc_balance.slip_lqr_dtheta_scale = VMC_SLIP_LQR_DTHETA_SCALE_DEFAULT;
+  vmc_balance.slip_wheel_current_scale =
+      VMC_SLIP_WHEEL_CURRENT_SCALE_DEFAULT;
+  vmc_balance.slip_curr_applied_left = 1.0f;
+  vmc_balance.slip_curr_applied_right = 1.0f;
   vmc_balance.kalman_slip_confirm_ms =
       VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT;
   body_motion_kf_slip_initialized = 0U;
@@ -2978,7 +2982,34 @@ static void vmc_balance_apply_wheel_output(void)
                             yaw_current),
                   -vmc_wheel_control.max_current,
                   vmc_wheel_control.max_current);
+    /* Slip current scaling: reduce the FINAL current of whichever side is
+     * slipping, matching the reference (which scales joint_m[i]->A after
+     * limiting and after yaw is folded in).  Applied here rather than in the
+     * balance term so it covers the whole wheel output, as the reference
+     * does.  See VMC_SLIP_WHEEL_CURRENT_SCALE_DEFAULT for what this costs. */
+    {
+      const uint8_t slip_curr_enabled =
+          (vmc_balance.slip_lqr_enable != 0U) ? 1U : 0U;
+      const double slip_curr_scale =
+          clamp_double(vmc_balance.slip_wheel_current_scale, 0.0, 1.0);
+      const double left_current_scale =
+          (slip_curr_enabled != 0U && body_motion_kf_slip_left != 0U)
+              ? slip_curr_scale
+              : 1.0;
+      const double right_current_scale =
+          (slip_curr_enabled != 0U && body_motion_kf_slip_right != 0U)
+              ? slip_curr_scale
+              : 1.0;
+      vmc_balance.slip_curr_applied_left = (float)left_current_scale;
+      vmc_balance.slip_curr_applied_right = (float)right_current_scale;
+      vmc_wheel_control.left_current =
+          (int16_t)((double)vmc_wheel_control.left_current * left_current_scale);
+      vmc_wheel_control.right_current =
+          (int16_t)((double)vmc_wheel_control.right_current * right_current_scale);
+    }
   } else {
+    vmc_balance.slip_curr_applied_left = 1.0f;
+    vmc_balance.slip_curr_applied_right = 1.0f;
     vmc_balance.yaw_hold_active = 0U;
     vmc_balance.yaw_target = vmc_probe_state.body.yaw;
     vmc_balance.yaw_error_raw = 0.0;

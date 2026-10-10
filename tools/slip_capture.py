@@ -302,6 +302,7 @@ def _enable_payload(
     slip_lqr_enable: bool | None = None,
     slip_lqr_theta_scale: float | None = None,
     slip_lqr_dtheta_scale: float | None = None,
+    slip_wheel_current_scale: float | None = None,
     leg_follow_enable: bool | None = None,
     leg_follow_rate: float | None = None,
     leg_follow_return_rate: float | None = None,
@@ -341,6 +342,8 @@ def _enable_payload(
         payload["slip_lqr_theta_scale"] = float(slip_lqr_theta_scale)
     if slip_lqr_dtheta_scale is not None:
         payload["slip_lqr_dtheta_scale"] = float(slip_lqr_dtheta_scale)
+    if slip_wheel_current_scale is not None:
+        payload["slip_wheel_current_scale"] = float(slip_wheel_current_scale)
     if leg_follow_enable is not None:
         payload["leg_follow_enable"] = 1 if leg_follow_enable else 0
     if leg_follow_rate is not None:
@@ -695,6 +698,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--slip-wheel-current-scale",
+        type=float,
+        default=None,
+        help=(
+            "scale the FINAL wheel current of the slipping side "
+            "(firmware default 0.6).  Set 1.0 to keep the weight switching but "
+            "drop the current reduction - this is the term that costs "
+            "balancing authority, so it is the first one to back off"
+        ),
+    )
+    parser.add_argument(
         "--leg-follow",
         choices=("on", "off"),
         default=None,
@@ -828,6 +842,10 @@ def main() -> int:
     ):
         if value is not None and not (0.0 <= value <= 10.0):
             parser.error(f"{option} must be in [0, 10]")
+    if args.slip_wheel_current_scale is not None and not (
+        0.0 <= args.slip_wheel_current_scale <= 1.0
+    ):
+        parser.error("--slip-wheel-current-scale must be in [0, 1]")
     slip_lqr_enable = (
         None if args.slip_lqr is None else (args.slip_lqr == "on")
     )
@@ -910,6 +928,7 @@ def main() -> int:
                 slip_lqr_enable,
                 args.slip_lqr_theta_scale,
                 args.slip_lqr_dtheta_scale,
+                args.slip_wheel_current_scale,
                 leg_follow_enable,
                 args.leg_follow_rate,
                 args.leg_follow_return_rate,
@@ -964,6 +983,7 @@ def main() -> int:
             slip_lqr_enable is not None
             or args.slip_lqr_theta_scale is not None
             or args.slip_lqr_dtheta_scale is not None
+            or args.slip_wheel_current_scale is not None
         ):
             print(
                 "slip LQR weight switching: "
@@ -983,6 +1003,12 @@ def main() -> int:
                     f"dtheta_scale {args.slip_lqr_dtheta_scale:g}"
                     if args.slip_lqr_dtheta_scale is not None
                     else "dtheta_scale unchanged"
+                )
+                + ", "
+                + (
+                    f"wheel_current_scale {args.slip_wheel_current_scale:g}"
+                    if args.slip_wheel_current_scale is not None
+                    else "wheel_current_scale unchanged"
                 )
             )
         if (
@@ -1217,6 +1243,7 @@ def main() -> int:
             "lqr_enable": slip_lqr_enable,
             "lqr_theta_scale": args.slip_lqr_theta_scale,
             "lqr_dtheta_scale": args.slip_lqr_dtheta_scale,
+            "lqr_wheel_current_scale": args.slip_wheel_current_scale,
         },
         slip_applied={
             "threshold": applied_threshold,

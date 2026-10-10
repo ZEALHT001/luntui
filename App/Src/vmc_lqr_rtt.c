@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 16U
+#define VMC_LQR_RTT_SCHEMA_VERSION 17U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -254,6 +254,11 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "slip_lqr_dtheta_scale", &value) != 0U) {
     vmc_balance.slip_lqr_dtheta_scale = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_wheel_current_scale", &value) != 0U) {
+    /* 1.0 = keep the weight switching but drop the current reduction. */
+    vmc_balance.slip_wheel_current_scale = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
   /* Logging controls.  These are not control parameters, but keeping them on
@@ -1584,6 +1589,18 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_balance.slip_lqr_applied_right);
+
+  /* VMCVOFA fields 153..154: the slip wheel-current scale actually applied to
+   * each side (1.0 = not scaled).  Same reason as 151/152: it is a
+   * latch-dependent value that only exists inside the control cycle, so a
+   * recording cannot otherwise separate "the current reduction never fired"
+   * from "it fired and the current happened to be small anyway". */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.slip_curr_applied_left);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.slip_curr_applied_right);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

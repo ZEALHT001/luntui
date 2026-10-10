@@ -67,14 +67,32 @@ def _hasnt(haystack: str, needle: str, why: str) -> None:
 
 
 class DefaultsTest(unittest.TestCase):
-    def test_off_by_default(self) -> None:
-        """It has never been on the vehicle, so it must not change behaviour."""
-        self.assertEqual(_macro("VMC_SLIP_LQR_ENABLE_DEFAULT"), 0.0)
+    def test_on_by_default_after_the_comparison_run(self) -> None:
+        self.assertEqual(_macro("VMC_SLIP_LQR_ENABLE_DEFAULT"), 1.0)
 
     def test_faithful_scales(self) -> None:
         """Reference doubles the leg ANGLE and leaves the rate alone."""
         self.assertAlmostEqual(_macro("VMC_SLIP_LQR_THETA_SCALE_DEFAULT"), 2.0)
         self.assertAlmostEqual(_macro("VMC_SLIP_LQR_DTHETA_SCALE_DEFAULT"), 1.0)
+
+    def test_current_scale_matches_the_reference(self) -> None:
+        self.assertAlmostEqual(
+            _macro("VMC_SLIP_WHEEL_CURRENT_SCALE_DEFAULT"), 0.6
+        )
+
+    def test_the_balancing_authority_cost_is_documented(self) -> None:
+        """This is the term that fights the machine; say so where it is set.
+
+        The wheel current IS the balancing authority on a wheel-leg balancer,
+        so cutting it gives up authority to arrest a pitch excursion exactly
+        while the machine is slipping.  A reader adjusting the number has to
+        know that before they do.
+        """
+        header = HEADER.read_text(encoding="utf-8")
+        start = header.index("Slip current scaling")
+        comment = header[start : start + 3000]
+        self.assertIn("balancing authority", comment)
+        self.assertIn("1.0", comment)
 
     def test_the_yaw_gap_is_documented(self) -> None:
         """The next reader must not think the yaw half was forgotten.
@@ -165,12 +183,50 @@ class ApplicationTest(unittest.TestCase):
         _has(source, "slip_lqr_applied_left", "the scale is not in telemetry")
         _has(source, "slip_lqr_applied_right", "the scale is not in telemetry")
 
+    def test_applied_current_scale_is_published(self) -> None:
+        output_body = _body(SOURCE.read_text(encoding="utf-8"),
+                            "vmc_balance_apply_wheel_output")
+        _has(output_body, "slip_curr_applied_left",
+             "the applied left current scale is not published")
+        source = RTT.read_text(encoding="utf-8")
+        _has(source, "slip_curr_applied_left",
+             "the current scale is not in telemetry")
+
+    def test_current_scale_is_gated_by_the_same_master_switch(self) -> None:
+        """slip_lqr_enable is the master switch for the whole response."""
+        output_body = _body(SOURCE.read_text(encoding="utf-8"),
+                            "vmc_balance_apply_wheel_output")
+        # Not just declared - actually consulted by both sides' conditions.
+        # Declaring `slip_curr_enabled` and then not using it would leave the
+        # reduction permanently on, which is the failure this guards.
+        _has(output_body, "slip_curr_enabled != 0U && body_motion_kf_slip_left",
+             "the left current reduction does not consult the master switch")
+        _has(output_body, "slip_curr_enabled != 0U && body_motion_kf_slip_right",
+             "the right current reduction does not consult the master switch")
+        _has(output_body, "clamp_double(vmc_balance.slip_wheel_current_scale, 0.0, 1.0)",
+             "the current scale is not clamped")
+
+    def test_current_is_scaled_after_the_final_clamp(self) -> None:
+        """The reference scales the LIMITED final current, not the raw demand.
+
+        Scaling before the clamp would let the clamp undo it; scaling after
+        matches `joint_m[i]->A = joint_m[i]->A * 0.6f` in the reference, which
+        runs on the value that was just limited.
+        """
+        output_body = _body(SOURCE.read_text(encoding="utf-8"),
+                            "vmc_balance_apply_wheel_output")
+        clamp_at = output_body.index("vmc_wheel_control.right_current =")
+        scale_at = output_body.index("slip_curr_applied_left")
+        self.assertLess(clamp_at, scale_at,
+                        "the current is scaled before it is assembled/limited")
+
     def test_every_key_is_tunable_over_rtt(self) -> None:
         source = RTT.read_text(encoding="utf-8")
         for key in (
             "slip_lqr_enable",
             "slip_lqr_theta_scale",
             "slip_lqr_dtheta_scale",
+            "slip_wheel_current_scale",
         ):
             with self.subTest(key=key):
                 _has(source, f'"{key}"', f"{key} is not parsed from RTT")

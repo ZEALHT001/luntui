@@ -408,13 +408,26 @@ FORMAT_V19_PROFILE = Profile(
 # latch-dependent per-side value that only exists inside the control cycle, so
 # without publishing it a recording cannot tell "the response never fired" from
 # "it fired and the effect was too small to see in the outputs".
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V20_PROFILE = Profile(
+    name="format-v20",
     field_count=153,
     channels={
         **FORMAT_V19_PROFILE.channels,
         "slip_lqr_applied_left": 151,
         "slip_lqr_applied_right": 152,
+    },
+)
+
+# Slip wheel-current scaling (schema 17), the second half of the same response.
+# Same argument as the posture scale above: publish the applied value so the
+# off/on comparison is verifiable rather than inferred.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=155,
+    channels={
+        **FORMAT_V20_PROFILE.channels,
+        "slip_curr_applied_left": 153,
+        "slip_curr_applied_right": 154,
     },
 )
 
@@ -444,6 +457,7 @@ PROFILES = {
     "format-v17": FORMAT_V17_PROFILE,
     "format-v18": FORMAT_V18_PROFILE,
     "format-v19": FORMAT_V19_PROFILE,
+    "format-v20": FORMAT_V20_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -465,6 +479,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V17_PROFILE,
     FORMAT_V18_PROFILE,
     FORMAT_V19_PROFILE,
+    FORMAT_V20_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -487,6 +502,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V17_PROFILE.field_count: FORMAT_V17_PROFILE,
     FORMAT_V18_PROFILE.field_count: FORMAT_V18_PROFILE,
     FORMAT_V19_PROFILE.field_count: FORMAT_V19_PROFILE,
+    FORMAT_V20_PROFILE.field_count: FORMAT_V20_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -553,6 +569,8 @@ CSV_FIELDS = [
     # Slip LQR posture scale actually applied per side (1.0 = not scaled).
     "slip_lqr_applied_left",
     "slip_lqr_applied_right",
+    "slip_curr_applied_left",
+    "slip_curr_applied_right",
     "kf_accel_update_count",
     "stick_forward",
     "speed_target",
@@ -706,6 +724,8 @@ class KalmanSample:
     body_az_lin_g: float = INVALID_VALUE
     slip_lqr_applied_left: float = INVALID_VALUE
     slip_lqr_applied_right: float = INVALID_VALUE
+    slip_curr_applied_left: float = INVALID_VALUE
+    slip_curr_applied_right: float = INVALID_VALUE
     kf_accel_update_count: float = INVALID_VALUE
     stick_forward: float = INVALID_VALUE
     speed_target: float = INVALID_VALUE
@@ -1080,6 +1100,8 @@ def parse_vmcvoa_line(
         body_az_lin_g=channel("body_az_lin_g"),
         slip_lqr_applied_left=channel("slip_lqr_applied_left"),
         slip_lqr_applied_right=channel("slip_lqr_applied_right"),
+        slip_curr_applied_left=channel("slip_curr_applied_left"),
+        slip_curr_applied_right=channel("slip_curr_applied_right"),
         kf_accel_update_count=channel("kf_accel_update_count"),
         stick_forward=channel("stick_forward"),
         speed_target=channel("speed_target"),
@@ -2000,6 +2022,12 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 slip_lqr_applied_right=_safe_float(
                     row.get("slip_lqr_applied_right", "")
+                ),
+                slip_curr_applied_left=_safe_float(
+                    row.get("slip_curr_applied_left", "")
+                ),
+                slip_curr_applied_right=_safe_float(
+                    row.get("slip_curr_applied_right", "")
                 ),
                 kf_accel_update_count=_safe_float(
                     row.get("kf_accel_update_count", "")

@@ -116,12 +116,16 @@ diagnostics below:
 | 150 | gravity-compensated Z acceleration | g |
 | 151 | slip LQR posture scale applied, left | `1.0` = not scaled |
 | 152 | slip LQR posture scale applied, right | `1.0` = not scaled |
+| 153 | slip wheel-current scale applied, left | `1.0` = not scaled |
+| 154 | slip wheel-current scale applied, right | `1.0` = not scaled |
 
-Fields 151/152 were added with schema 16.  They are the slip LQR weight
-switching's applied per-side scale - a latch-dependent value that only exists
-inside the control cycle, so without publishing it a recording cannot tell "the
-response never fired" from "it fired and the effect was too small to see in the
-outputs".
+Fields 151/152 (schema 16) and 153/154 (schema 17) are the slip response's
+applied per-side scales - the LQR posture weight and the wheel current.  Both
+are latch-dependent values that only exist inside the control cycle, so without
+publishing them a recording cannot tell "the response never fired" from "it
+fired and the effect was too small to see in the outputs".  That distinction
+mattered: the first off/on comparison was only readable because 151/152 showed
+the switch had actually engaged.
 
 Fields 147..150 were added with schema 15, which publishes the whole
 accelerometer vector.  Only X was carried before, and that left "the
