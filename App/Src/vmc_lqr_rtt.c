@@ -1530,10 +1530,11 @@ void vmc_lqr_rtt_telemetry_update(void)
    * integral over a whole enabled run came to 0.04 m/s against a wheel-derived
    * 2.2 m/s - a factor of 50 with no correlation at any frequency.  The
    * accelerometer is alive (17x the at-rest noise while driving, 2.8 g in an
-   * impact) and it enters the estimator at only ~32 Hz, but a single axis
-   * cannot say WHY it disagrees: the wrong axis, a gravity projection that is
-   * not being removed, and a genuinely unmapped axis all look identical from
-   * one channel.
+   * impact) and it is fused at its full rate - field 109 measures 199.8 Hz
+   * against the IMU's 200 Hz - so neither of those explained it.  But a single
+   * axis cannot say WHY it disagrees: the wrong axis, a gravity projection
+   * that is not being removed, and a genuinely unmapped axis all look
+   * identical from one channel.
    *
    * The full raw vector settles it.  At rest, gravity appears on whichever
    * axis is vertical, so the three raw channels identify the mounting directly

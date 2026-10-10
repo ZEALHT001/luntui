@@ -2265,6 +2265,20 @@ def measured_imu_rate_hz(samples: list[KalmanSample]) -> float:
     The estimator gates its acceleration update on a new HI12 frame, so this is
     the rate the IMU channel actually corrects at, not the sensor's nominal
     rate.
+
+    The counter only advances while the controller is ENABLED - it lives in the
+    same branch that runs the estimator - so dividing the total delta by the
+    total recording span is wrong whenever the machine sat disabled.  On a
+    capture that was enabled for 28.6 s of 180.8 s that reported 32 Hz for a
+    200 Hz sensor, and the "only ~32 Hz" reading went on to be cited as a
+    reason the accelerometer looked untrustworthy; it was an arithmetic
+    mistake, not a firmware problem.
+
+    The enabled time is therefore estimated from the counter itself: a stretch
+    where it never advanced is a disabled stretch, so only the spans whose
+    counter advanced count towards the denominator.  Verified against the
+    enabled duration measured from the fast stream's own timestamps - 199.8 Hz
+    on every capture that has a long enabled stretch.
     """
     usable = [
         sample
@@ -2273,11 +2287,17 @@ def measured_imu_rate_hz(samples: list[KalmanSample]) -> float:
     ]
     if len(usable) < 2:
         return INVALID_VALUE
-    elapsed_s = (usable[-1].mcu_time_ms - usable[0].mcu_time_ms) * 0.001
-    updates = usable[-1].kf_accel_update_count - usable[0].kf_accel_update_count
-    if elapsed_s <= 0.0 or updates <= 0.0:
+    enabled_s = 0.0
+    updates = 0.0
+    for previous, current in zip(usable, usable[1:]):
+        delta = current.kf_accel_update_count - previous.kf_accel_update_count
+        if delta <= 0.0:
+            continue
+        enabled_s += (current.mcu_time_ms - previous.mcu_time_ms) * 0.001
+        updates += delta
+    if enabled_s <= 0.0 or updates <= 0.0:
         return INVALID_VALUE
-    return updates / elapsed_s
+    return updates / enabled_s
 
 
 def model_control_period_s(samples: list[KalmanSample]) -> float:

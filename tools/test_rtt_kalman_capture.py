@@ -26,6 +26,7 @@ from tools.rtt_kalman_capture import (
     analyze_window,
     capture_live,
     control_loop_rate_hz,
+    measured_imu_rate_hz,
     iter_raw_text_samples,
     parse_vmcvoa_line,
     sliding_windows,
@@ -550,6 +551,57 @@ class ParseTests(unittest.TestCase):
             ),
         ]
         self.assertFalse(math.isfinite(control_loop_rate_hz(samples)))
+
+    def test_imu_rate_ignores_disabled_time(self) -> None:
+        """The accelerometer counter only runs while the controller is enabled.
+
+        Dividing its delta by the whole recording span understates the fusion
+        rate by however long the machine sat disabled.  On a real capture that
+        was enabled for 28.6 s of 180.8 s this reported 32 Hz for a 200 Hz
+        sensor, and the bad number was then cited as evidence the accelerometer
+        could not be trusted.
+        """
+        samples = []
+        counter = 0
+        # 1 s enabled: the counter advances 200 times.
+        for step in range(51):
+            if step:
+                counter += 4
+            samples.append(
+                KalmanSample(
+                    host_time_s=float(step),
+                    mcu_time_ms=1000.0 + step * 20.0,
+                    kf_x=0.0,
+                    kf_dx=0.0,
+                    kf_accel_update_count=float(counter),
+                )
+            )
+        # 5 s disabled: the counter does not move.
+        for step in range(1, 251):
+            samples.append(
+                KalmanSample(
+                    host_time_s=float(51 + step) / 50.0,
+                    mcu_time_ms=1000.0 + (50 + step) * 20.0,
+                    kf_x=0.0,
+                    kf_dx=0.0,
+                    kf_accel_update_count=float(counter),
+                )
+            )
+        rate = measured_imu_rate_hz(samples)
+        self.assertAlmostEqual(rate, 200.0, places=1)
+
+    def test_imu_rate_is_absent_when_never_enabled(self) -> None:
+        samples = [
+            KalmanSample(
+                host_time_s=float(step),
+                mcu_time_ms=1000.0 + step * 20.0,
+                kf_x=0.0,
+                kf_dx=0.0,
+                kf_accel_update_count=0.0,
+            )
+            for step in range(50)
+        ]
+        self.assertFalse(math.isfinite(measured_imu_rate_hz(samples)))
 
     def test_raw_text_replay_assigns_20ms_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
