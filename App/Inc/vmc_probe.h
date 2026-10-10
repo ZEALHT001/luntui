@@ -673,6 +673,47 @@ extern "C" {
  * Threshold and confirmation are a pair; do not move one without re-running
  * tools/slip_analyze.py --sweep. */
 #define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 5U
+/* Slip LQR weight switching.
+ *
+ * The reference this comes from is the Nanhang sentry wheel-leg firmware
+ * (开源参考/南航/SENTRY_LEG).  Its LQR is Fitting_K[4][10] - four outputs
+ * (left wheel, right wheel, left joint, right joint) by ten states
+ * (x, dx, yaw, dyaw, leg0 theta, leg0 dtheta, leg1 theta, leg1 dtheta,
+ * body theta, body dtheta) - and on a slip it does:
+ *
+ *     Fitting_K[i][2] = Fitting_K[i][3] = 0;      // drop the YAW columns
+ *     Fitting_K[i][4] *= 2;  Fitting_K[i][6] *= 2; // double the LEG ANGLE
+ *                                                  // columns (both legs)
+ *
+ * for row i of the slipping side.  Note it is the leg ANGLE, not the rate,
+ * and note the columns dropped are YAW - not wheel speed.  (An earlier note
+ * in this workstream said "cut the wheel-speed terms"; that was wrong and is
+ * corrected here.  Nanhang's yaw comes from the IMU gyro and the gimbal
+ * encoder, not from wheel odometry.)
+ *
+ * THE YAW HALF DOES NOT TRANSFER.  This firmware's LQR has no yaw state at
+ * all: its states are theta, dtheta, x, dx, phi, dphi, and heading is held by
+ * a separate yaw_hold loop.  Nothing here to zero, so only the posture half is
+ * implemented.  If the yaw_hold loop should also soften during a slip, that is
+ * a separate decision - do not fold it in silently.
+ *
+ * The posture half maps cleanly.  theta is this firmware's leg angle
+ * (left_theta / right_theta, relative to the body) and it feeds both outputs:
+ * k[0]/k[1] are the wheel and virtual-leg gains on theta, k[2]/k[3] the same
+ * on dtheta.  Scaling the ANGLE gains reproduces the reference; the RATE
+ * scales default to 1.0 to match it exactly.
+ *
+ * CAVEAT worth knowing before tuning: the reference doubles only the position
+ * term, which drops the loop's damping ratio by about sqrt(2).  If the machine
+ * rings after a slip, scale the rate term too - that is why it is a separate
+ * parameter rather than being hard-coded to 1.0.
+ *
+ * Off by default: this is a first implementation of the reference and has not
+ * been on the vehicle.  Enable it over RTT and compare against the same run
+ * with it off. */
+#define VMC_SLIP_LQR_ENABLE_DEFAULT        0U
+#define VMC_SLIP_LQR_THETA_SCALE_DEFAULT   2.0f
+#define VMC_SLIP_LQR_DTHETA_SCALE_DEFAULT  1.0f
 
 /* Raw joint positions captured with both legs vertical down at 385 mm.
  *
@@ -1172,6 +1213,17 @@ typedef struct {
   float kalman_slip_yaw;
   uint32_t kalman_slip_hold_ms;
   uint32_t kalman_slip_confirm_ms;
+  /* Slip LQR weight switching.  While one side's slip latch is set, that
+   * side's leg-angle feedback is scaled up so the posture term dominates the
+   * control output instead of the (unreliable) wheel/velocity terms.  See
+   * VMC_SLIP_LQR_THETA_SCALE_DEFAULT. */
+  uint8_t slip_lqr_enable;
+  float slip_lqr_theta_scale;
+  float slip_lqr_dtheta_scale;
+  /* The scale actually applied last control cycle, per side.  Published so a
+   * recording can prove the response fired. */
+  float slip_lqr_applied_left;
+  float slip_lqr_applied_right;
   float tp_limit;
   float tp_phi_gain;
   float tp_x_gain;

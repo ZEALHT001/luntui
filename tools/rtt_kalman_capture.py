@@ -392,8 +392,8 @@ FORMAT_V18_PROFILE = Profile(
 # identifies the mounting (gravity shows up on whichever axis is vertical at
 # rest) and the paired _lin values show whether the quaternion-based removal
 # takes the same projection back out.
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V19_PROFILE = Profile(
+    name="format-v19",
     field_count=151,
     channels={
         **FORMAT_V18_PROFILE.channels,
@@ -401,6 +401,20 @@ FORMAT_PROFILE = Profile(
         "body_az_g": 148,
         "body_ay_lin_g": 149,
         "body_az_lin_g": 150,
+    },
+)
+
+# Slip LQR weight switching (schema 16).  The applied posture scale is a
+# latch-dependent per-side value that only exists inside the control cycle, so
+# without publishing it a recording cannot tell "the response never fired" from
+# "it fired and the effect was too small to see in the outputs".
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=153,
+    channels={
+        **FORMAT_V19_PROFILE.channels,
+        "slip_lqr_applied_left": 151,
+        "slip_lqr_applied_right": 152,
     },
 )
 
@@ -429,6 +443,7 @@ PROFILES = {
     "format-v16": FORMAT_V16_PROFILE,
     "format-v17": FORMAT_V17_PROFILE,
     "format-v18": FORMAT_V18_PROFILE,
+    "format-v19": FORMAT_V19_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -449,6 +464,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V16_PROFILE,
     FORMAT_V17_PROFILE,
     FORMAT_V18_PROFILE,
+    FORMAT_V19_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -470,6 +486,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V16_PROFILE.field_count: FORMAT_V16_PROFILE,
     FORMAT_V17_PROFILE.field_count: FORMAT_V17_PROFILE,
     FORMAT_V18_PROFILE.field_count: FORMAT_V18_PROFILE,
+    FORMAT_V19_PROFILE.field_count: FORMAT_V19_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -533,6 +550,9 @@ CSV_FIELDS = [
     "body_az_g",
     "body_ay_lin_g",
     "body_az_lin_g",
+    # Slip LQR posture scale actually applied per side (1.0 = not scaled).
+    "slip_lqr_applied_left",
+    "slip_lqr_applied_right",
     "kf_accel_update_count",
     "stick_forward",
     "speed_target",
@@ -684,6 +704,8 @@ class KalmanSample:
     body_az_g: float = INVALID_VALUE
     body_ay_lin_g: float = INVALID_VALUE
     body_az_lin_g: float = INVALID_VALUE
+    slip_lqr_applied_left: float = INVALID_VALUE
+    slip_lqr_applied_right: float = INVALID_VALUE
     kf_accel_update_count: float = INVALID_VALUE
     stick_forward: float = INVALID_VALUE
     speed_target: float = INVALID_VALUE
@@ -1056,6 +1078,8 @@ def parse_vmcvoa_line(
         body_az_g=channel("body_az_g"),
         body_ay_lin_g=channel("body_ay_lin_g"),
         body_az_lin_g=channel("body_az_lin_g"),
+        slip_lqr_applied_left=channel("slip_lqr_applied_left"),
+        slip_lqr_applied_right=channel("slip_lqr_applied_right"),
         kf_accel_update_count=channel("kf_accel_update_count"),
         stick_forward=channel("stick_forward"),
         speed_target=channel("speed_target"),
@@ -1971,6 +1995,12 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 body_az_g=_safe_float(row.get("body_az_g", "")),
                 body_ay_lin_g=_safe_float(row.get("body_ay_lin_g", "")),
                 body_az_lin_g=_safe_float(row.get("body_az_lin_g", "")),
+                slip_lqr_applied_left=_safe_float(
+                    row.get("slip_lqr_applied_left", "")
+                ),
+                slip_lqr_applied_right=_safe_float(
+                    row.get("slip_lqr_applied_right", "")
+                ),
                 kf_accel_update_count=_safe_float(
                     row.get("kf_accel_update_count", "")
                 ),

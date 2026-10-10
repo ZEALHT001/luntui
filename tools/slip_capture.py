@@ -299,6 +299,9 @@ def _enable_payload(
     slip_threshold: float | None = None,
     slip_confirm_ms: float | None = None,
     slip_gate_active: bool = False,
+    slip_lqr_enable: bool | None = None,
+    slip_lqr_theta_scale: float | None = None,
+    slip_lqr_dtheta_scale: float | None = None,
     leg_follow_enable: bool | None = None,
     leg_follow_rate: float | None = None,
     leg_follow_return_rate: float | None = None,
@@ -332,6 +335,12 @@ def _enable_payload(
         payload["slip_accel"] = float(slip_threshold)
     if slip_confirm_ms is not None:
         payload["slip_confirm_ms"] = float(slip_confirm_ms)
+    if slip_lqr_enable is not None:
+        payload["slip_lqr_enable"] = 1 if slip_lqr_enable else 0
+    if slip_lqr_theta_scale is not None:
+        payload["slip_lqr_theta_scale"] = float(slip_lqr_theta_scale)
+    if slip_lqr_dtheta_scale is not None:
+        payload["slip_lqr_dtheta_scale"] = float(slip_lqr_dtheta_scale)
     if leg_follow_enable is not None:
         payload["leg_follow_enable"] = 1 if leg_follow_enable else 0
     if leg_follow_rate is not None:
@@ -660,6 +669,32 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--slip-lqr",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "runtime slip LQR weight switching (firmware default off): while a "
+            "side's slip latch is set, that side's leg-ANGLE feedback is scaled "
+            "up so posture dominates its output.  Ported from the Nanhang "
+            "sentry wheel-leg firmware"
+        ),
+    )
+    parser.add_argument(
+        "--slip-lqr-theta-scale",
+        type=float,
+        default=None,
+        help="leg-angle scale while slipping (firmware default 2.0)",
+    )
+    parser.add_argument(
+        "--slip-lqr-dtheta-scale",
+        type=float,
+        default=None,
+        help=(
+            "leg-angle-RATE scale while slipping (firmware default 1.0, i.e. "
+            "unscaled to match the reference; raise it if the loop rings)"
+        ),
+    )
+    parser.add_argument(
         "--leg-follow",
         choices=("on", "off"),
         default=None,
@@ -787,6 +822,15 @@ def main() -> int:
         parser.error("--slip-threshold must be in [0, 10000]")
     if args.slip_confirm_ms is not None and not (0.0 <= args.slip_confirm_ms <= 1000.0):
         parser.error("--slip-confirm-ms must be in [0, 1000]")
+    for option, value in (
+        ("--slip-lqr-theta-scale", args.slip_lqr_theta_scale),
+        ("--slip-lqr-dtheta-scale", args.slip_lqr_dtheta_scale),
+    ):
+        if value is not None and not (0.0 <= value <= 10.0):
+            parser.error(f"{option} must be in [0, 10]")
+    slip_lqr_enable = (
+        None if args.slip_lqr is None else (args.slip_lqr == "on")
+    )
     if args.leg_follow_rate is not None and not (0.0 <= args.leg_follow_rate <= 1.0):
         parser.error("--leg-follow-rate must be in [0, 1] m/s")
     if args.leg_follow_return_rate is not None and not (
@@ -863,6 +907,9 @@ def main() -> int:
                 args.slip_threshold,
                 args.slip_confirm_ms,
                 args.slip_gate,
+                slip_lqr_enable,
+                args.slip_lqr_theta_scale,
+                args.slip_lqr_dtheta_scale,
                 leg_follow_enable,
                 args.leg_follow_rate,
                 args.leg_follow_return_rate,
@@ -912,6 +959,31 @@ def main() -> int:
                     else "confirm unchanged"
                 )
                 + (", gate ACTIVE" if args.slip_gate else ", gate action off")
+            )
+        if (
+            slip_lqr_enable is not None
+            or args.slip_lqr_theta_scale is not None
+            or args.slip_lqr_dtheta_scale is not None
+        ):
+            print(
+                "slip LQR weight switching: "
+                + (
+                    f"enable {1 if slip_lqr_enable else 0}"
+                    if slip_lqr_enable is not None
+                    else "enable unchanged"
+                )
+                + ", "
+                + (
+                    f"theta_scale {args.slip_lqr_theta_scale:g}"
+                    if args.slip_lqr_theta_scale is not None
+                    else "theta_scale unchanged"
+                )
+                + ", "
+                + (
+                    f"dtheta_scale {args.slip_lqr_dtheta_scale:g}"
+                    if args.slip_lqr_dtheta_scale is not None
+                    else "dtheta_scale unchanged"
+                )
             )
         if (
             leg_follow_enable is not None
@@ -1142,6 +1214,9 @@ def main() -> int:
             "threshold": args.slip_threshold,
             "confirm_ms": args.slip_confirm_ms,
             "gate_active": bool(args.slip_gate),
+            "lqr_enable": slip_lqr_enable,
+            "lqr_theta_scale": args.slip_lqr_theta_scale,
+            "lqr_dtheta_scale": args.slip_lqr_dtheta_scale,
         },
         slip_applied={
             "threshold": applied_threshold,

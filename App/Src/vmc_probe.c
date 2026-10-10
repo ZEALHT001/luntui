@@ -2382,6 +2382,9 @@ void vmc_balance_init(void)
   vmc_balance.kalman_slip_yaw_track = VMC_BODY_MOTION_KF_SLIP_YAW_TRACK_DEFAULT;
   vmc_balance.kalman_slip_yaw = VMC_BODY_MOTION_KF_SLIP_YAW_DEFAULT;
   vmc_balance.kalman_slip_hold_ms = VMC_BODY_MOTION_KF_SLIP_HOLD_MS_DEFAULT;
+  vmc_balance.slip_lqr_enable = VMC_SLIP_LQR_ENABLE_DEFAULT;
+  vmc_balance.slip_lqr_theta_scale = VMC_SLIP_LQR_THETA_SCALE_DEFAULT;
+  vmc_balance.slip_lqr_dtheta_scale = VMC_SLIP_LQR_DTHETA_SCALE_DEFAULT;
   vmc_balance.kalman_slip_confirm_ms =
       VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT;
   body_motion_kf_slip_initialized = 0U;
@@ -2640,18 +2643,51 @@ void vmc_balance_update(void)
                        lqr_dtheta_gain,
                    -lqr_dtheta_limit,
                    lqr_dtheta_limit);
+  /* Slip weight switching: scale the leg-ANGLE feedback of whichever side is
+   * slipping so the posture term dominates its control output.  This is the
+   * posture half of the Nanhang sentry response; see
+   * VMC_SLIP_LQR_THETA_SCALE_DEFAULT for what does and does not transfer.
+   *
+   * The scale multiplies the ERROR rather than the gain, so the K arrays are
+   * left untouched - they are rewritten every cycle by vmc_update_lqr_gain()
+   * and must not accumulate. */
+  const uint8_t slip_weight_enabled =
+      (vmc_balance.slip_lqr_enable != 0U &&
+       vmc_control.enabled != 0U &&
+       vmc_jump_joint_lqr_active() == 0U) != 0U;
+  const double slip_theta_scale =
+      clamp_double(vmc_balance.slip_lqr_theta_scale, 0.0, 10.0);
+  const double slip_dtheta_scale =
+      clamp_double(vmc_balance.slip_lqr_dtheta_scale, 0.0, 10.0);
+  const uint8_t left_slipping =
+      (slip_weight_enabled != 0U && body_motion_kf_slip_left != 0U) ? 1U : 0U;
+  const uint8_t right_slipping =
+      (slip_weight_enabled != 0U && body_motion_kf_slip_right != 0U) ? 1U : 0U;
+  const double left_theta_scale =
+      (left_slipping != 0U) ? slip_theta_scale : 1.0;
+  const double left_dtheta_scale =
+      (left_slipping != 0U) ? slip_dtheta_scale : 1.0;
+  const double right_theta_scale =
+      (right_slipping != 0U) ? slip_theta_scale : 1.0;
+  const double right_dtheta_scale =
+      (right_slipping != 0U) ? slip_dtheta_scale : 1.0;
+  vmc_balance.slip_lqr_applied_left = (float)left_theta_scale;
+  vmc_balance.slip_lqr_applied_right = (float)right_theta_scale;
   const double left_wheel_theta_term =
-      vmc_probe_state.lqr.left_k[0] * left_lqr_theta_error;
+      vmc_probe_state.lqr.left_k[0] * (left_lqr_theta_error * left_theta_scale);
   const double left_wheel_dtheta_term =
-      vmc_probe_state.lqr.left_k[2] * left_lqr_d_theta_limited;
+      vmc_probe_state.lqr.left_k[2] *
+      (left_lqr_d_theta_limited * left_dtheta_scale);
   const double left_wheel_x_term = vmc_probe_state.lqr.left_k[4] * x_feedback_error;
   const double left_wheel_dx_term = vmc_probe_state.lqr.left_k[6] * dx_error;
   const double left_wheel_phi_term = vmc_probe_state.lqr.left_k[8] * phi_error;
   const double left_wheel_dphi_term = vmc_probe_state.lqr.left_k[10] * dpitch_lpf;
   const double right_wheel_theta_term =
-      vmc_probe_state.lqr.right_k[0] * right_lqr_theta_error;
+      vmc_probe_state.lqr.right_k[0] *
+      (right_lqr_theta_error * right_theta_scale);
   const double right_wheel_dtheta_term =
-      vmc_probe_state.lqr.right_k[2] * right_lqr_d_theta_limited;
+      vmc_probe_state.lqr.right_k[2] *
+      (right_lqr_d_theta_limited * right_dtheta_scale);
   const double right_wheel_x_term = vmc_probe_state.lqr.right_k[4] * x_feedback_error;
   const double right_wheel_dx_term = vmc_probe_state.lqr.right_k[6] * dx_error;
   const double right_wheel_phi_term = vmc_probe_state.lqr.right_k[8] * phi_error;
@@ -2671,13 +2707,16 @@ void vmc_balance_update(void)
       right_wheel_phi_term +
       right_wheel_dphi_term;
   const double left_tp_theta_term =
-      vmc_probe_state.lqr.left_k[1] * left_lqr_theta_error;
+      vmc_probe_state.lqr.left_k[1] * (left_lqr_theta_error * left_theta_scale);
   const double left_tp_dtheta_term =
-      vmc_probe_state.lqr.left_k[3] * left_lqr_d_theta_limited;
+      vmc_probe_state.lqr.left_k[3] *
+      (left_lqr_d_theta_limited * left_dtheta_scale);
   const double right_tp_theta_term =
-      vmc_probe_state.lqr.right_k[1] * right_lqr_theta_error;
+      vmc_probe_state.lqr.right_k[1] *
+      (right_lqr_theta_error * right_theta_scale);
   const double right_tp_dtheta_term =
-      vmc_probe_state.lqr.right_k[3] * right_lqr_d_theta_limited;
+      vmc_probe_state.lqr.right_k[3] *
+      (right_lqr_d_theta_limited * right_dtheta_scale);
   const double tp_x_gain = clamp_double(vmc_balance.tp_x_gain, -2.0, 2.0);
   const double left_tp_x_term =
       tp_x_gain * vmc_probe_state.lqr.left_k[5] * x_feedback_error;

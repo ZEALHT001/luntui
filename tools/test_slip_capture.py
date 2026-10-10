@@ -258,6 +258,42 @@ class PayloadTest(unittest.TestCase):
             payload = json.loads(_enable_payload(mode, 4, 20, 36.0))
             self.assertEqual(payload["slip_accel"], 36.0)
 
+    def test_slip_lqr_params_are_sent_at_runtime(self) -> None:
+        """The weight switching must be switchable without a reflash.
+
+        It is a first implementation of the reference and needs an on/off
+        comparison run on the same machine, so being able to toggle it per
+        capture is the point.
+        """
+        payload = json.loads(
+            _enable_payload(
+                "both",
+                4,
+                20,
+                slip_lqr_enable=True,
+                slip_lqr_theta_scale=2.0,
+                slip_lqr_dtheta_scale=1.5,
+            )
+        )
+        self.assertEqual(payload["slip_lqr_enable"], 1)
+        self.assertEqual(payload["slip_lqr_theta_scale"], 2.0)
+        self.assertEqual(payload["slip_lqr_dtheta_scale"], 1.5)
+
+    def test_slip_lqr_off_is_sent_as_zero(self) -> None:
+        payload = json.loads(
+            _enable_payload("both", 4, 20, slip_lqr_enable=False)
+        )
+        self.assertEqual(payload["slip_lqr_enable"], 0)
+
+    def test_omitted_slip_lqr_params_are_not_sent(self) -> None:
+        payload = json.loads(_enable_payload("both", 4, 20))
+        for key in (
+            "slip_lqr_enable",
+            "slip_lqr_theta_scale",
+            "slip_lqr_dtheta_scale",
+        ):
+            self.assertNotIn(key, payload)
+
     def test_leg_follow_params_are_sent_at_runtime(self) -> None:
         payload = json.loads(
             _enable_payload(

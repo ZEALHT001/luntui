@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 15U
+#define VMC_LQR_RTT_SCHEMA_VERSION 16U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -240,6 +240,20 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "slip_confirm_ms", &value) != 0U) {
     vmc_balance.kalman_slip_confirm_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
+    applied = 1U;
+  }
+  /* Slip LQR weight switching.  Runtime-only for now: it is a first
+   * implementation of the reference and needs an on/off comparison run. */
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_lqr_enable", &value) != 0U) {
+    vmc_balance.slip_lqr_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_lqr_theta_scale", &value) != 0U) {
+    vmc_balance.slip_lqr_theta_scale = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "slip_lqr_dtheta_scale", &value) != 0U) {
+    vmc_balance.slip_lqr_dtheta_scale = vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
   /* Logging controls.  These are not control parameters, but keeping them on
@@ -1558,6 +1572,18 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_probe_state.body.az_lin);
+
+  /* VMCVOFA fields 151..152: the slip LQR posture scale actually applied to
+   * each side (1.0 = not scaled).  This is a latch-dependent, per-side value
+   * that only exists inside the control cycle, so without publishing it a
+   * recording cannot tell "the response never fired" from "it fired and the
+   * effect was too small to see in the outputs". */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.slip_lqr_applied_left);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.slip_lqr_applied_right);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
