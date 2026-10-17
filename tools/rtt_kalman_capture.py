@@ -421,13 +421,80 @@ FORMAT_V20_PROFILE = Profile(
 # Slip wheel-current scaling (schema 17), the second half of the same response.
 # Same argument as the posture scale above: publish the applied value so the
 # off/on comparison is verifiable rather than inferred.
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V21_PROFILE = Profile(
+    name="format-v21",
     field_count=155,
     channels={
         **FORMAT_V20_PROFILE.channels,
         "slip_curr_applied_left": 153,
         "slip_curr_applied_right": 154,
+    },
+)
+
+# Anti-splay (leg synchronisation) state (schema 18).  left_theta and
+# right_theta are already published, but a difference computed from two
+# separately-reported channels cannot say whether the anti-splay loop fired or
+# was simply never needed.  These two carry the loop's own error
+# (left_theta - right_theta) and the differential torque it applied.
+FORMAT_V22_PROFILE = Profile(
+    name="format-v22",
+    field_count=157,
+    channels={
+        **FORMAT_V21_PROFILE.channels,
+        "leg_sync_error": 155,
+        "leg_sync_torque": 156,
+    },
+)
+
+# Automatic stair climb (schema 19).  Stage and abort reason show the state
+# machine; ready, pre-impact and impact show how far the trigger progressed;
+# the per-leg impact flags show whether only one side saw the step.
+FORMAT_V23_PROFILE = Profile(
+    name="format-v23",
+    field_count=170,
+    channels={
+        **FORMAT_V22_PROFILE.channels,
+        "stair_stage": 157,
+        "stair_abort_reason": 158,
+        "stair_ready_detected": 159,
+        "stair_preimpact_armed": 160,
+        "stair_impact_detected": 161,
+        "stair_trigger_count": 162,
+        "stair_abort_count": 163,
+        "stair_speed_abs": 164,
+        "stair_speed_diff": 165,
+        "stair_accel": 166,
+        "stair_theta_ramped": 167,
+        "stair_left_impact": 168,
+        "stair_right_impact": 169,
+    },
+)
+
+# Stair confirmation counters (schema 20).  The armed/impact flags alone cannot
+# distinguish "never above threshold" from "threshold met for too short a
+# time"; these counters expose the confirmation accumulation directly.
+FORMAT_V24_PROFILE = Profile(
+    name="format-v24",
+    field_count=174,
+    channels={
+        **FORMAT_V23_PROFILE.channels,
+        "stair_fast_detected": 170,
+        "stair_speed_ms": 171,
+        "stair_preimpact_ms": 172,
+        "stair_impact_ms": 173,
+    },
+)
+
+# Remote identity and switch state (schema 21).  rc_age alone cannot tell an
+# operator S1-down stop from a source handover or a stale frame.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=177,
+    channels={
+        **FORMAT_V24_PROFILE.channels,
+        "rc_source": 174,
+        "remote_s1": 175,
+        "remote_s2": 176,
     },
 )
 
@@ -458,6 +525,10 @@ PROFILES = {
     "format-v18": FORMAT_V18_PROFILE,
     "format-v19": FORMAT_V19_PROFILE,
     "format-v20": FORMAT_V20_PROFILE,
+    "format-v21": FORMAT_V21_PROFILE,
+    "format-v22": FORMAT_V22_PROFILE,
+    "format-v23": FORMAT_V23_PROFILE,
+    "format-v24": FORMAT_V24_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -480,6 +551,10 @@ FORMAT_LAYOUTS = (
     FORMAT_V18_PROFILE,
     FORMAT_V19_PROFILE,
     FORMAT_V20_PROFILE,
+    FORMAT_V21_PROFILE,
+    FORMAT_V22_PROFILE,
+    FORMAT_V23_PROFILE,
+    FORMAT_V24_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -503,6 +578,10 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V18_PROFILE.field_count: FORMAT_V18_PROFILE,
     FORMAT_V19_PROFILE.field_count: FORMAT_V19_PROFILE,
     FORMAT_V20_PROFILE.field_count: FORMAT_V20_PROFILE,
+    FORMAT_V21_PROFILE.field_count: FORMAT_V21_PROFILE,
+    FORMAT_V22_PROFILE.field_count: FORMAT_V22_PROFILE,
+    FORMAT_V23_PROFILE.field_count: FORMAT_V23_PROFILE,
+    FORMAT_V24_PROFILE.field_count: FORMAT_V24_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -641,6 +720,31 @@ CSV_FIELDS = [
     "right_tp_dphi_term",
     "right_tp_raw",
     "right_tp_cmd",
+    # Anti-splay (leg synchronisation): the loop's error and the differential
+    # torque it applied.  Appended last so every older CSV keeps its columns.
+    "leg_sync_error",
+    "leg_sync_torque",
+    # Automatic stair-climb diagnostics.
+    "stair_stage",
+    "stair_abort_reason",
+    "stair_ready_detected",
+    "stair_preimpact_armed",
+    "stair_impact_detected",
+    "stair_trigger_count",
+    "stair_abort_count",
+    "stair_speed_abs",
+    "stair_speed_diff",
+    "stair_accel",
+    "stair_theta_ramped",
+    "stair_left_impact",
+    "stair_right_impact",
+    "stair_fast_detected",
+    "stair_speed_ms",
+    "stair_preimpact_ms",
+    "stair_impact_ms",
+    "rc_source",
+    "remote_s1",
+    "remote_s2",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -792,6 +896,26 @@ class KalmanSample:
     right_tp_dphi_term: float = INVALID_VALUE
     right_tp_raw: float = INVALID_VALUE
     right_tp_cmd: float = INVALID_VALUE
+    # Anti-splay (leg synchronisation, schema 18).
+    leg_sync_error: float = INVALID_VALUE
+    leg_sync_torque: float = INVALID_VALUE
+    stair_stage: float = INVALID_VALUE
+    stair_abort_reason: float = INVALID_VALUE
+    stair_ready_detected: float = INVALID_VALUE
+    stair_preimpact_armed: float = INVALID_VALUE
+    stair_impact_detected: float = INVALID_VALUE
+    stair_trigger_count: float = INVALID_VALUE
+    stair_abort_count: float = INVALID_VALUE
+    stair_speed_abs: float = INVALID_VALUE
+    stair_speed_diff: float = INVALID_VALUE
+    stair_accel: float = INVALID_VALUE
+    stair_theta_ramped: float = INVALID_VALUE
+    stair_left_impact: float = INVALID_VALUE
+    stair_right_impact: float = INVALID_VALUE
+    stair_fast_detected: float = INVALID_VALUE
+    stair_speed_ms: float = INVALID_VALUE
+    stair_preimpact_ms: float = INVALID_VALUE
+    stair_impact_ms: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -1155,6 +1279,25 @@ def parse_vmcvoa_line(
         right_tp_dphi_term=channel("right_tp_dphi_term"),
         right_tp_raw=channel("right_tp_raw"),
         right_tp_cmd=channel("right_tp_cmd"),
+        leg_sync_error=channel("leg_sync_error"),
+        leg_sync_torque=channel("leg_sync_torque"),
+        stair_stage=channel("stair_stage"),
+        stair_abort_reason=channel("stair_abort_reason"),
+        stair_ready_detected=channel("stair_ready_detected"),
+        stair_preimpact_armed=channel("stair_preimpact_armed"),
+        stair_impact_detected=channel("stair_impact_detected"),
+        stair_trigger_count=channel("stair_trigger_count"),
+        stair_abort_count=channel("stair_abort_count"),
+        stair_speed_abs=channel("stair_speed_abs"),
+        stair_speed_diff=channel("stair_speed_diff"),
+        stair_accel=channel("stair_accel"),
+        stair_theta_ramped=channel("stair_theta_ramped"),
+        stair_left_impact=channel("stair_left_impact"),
+        stair_right_impact=channel("stair_right_impact"),
+        stair_fast_detected=channel("stair_fast_detected"),
+        stair_speed_ms=channel("stair_speed_ms"),
+        stair_preimpact_ms=channel("stair_preimpact_ms"),
+        stair_impact_ms=channel("stair_impact_ms"),
     )
     return profile, sample
 
@@ -2113,6 +2256,28 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 right_tp_dphi_term=_safe_float(row.get("right_tp_dphi_term", "")),
                 right_tp_raw=_safe_float(row.get("right_tp_raw", "")),
                 right_tp_cmd=_safe_float(row.get("right_tp_cmd", "")),
+                leg_sync_error=_safe_float(row.get("leg_sync_error", "")),
+                leg_sync_torque=_safe_float(row.get("leg_sync_torque", "")),
+                stair_stage=_safe_float(row.get("stair_stage", "")),
+                stair_abort_reason=_safe_float(row.get("stair_abort_reason", "")),
+                stair_ready_detected=_safe_float(row.get("stair_ready_detected", "")),
+                stair_preimpact_armed=_safe_float(row.get("stair_preimpact_armed", "")),
+                stair_impact_detected=_safe_float(row.get("stair_impact_detected", "")),
+                stair_trigger_count=_safe_float(row.get("stair_trigger_count", "")),
+                stair_abort_count=_safe_float(row.get("stair_abort_count", "")),
+                stair_speed_abs=_safe_float(row.get("stair_speed_abs", "")),
+                stair_speed_diff=_safe_float(row.get("stair_speed_diff", "")),
+                stair_accel=_safe_float(row.get("stair_accel", "")),
+                stair_theta_ramped=_safe_float(row.get("stair_theta_ramped", "")),
+                stair_left_impact=_safe_float(row.get("stair_left_impact", "")),
+                stair_right_impact=_safe_float(row.get("stair_right_impact", "")),
+                stair_fast_detected=_safe_float(row.get("stair_fast_detected", "")),
+                stair_speed_ms=_safe_float(row.get("stair_speed_ms", "")),
+                stair_preimpact_ms=_safe_float(row.get("stair_preimpact_ms", "")),
+                stair_impact_ms=_safe_float(row.get("stair_impact_ms", "")),
+                rc_source=_safe_float(row.get("rc_source", "")),
+                remote_s1=_safe_float(row.get("remote_s1", "")),
+                remote_s2=_safe_float(row.get("remote_s2", "")),
             )
 
 

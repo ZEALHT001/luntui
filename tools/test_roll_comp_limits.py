@@ -89,19 +89,19 @@ class RollCompLimitTest(unittest.TestCase):
                     self.assertNotIn("0.10", line)
 
     def test_short_preset_is_limited_by_the_stroke_not_the_constant(self) -> None:
-        """Documented symmetric headroom: SHORT 10, MID 70, LONG 105 mm.
+        """Documented symmetric headroom: SHORT 0, MID 100, LONG 25 mm.
 
         This is why raising the constant alone cannot fix the platform case -
-        at SHORT the retract side has almost nothing left.  At LONG the
-        EXTEND side is the binding one, so this is a min() over both, not a
-        retract-only number.
+        at SHORT the retract side has nothing left.  At LONG the EXTEND side
+        is the binding one, so this is a min() over both, not a retract-only
+        number.
         """
         leg_min = _macro("VMC_LEG_LENGTH_MIN")
         leg_max = _macro("VMC_LEG_LENGTH_MAX")
         expected = {
-            "VMC_LEG_TARGET_SHORT": 0.010,
-            "VMC_LEG_TARGET_MID": 0.070,
-            "VMC_LEG_TARGET_LONG": 0.105,
+            "VMC_LEG_TARGET_SHORT": 0.000,
+            "VMC_LEG_TARGET_MID": 0.100,
+            "VMC_LEG_TARGET_LONG": 0.025,
         }
         for name, headroom in expected.items():
             with self.subTest(preset=name):

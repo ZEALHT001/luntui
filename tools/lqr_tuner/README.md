@@ -118,6 +118,43 @@ diagnostics below:
 | 152 | slip LQR posture scale applied, right | `1.0` = not scaled |
 | 153 | slip wheel-current scale applied, left | `1.0` = not scaled |
 | 154 | slip wheel-current scale applied, right | `1.0` = not scaled |
+| 155 | anti-splay error, left_theta - right_theta | radians, value multiplied by 1000 |
+| 156 | anti-splay differential torque applied | N.m virtual-leg torque, left takes `-`, right `+` |
+| 157 | automatic stair stage | `0` idle, `1` retract, `2` hold, `3` finished, `4` abort |
+| 158 | stair abort reason | `0` none, `1` remote, `2` feedback, `3` get-up, `4` jump, `5` timeout, `6` airborne |
+| 159 | stair ready detection | `0` or `1` |
+| 160 | stair pre-impact armed | `0` or `1` |
+| 161 | stair impact detected | `0` or `1` |
+| 162..163 | stair trigger / abort counts | count |
+| 164 | stair wheel speed magnitude | m/s |
+| 165 | stair wheel-speed drop | m/s, legacy trigger diagnostic |
+| 166 | stair wheel-speed acceleration | m/s2 |
+| 167 | wheel-side theta target during stair | radians, set to the measured average while the phi0 PD owns the legs |
+| 168..169 | per-leg stair impact, left and right | `0` or `1` |
+| 170 | stair fast-speed confirmation | `0` or `1` |
+| 171 | stair speed confirmation timer | ms |
+| 172 | stair pre-impact confirmation timer | ms |
+| 173 | stair impact confirmation timer | ms |
+| 174 | remote source | `0` none, `1` local SBUS, `2` C-board |
+| 175 | physical S1 switch | `1` up, `3` mid, `2` down |
+| 176 | physical S2 switch | `1` up, `3` mid, `2` down |
+
+Fields 157..173 publish the automatic stair climb: stage and abort reason show
+the state machine, ready/pre-impact/impact show how far the trigger progressed,
+the per-leg flags show whether only one side saw the step, and the three timer
+channels show whether a threshold was missed or merely held too briefly.
+Fields 174..176 (schema 21) identify which remote produced the frame and the
+physical switch positions, so a REMOTE abort can be separated from an S1-down
+command or a source handover.
+
+Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
+`left_theta` and `right_theta` were already in the frame, but a difference of
+two separately-reported channels cannot separate "the legs never diverged" from
+"they diverged and the loop never fired".  Field 155 is the error the loop acts
+on and field 156 the differential torque it applied; both are zero while the
+feature is disabled, while S2 is not in its highest leg-length position, or
+while the get-up/jump state machines own the legs.  The gate follows the S2
+selection, not the measured length, so the preset ramp cannot toggle it.
 
 Fields 151/152 (schema 16) and 153/154 (schema 17) are the slip response's
 applied per-side scales - the LQR posture weight and the wheel current.  Both

@@ -179,7 +179,7 @@ extern "C" {
  * leg_follow_machine_wide. */
 #define VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT   1U
 /* |roll| below this cannot be told apart from level.  0.10 rad = 5.7 deg. */
-#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.10f
+#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.1f
 /* How long a side-classification must hold before it is believed.
  *
  * One frame of "this side is unloaded" is not evidence.  Measured pushing one
@@ -216,10 +216,13 @@ extern "C" {
  * whatever is chosen here.
  *
  * SHORT is also the length the self-righting sequence stands up on
- * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too. */
-#define VMC_LEG_TARGET_SHORT      0.170f
-#define VMC_LEG_TARGET_MID        0.230f
-#define VMC_LEG_TARGET_LONG       0.280f
+ * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too.
+ *
+ * SHORT sits at the measured mechanical stop; LONG leaves only 25 mm before
+ * the maximum stroke. */
+#define VMC_LEG_TARGET_SHORT      0.160f
+#define VMC_LEG_TARGET_MID        0.260f
+#define VMC_LEG_TARGET_LONG       0.360f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
 #define VMC_JUMP_ENABLE_DEFAULT   1U
@@ -346,6 +349,60 @@ extern "C" {
 #define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
 
+/* Automatic stair climb (impact-triggered leg retraction).
+ *
+ * Operator procedure: select the HIGHEST leg-length gear on S2 and drive into
+ * a step whose top is below the body.  The wheels jam against the step, the
+ * LQR keeps demanding wheel torque, and the legs are pushed back.  When both
+ * per-leg impact tests agree, the state machine retracts both legs to
+ * stair_retract_length and drives the absolute leg angle phi0 to
+ * stair_phi0_target, which rolls the body over the step.  It then holds that
+ * pose and, on completion, stays on the short legs until S2 is moved to a
+ * different gear.
+ *
+ * This is deliberately NOT a jump: the wheels stay in the balance loop, and
+ * the only actuators that move are the two virtual legs.  It is gated on the
+ * S2 UP selection, so MID and DOWN keep the established tune unchanged.
+ *
+ * Impact test (both legs must agree):
+ *     |left_wheel_torque_raw|  >= stair_impact_torque_threshold  AND
+ *     |motion.left_theta|      >= stair_impact_theta_threshold
+ *     ... and the same for the right leg.
+ * `*_wheel_torque_raw` is the pre-clamp LQR wheel-torque command, which pins
+ * when the wheel is blocked; motion.*_theta is the leg angle in the world
+ * frame (body pitch removed).  Setting stair_impact_torque_threshold to 0
+ * falls back to the older wheel-speed-drop test for A/B comparison.
+ *
+ * Every timing value is runtime tunable over RTT so the detector can be
+ * characterised from the web page without a reflash. */
+#define VMC_STAIR_ENABLE_DEFAULT                   1U
+#define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.160f
+#define VMC_STAIR_PHI0_TARGET_DEFAULT              2.500f
+#define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           4.0f
+#define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
+#define VMC_STAIR_PHI0_KD_DEFAULT                  6.0f
+#define VMC_STAIR_SPEED_THRESHOLD_DEFAULT          1.0f
+#define VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT  0.2f
+#define VMC_STAIR_READY_LENGTH_DEFAULT             0.330f
+#define VMC_STAIR_READY_CONFIRM_MS_DEFAULT         200U
+#define VMC_STAIR_SPEED_CONFIRM_MS_DEFAULT         60U
+#define VMC_STAIR_PREIMPACT_CONFIRM_MS_DEFAULT     30U
+#define VMC_STAIR_IMPACT_CONFIRM_MS_DEFAULT        8U
+#define VMC_STAIR_PREIMPACT_DIFF_MAX_DEFAULT       0.0f
+#define VMC_STAIR_IMPACT_DIFF_THRESHOLD_DEFAULT    0.4f
+#define VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT  4.5f
+#define VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT   0.30f
+#define VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT       250U
+#define VMC_STAIR_HOLD_MS_DEFAULT                  300U
+#define VMC_STAIR_TIMEOUT_MS_DEFAULT               1500U
+#define VMC_STAIR_COOLDOWN_MS_DEFAULT              1200U
+#define VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT 50U
+#define VMC_STAIR_LENGTH_KP_DEFAULT                2000.0f
+#define VMC_STAIR_LENGTH_KD_DEFAULT                100.0f
+#define VMC_STAIR_FORCE_MAX_DEFAULT                500.0f
+#define VMC_STAIR_SUPPORT_FORCE_DEFAULT            100.0f
+#define VMC_STAIR_LENGTH_READY_TOL                 0.015f
+
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -366,18 +423,17 @@ extern "C" {
  * SMALLER of the two headrooms, which is not always the retract side:
  *
  *     preset   retract   extend   symmetric ceiling
- *     SHORT    10 mm     215 mm   10 mm
- *     MID      70 mm     155 mm   70 mm
- *     LONG    120 mm     105 mm   105 mm
+ *     SHORT     0 mm     225 mm    0 mm
+ *     MID     100 mm     125 mm  100 mm
+ *     LONG    200 mm      25 mm   25 mm
  *
- * On SHORT the retract headroom, not this constant, is therefore what limits
- * levelling - 10 mm is almost nothing, so the symmetric pair is effectively
- * one-sided there while the extend side still has 215 mm.  An offset larger
- * than the ceiling is not rejected, it is silently clipped per leg, and while
- * it is being clipped the pair stops levelling and starts raising the machine
- * instead - so this is the physical limit, not a tuning preference.  With the
- * gain at 0.4 the clamp engages past 0.1125 / 0.4 = 0.281 rad (16.1 deg) of
- * roll, where it used to saturate at 0.08 / 0.4 = 0.200 rad (11.5 deg).
+ * SHORT and LONG are both limit-bound, just on opposite sides: SHORT cannot
+ * retract and LONG cannot extend.  An offset larger than the ceiling is not
+ * rejected, it is silently clipped per leg, and while it is being clipped the
+ * pair stops levelling and starts raising the machine instead - so this is the
+ * physical limit, not a tuning preference.  With the gain at 0.4 the clamp
+ * engages past 0.1125 / 0.4 = 0.281 rad (16.1 deg) of roll, where it used to
+ * saturate at 0.08 / 0.4 = 0.200 rad (11.5 deg).
  *
  * Plain literals on purpose: the LQR tuner and its tests read these tokens as
  * numbers and cannot evaluate macro arithmetic. */
@@ -849,6 +905,20 @@ extern "C" {
 #define VMC_JUMP_ABORT_ATTITUDE    4U
 #define VMC_JUMP_ABORT_TIMEOUT     5U
 
+#define VMC_STAIR_STAGE_IDLE       0U
+#define VMC_STAIR_STAGE_RETRACT    1U
+#define VMC_STAIR_STAGE_HOLD       2U
+#define VMC_STAIR_STAGE_FINISHED   3U
+#define VMC_STAIR_STAGE_ABORT      4U
+
+#define VMC_STAIR_ABORT_NONE       0U
+#define VMC_STAIR_ABORT_REMOTE     1U
+#define VMC_STAIR_ABORT_FEEDBACK   2U
+#define VMC_STAIR_ABORT_GETUP      3U
+#define VMC_STAIR_ABORT_JUMP       4U
+#define VMC_STAIR_ABORT_TIMEOUT    5U
+#define VMC_STAIR_ABORT_AIRBORNE   6U
+
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
 #define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
@@ -896,6 +966,49 @@ extern "C" {
 #define VMC_BALANCE_TP_PHI_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_X_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_TP_OUTPUT_ENABLE_DEFAULT 1U
+/* Leg synchronisation, i.e. the anti-splay loop.
+ *
+ * The left and right virtual legs each run their own controller against the
+ * same theta target, so nothing in the six-state model ties
+ * (left_theta - right_theta) to zero.  Body roll appears as a COMMON-MODE
+ * theta error; a pure left/right difference is unobserved by every feedback
+ * term and is only weakly corrected by the per-side LQR theta rows
+ * (K[1] = 5.49 at 0.360 m).  With the wheels unloaded, or at long leg lengths
+ * where the gravity de-stabilising term is largest, the two legs therefore
+ * drift apart and the machine splays and falls sideways.
+ *
+ * This adds a pure differential term to the two joint-torque commands:
+ *
+ *     e        = left_theta_error - right_theta_error
+ *     edot     = left_d_theta     - right_d_theta
+ *     Tp_sync  = clamp(kp * e + kd * edot, +/- leg_sync_torque_limit)
+ *     left_leg  -= Tp_sync
+ *     right_leg += Tp_sync
+ *
+ * The common mode (the average) is untouched, so balance and the theta
+ * equilibrium are unaffected.  The term is added in the virtual-leg torque
+ * (Tp) domain, so the limit shares the +/-2*VMC_DM_J8009_TMAX range with
+ * tp_limit.
+ *
+ * Only the HIGHEST leg-length gear (S2 UP) applies this term.  At MID and
+ * SHORT the loop is forced to zero so the established standing tune there is
+ * unchanged; the gate follows the S2 selection, not the measured length, so
+ * the leg-length ramp cannot chatter it.
+ *
+ * The applied term is independent of tp_output_enable: it is summed into the
+ * same joint-torque command as both the LQR Tp and the phi0 PD, so it keeps
+ * working when the balance loop is switched back to the phi0 gains.
+ *
+ * Gains: with e = left-right the differential inertia is about half one
+ * leg's inertia about the hip, J_e ~ 0.042 kg.m2, so kp sets how stiffly the
+ * legs are tied and kd damps that differential mode.  A pure-P tie (kd = 0)
+ * will ring at a stiff kp, so add damping before raising kp far.  The limit
+ * bounds the worst-case leg-vs-leg torque so a bad theta estimate cannot
+ * command the full joint range. */
+#define VMC_LEG_SYNC_ENABLE_DEFAULT 1U
+#define VMC_LEG_SYNC_KP_DEFAULT 60.0f
+#define VMC_LEG_SYNC_KD_DEFAULT 0.0f
+#define VMC_LEG_SYNC_TORQUE_LIMIT_DEFAULT 12.0f
 #define VMC_BALANCE_WHEEL_OUTPUT_USER_ENABLE_DEFAULT 1U
 /* Public tuning names:
  * theta_target controls the wheel-leg theta equilibrium.
@@ -1069,6 +1182,61 @@ typedef struct {
   float jump_auto_dist_min_cm;  /* cm    */
   float jump_auto_dist_max_cm;  /* cm    */
   uint32_t jump_auto_confirm_ms;
+  /* Automatic stair climb.  See VMC_STAIR_ENABLE_DEFAULT for the operator
+   * procedure, the impact test and the abort conditions. */
+  uint8_t stair_enable;
+  uint8_t stair_stage;
+  uint8_t stair_abort_reason;
+  /* Latched after a trigger: keep the legs at stair_retract_length until S2
+   * has moved to a different, stable position.  This is what stops the long
+   * preset from snapping back while the machine is still climbing. */
+  uint8_t stair_length_override_active;
+  uint8_t stair_length_override_remote_position;
+  uint8_t stair_fast_detected;
+  uint8_t stair_impact_detected;
+  uint8_t stair_ready_detected;
+  uint8_t stair_preimpact_armed;
+  uint8_t stair_left_impact;
+  uint8_t stair_right_impact;
+  uint32_t stair_stage_start_ms;
+  uint32_t stair_start_ms;
+  uint32_t stair_last_finish_ms;
+  uint32_t stair_stage_ms;
+  uint32_t stair_trigger_count;
+  uint32_t stair_abort_count;
+  uint32_t stair_ready_ms;
+  uint32_t stair_speed_ms;
+  uint32_t stair_preimpact_ms;
+  uint32_t stair_impact_ms;
+  uint32_t stair_ready_confirm_ms;
+  uint32_t stair_speed_confirm_ms;
+  uint32_t stair_preimpact_confirm_ms;
+  uint32_t stair_impact_confirm_ms;
+  uint32_t stair_retract_timeout_ms;
+  uint32_t stair_hold_ms;
+  uint32_t stair_timeout_ms;
+  uint32_t stair_cooldown_ms;
+  float stair_retract_length;
+  float stair_theta_ramped;
+  float stair_phi0_target;
+  float stair_phi0_ramped;
+  float stair_phi0_ramp_rate;
+  float stair_phi0_kp;
+  float stair_phi0_kd;
+  float stair_speed_threshold;
+  float stair_command_speed_threshold;
+  float stair_ready_length;
+  float stair_preimpact_diff_max;
+  float stair_impact_diff_threshold;
+  float stair_impact_torque_threshold;
+  float stair_impact_theta_threshold;
+  float stair_speed_abs;
+  float stair_speed_diff;
+  float stair_accel;
+  float stair_kp_length;
+  float stair_kd_length;
+  float stair_max_force;
+  float stair_support_force;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;
@@ -1261,6 +1429,18 @@ typedef struct {
   float tp_limit;
   float tp_phi_gain;
   float tp_x_gain;
+  /* Anti-splay (leg-synchronisation) loop.  See
+   * VMC_LEG_SYNC_ENABLE_DEFAULT.  leg_sync_torque is the term computed last
+   * cycle: the left leg has -leg_sync_torque and the right +leg_sync_torque
+   * folded into its joint-torque command, so the pair drives
+   * left_theta - right_theta toward zero without moving their average. */
+  uint8_t leg_sync_enable;
+  float leg_sync_kp;
+  float leg_sync_kd;
+  float leg_sync_torque_limit;
+  double leg_sync_error;
+  double leg_sync_rate_error;
+  double leg_sync_torque;
   double lqr_theta;
   double lqr_d_theta;
   double lqr_d_theta_raw;

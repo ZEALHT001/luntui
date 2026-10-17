@@ -287,9 +287,10 @@ class MovingJumpTest(unittest.TestCase):
         source = SOURCE.read_text(encoding="utf-8")
         wide = _function_body(source, "vmc_jump_is_active_or_aborted")
         self.assertIn("vmc_jump_is_active()", wide)
-        # Exactly the two consumers that need the wide gate: the airborne
-        # detector and the leg-torque (Tp) path.
-        self.assertEqual(source.count("vmc_jump_is_active_or_aborted()"), 2)
+        # Consumers that need the wide gate: the airborne detector, the
+        # leg-torque (Tp) path, anti-splay, and both stair start/abort gates.
+        # Each must stay out of the way while a jump owns the legs or wheels.
+        self.assertEqual(source.count("vmc_jump_is_active_or_aborted()"), 5)
 
     def test_an_aborted_jump_still_returns_the_wheels(self) -> None:
         """An aborted jump must not leave the wheels dead.
@@ -390,6 +391,22 @@ class AutoJumpTest(unittest.TestCase):
         idle = _function_body(source, "vmc_jump_update")
         self.assertIn("s1_is_up", idle)
         self.assertIn("vmc_jump_auto_ready()", idle)
+
+    def test_s1_up_does_not_oscillate_the_leg_length(self) -> None:
+        """S1 UP is a jump gate, not the removed chassis-test waveform.
+
+        An early firmware revision deliberately drove a triangular leg-length
+        sweep while S1 was UP.  It was removed when the jump state machine
+        replaced that test mode, but the visible symptom - the machine
+        periodically dropping and rising while standing - is easy to mistake
+        for a leg-length control fault.  S2 is the only switch allowed to
+        choose a leg-length preset.
+        """
+        source = SOURCE.read_text(encoding="utf-8")
+        body = _function_body(source, "vmc_update_remote_target_length")
+        self.assertIn("remote_control.s[0]", body)
+        self.assertNotIn("remote_control.s[1]", body)
+        self.assertNotIn("s1_up_oscillation_start_ms", source)
 
     def test_the_manual_arm_step_is_gone(self) -> None:
         """S1 MID used to arm and S1 UP used to fire; the gate replaced both.
