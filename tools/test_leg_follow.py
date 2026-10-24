@@ -6,7 +6,7 @@ length target chase OUTWARD, so the support feedforward pushes that wheel back
 down to the ground.  Only when the leg reaches VMC_LEG_LENGTH_MAX is further
 body lift actual flight, which is what the airborne detector is for.
 
-Without this the loop holds the S2 preset, treats the lift as a position error,
+Without this the loop holds the channel-9 target, treats the lift as a position error,
 and pulls the wheel UP toward the body - so the leg stops following long before
 the stroke limit.
 

@@ -2,6 +2,7 @@
 
 #include "board_comm.h"
 #include "hi12_imu.h"
+#include "sbus_remote.h"
 #include "tf02_pro.h"
 #include "usart.h"
 
@@ -37,26 +38,26 @@ static uint8_t remote_frame_is_valid(const remote_control_t *rc)
   return 1U;
 }
 
-static void sbus_to_remote(const uint8_t *sbus_buf)
+static void dbus_to_remote(const uint8_t *dbus_buf)
 {
   remote_control_t rc;
 
   memset(&rc, 0, sizeof(rc));
-  rc.ch[0] = (int16_t)((sbus_buf[0] | (sbus_buf[1] << 8)) & 0x07FFU);
-  rc.ch[1] = (int16_t)(((sbus_buf[1] >> 3) | (sbus_buf[2] << 5)) & 0x07FFU);
-  rc.ch[2] = (int16_t)(((sbus_buf[2] >> 6) | (sbus_buf[3] << 2) |
-                        (sbus_buf[4] << 10)) &
+  rc.ch[0] = (int16_t)((dbus_buf[0] | (dbus_buf[1] << 8)) & 0x07FFU);
+  rc.ch[1] = (int16_t)(((dbus_buf[1] >> 3) | (dbus_buf[2] << 5)) & 0x07FFU);
+  rc.ch[2] = (int16_t)(((dbus_buf[2] >> 6) | (dbus_buf[3] << 2) |
+                        (dbus_buf[4] << 10)) &
                        0x07FFU);
-  rc.ch[3] = (int16_t)(((sbus_buf[4] >> 1) | (sbus_buf[5] << 7)) & 0x07FFU);
-  rc.s[0] = (uint8_t)((sbus_buf[5] >> 4) & 0x03U);
-  rc.s[1] = (uint8_t)(((sbus_buf[5] >> 4) & 0x0CU) >> 2);
-  rc.mouse_x = (int16_t)(sbus_buf[6] | (sbus_buf[7] << 8));
-  rc.mouse_y = (int16_t)(sbus_buf[8] | (sbus_buf[9] << 8));
-  rc.mouse_z = (int16_t)(sbus_buf[10] | (sbus_buf[11] << 8));
-  rc.mouse_l = sbus_buf[12];
-  rc.mouse_r = sbus_buf[13];
-  rc.key = (uint16_t)(sbus_buf[14] | (sbus_buf[15] << 8));
-  rc.ch[4] = (int16_t)(sbus_buf[16] | (sbus_buf[17] << 8));
+  rc.ch[3] = (int16_t)(((dbus_buf[4] >> 1) | (dbus_buf[5] << 7)) & 0x07FFU);
+  rc.s[0] = (uint8_t)((dbus_buf[5] >> 4) & 0x03U);
+  rc.s[1] = (uint8_t)(((dbus_buf[5] >> 4) & 0x0CU) >> 2);
+  rc.mouse_x = (int16_t)(dbus_buf[6] | (dbus_buf[7] << 8));
+  rc.mouse_y = (int16_t)(dbus_buf[8] | (dbus_buf[9] << 8));
+  rc.mouse_z = (int16_t)(dbus_buf[10] | (dbus_buf[11] << 8));
+  rc.mouse_l = dbus_buf[12];
+  rc.mouse_r = dbus_buf[13];
+  rc.key = (uint16_t)(dbus_buf[14] | (dbus_buf[15] << 8));
+  rc.ch[4] = (int16_t)(dbus_buf[16] | (dbus_buf[17] << 8));
 
   rc.ch[0] -= RC_CH_VALUE_OFFSET;
   rc.ch[1] -= RC_CH_VALUE_OFFSET;
@@ -100,23 +101,35 @@ void remote_control_update_source(void)
   remote_control_t selected;
 
   memset(&selected, 0, sizeof(selected));
-  if (board_comm_remote_is_valid() != 0U) {
-    selected.ch[0] = board_comm_state.remote_ch[0];
-    selected.ch[1] = board_comm_state.remote_ch[1];
-    selected.ch[2] = board_comm_state.remote_ch[2];
-    selected.ch[3] = board_comm_state.remote_ch[3];
-    /* Native DBUS layout: s[0] is physical S2 and s[1] is physical S1. */
-    selected.s[0] = board_comm_state.remote_s2;
-    selected.s[1] = board_comm_state.remote_s1;
-    selected.rx_count = board_comm_state.rx_success_count;
+  if (sbus_remote_data.valid != 0U && sbus_remote_data.connected != 0U &&
+      (now - sbus_remote_data.last_frame_ms) <= RC_LOST_TIMEOUT_MS) {
+    for (uint8_t i = 0U; i < RC_NORMALIZED_CHANNEL_COUNT; i++) {
+      selected.normalized[i] = sbus_remote_data.normalized[i];
+    }
+
+    /* Keep the legacy fields populated for RTT and older consumers. */
+    selected.ch[0] = (int16_t)(selected.normalized[RC_GIMBAL_X] *
+                               RC_CHANNAL_ERROR_VALUE);
+    selected.ch[1] = (int16_t)(selected.normalized[RC_GIMBAL_Y] *
+                               RC_CHANNAL_ERROR_VALUE);
+    selected.ch[2] = (int16_t)(-selected.normalized[RC_CHASSIS_X] *
+                               RC_CHANNAL_ERROR_VALUE);
+    selected.ch[3] = (int16_t)(selected.normalized[RC_CHASSIS_Y] *
+                               RC_CHANNAL_ERROR_VALUE);
+    selected.s[1] = (selected.normalized[RC_START_STOP] >
+                     RC_SWITCH_ON_THRESHOLD)
+                        ? RC_SW_MID
+                        : RC_SW_DOWN;
+    selected.s[0] = (selected.normalized[RC_LEG_LENGTH] > 0.35f)
+                        ? RC_SW_UP
+                        : ((selected.normalized[RC_LEG_LENGTH] < -0.35f)
+                               ? RC_SW_DOWN
+                               : RC_SW_MID);
+    selected.rx_count = sbus_remote_data.rx_count;
+    selected.rx_error_count = sbus_remote_data.frame_error_count;
     selected.valid = 1U;
-    selected.last_update_ms = board_comm_state.state_last_rx_ms;
-    remote_control_source = RC_SOURCE_CBOARD;
-  } else if (remote_control_local.valid != 0U &&
-             remote_control_local.rx_count != 0U &&
-             (now - remote_control_local.last_update_ms) <= RC_LOST_TIMEOUT_MS) {
-    selected = remote_control_local;
-    remote_control_source = RC_SOURCE_LOCAL;
+    selected.last_update_ms = sbus_remote_data.last_frame_ms;
+    remote_control_source = RC_SOURCE_SBUS;
   } else {
     remote_control_source = RC_SOURCE_NONE;
   }
@@ -125,21 +138,96 @@ void remote_control_update_source(void)
 
 uint8_t remote_control_is_s1_down(void)
 {
-  return (remote_control.valid != 0U && remote_control.s[1] == RC_SW_DOWN) ? 1U : 0U;
+  return (remote_control_is_enabled() == 0U) ? 1U : 0U;
 }
 
 uint8_t remote_control_allows_joint_enable(void)
 {
-  if (remote_control.valid == 0U || remote_control.rx_count == 0U) {
+  if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
+      remote_control_source != RC_SOURCE_SBUS) {
     return 0U;
   }
 
   if ((HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
-    remote_control.valid = 0U;
     return 0U;
   }
 
-  return (remote_control.s[1] != RC_SW_DOWN) ? 1U : 0U;
+  return remote_control_is_enabled();
+}
+
+float remote_control_channel(uint8_t channel)
+{
+  if (remote_control.valid == 0U || channel >= RC_NORMALIZED_CHANNEL_COUNT) {
+    return 0.0f;
+  }
+  return remote_control.normalized[channel];
+}
+
+uint8_t remote_control_is_enabled(void)
+{
+  if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
+      remote_control_source != RC_SOURCE_SBUS ||
+      (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
+    return 0U;
+  }
+  return (remote_control.normalized[RC_START_STOP] > RC_SWITCH_ON_THRESHOLD)
+             ? 1U
+             : 0U;
+}
+
+uint8_t remote_control_spin_mode_enabled(void)
+{
+  return (remote_control_is_enabled() != 0U &&
+          remote_control.normalized[RC_SPIN_MODE] > RC_SWITCH_ON_THRESHOLD)
+             ? 1U
+             : 0U;
+}
+
+uint8_t remote_control_jump_mode(void)
+{
+  const float value = remote_control.normalized[RC_JUMP_MODE];
+
+  if (remote_control_is_enabled() == 0U) {
+    return RC_JUMP_DISABLED;
+  }
+  if (value >= -RC_SWITCH_CENTER_HALF_RANGE &&
+      value <= RC_SWITCH_CENTER_HALF_RANGE) {
+    return RC_JUMP_AUTO;
+  }
+  return (value >= RC_SWITCH_ON_THRESHOLD) ? RC_JUMP_MANUAL : RC_JUMP_DISABLED;
+}
+
+uint8_t remote_control_stair_enabled(void)
+{
+  return (remote_control_is_enabled() != 0U &&
+          remote_control.normalized[RC_STAIR_ENABLE] > RC_SWITCH_ON_THRESHOLD)
+             ? 1U
+             : 0U;
+}
+
+float remote_control_max_speed_scale(void)
+{
+  float scale;
+
+  if (remote_control_is_enabled() == 0U) {
+    return 0.0f;
+  }
+  scale = (remote_control.normalized[RC_SPEED_LIMIT] + 1.0f) * 0.5f;
+  if (scale < 0.0f) {
+    return 0.0f;
+  }
+  if (scale > 1.0f) {
+    return 1.0f;
+  }
+  return scale;
+}
+
+float remote_control_leg_length_position(void)
+{
+  if (remote_control.valid == 0U || remote_control_source != RC_SOURCE_SBUS) {
+    return -1.0f;
+  }
+  return remote_control.normalized[RC_LEG_LENGTH];
 }
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
@@ -147,8 +235,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   if (huart == &huart8) {
     board_comm_on_uart_rx_event(huart, Size);
   } else if (huart == &huart1) {
-    if (Size >= RC_FRAME_LENGTH) {
-      sbus_to_remote(sbus_rx_buf);
+    if (sbus_remote_handle_frame(sbus_rx_buf, Size) != 0U) {
+      /* SBUS is copied into remote_control by remote_control_update_source(). */
+    } else if (Size >= RC_FRAME_LENGTH) {
+      dbus_to_remote(sbus_rx_buf);
     } else {
       remote_control_local.rx_error_count++;
     }

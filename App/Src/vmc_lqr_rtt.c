@@ -1731,7 +1731,7 @@ void vmc_lqr_rtt_telemetry_update(void)
   /* VMCVOFA fields 141..142: ground-following extension, per side.
    *
    * The per-leg targets above already include this, but without it there is no
-   * way to tell a target that the operator moved with S2 from one the follow
+   * way to tell a target that the operator moved with channel 9 from one the follow
    * feature pushed outward because that leg had lost the ground. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
@@ -1889,9 +1889,10 @@ void vmc_lqr_rtt_telemetry_update(void)
   /* VMCVOFA fields 174..176: remote-source and switch state.
    *
    * rc_age alone cannot say whether a stair abort came from the operator
-   * selecting S1 DOWN, from a source handover, or from a stale frame.  These
-   * three channels make the remote gate auditable: 0 none, 1 local, 2 C-board,
-   * and the two switch values use the SBUS encoding (1 up, 3 mid, 2 down). */
+   * selecting channel 4 UP, from a source handover, or from a stale frame.  These
+   * three channels make the remote gate auditable: 0 none, 3 local SBUS.  The
+   * legacy switch fields are synthesized from channel 4 and the channel-9 leg
+   * knob (1 up, 3 mid, 2 down). */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)remote_control_source);
   offset = vmc_lqr_rtt_append_scaled(

@@ -3,6 +3,7 @@
 #include "board_comm.h"
 #include "hi12_imu.h"
 #include "remote_control.h"
+#include "sbus_remote.h"
 #include "tf02_pro.h"
 #include "vmc_lqr.h"
 #include "vmc_lqr_rtt.h"
@@ -39,8 +40,10 @@ static uint8_t vmc_stair_preimpact_armed;
 static uint8_t vmc_stair_wheel_speed_initialized;
 static double vmc_stair_previous_wheel_speed_abs;
 static double vmc_stair_preimpact_wheel_speed_abs;
-static uint8_t vmc_stair_length_pending_remote_position;
+static uint16_t vmc_stair_length_pending_remote_position;
 static uint32_t vmc_stair_length_pending_since_ms;
+static uint8_t vmc_jump_manual_latched;
+static uint8_t vmc_spin_mode_last;
 /* Gravity-compensation sign calibration; see VMC_GRAVITY_SIGN_ALPHA. */
 static float vmc_gravity_dot_lpf;
 static int8_t vmc_gravity_sign;
@@ -63,8 +66,8 @@ static uint32_t vmc_last_imu_rx_count;
 static uint32_t vmc_loop_us_last;
 static float vmc_loop_dt_s;
 static uint32_t vmc_loop_deadline_us;
-/* A fall detected while the robot was enabled requires an explicit emergency
- * stop followed by S1=3 before control can be enabled again. */
+/* A fall detected while the robot was enabled requires channel 4 to be moved
+ * UP to emergency-stop and then DOWN again before control can re-enable. */
 static uint8_t vmc_fall_rearm_required;
 static uint8_t vmc_fall_rearm_armed;
 static uint8_t vmc_fall_monitor_armed;
@@ -73,6 +76,8 @@ static uint8_t vmc_fall_prev_fully_fallen;
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
+static double vmc_remote_leg_length_target(void);
+static uint8_t vmc_remote_leg_length_gear(void);
 static uint8_t vmc_jump_is_active(void);
 static uint8_t vmc_jump_is_active_or_aborted(void);
 static uint8_t vmc_jump_blocks_wheel_output(void);
@@ -931,6 +936,8 @@ static uint8_t vmc_feedback_timeout_source(void)
 static void vmc_update_remote_target_length(void)
 {
   const uint32_t now = HAL_GetTick();
+  const uint16_t knob_raw =
+      sbus_remote_data.channels[RC_LEG_LENGTH];
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
@@ -938,12 +945,16 @@ static void vmc_update_remote_target_length(void)
   }
 
   if (vmc_control.stair_length_override_active != 0U) {
+    const uint16_t saved_knob_raw =
+        vmc_control.stair_length_override_remote_position;
+    const uint16_t knob_delta =
+        (knob_raw >= saved_knob_raw) ? (uint16_t)(knob_raw - saved_knob_raw)
+                                     : (uint16_t)(saved_knob_raw - knob_raw);
+
     /* Never release the stair length lock while the automatic action is
      * running.  A transient switch value or a remote-source handover during
      * RETRACT/HOLD must not restore the long-leg target. */
-    if (vmc_stair_is_active() != 0U ||
-        remote_control.s[0] ==
-            vmc_control.stair_length_override_remote_position) {
+    if (vmc_stair_is_active() != 0U || knob_delta <= 20U) {
       vmc_stair_length_pending_remote_position = 0U;
       vmc_stair_length_pending_since_ms = 0U;
       vmc_control.target_length = (float)vmc_stair_retract_target_length();
@@ -953,34 +964,48 @@ static void vmc_update_remote_target_length(void)
     /* Require the new switch position to remain stable before releasing the
      * lock.  This prevents a one-frame source switch/glitch from restoring the
      * pre-stair long-leg target. */
-    if (remote_control.s[0] == RC_SW_UP ||
-        remote_control.s[0] == RC_SW_MID ||
-        remote_control.s[0] == RC_SW_DOWN) {
-      if (vmc_stair_length_pending_remote_position != remote_control.s[0]) {
-        vmc_stair_length_pending_remote_position = remote_control.s[0];
-        vmc_stair_length_pending_since_ms = now;
-        vmc_control.target_length = (float)vmc_stair_retract_target_length();
-        return;
-      }
-      if ((now - vmc_stair_length_pending_since_ms) <
-          VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT) {
-        vmc_control.target_length = (float)vmc_stair_retract_target_length();
-        return;
-      }
-      vmc_control.stair_length_override_active = 0U;
-      vmc_control.stair_length_override_remote_position = 0U;
-      vmc_stair_length_pending_remote_position = 0U;
-      vmc_stair_length_pending_since_ms = 0U;
+    if (vmc_stair_length_pending_remote_position != knob_raw) {
+      vmc_stair_length_pending_remote_position = knob_raw;
+      vmc_stair_length_pending_since_ms = now;
+      vmc_control.target_length = (float)vmc_stair_retract_target_length();
+      return;
     }
+    if ((now - vmc_stair_length_pending_since_ms) <
+        VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT) {
+      vmc_control.target_length = (float)vmc_stair_retract_target_length();
+      return;
+    }
+    vmc_control.stair_length_override_active = 0U;
+    vmc_control.stair_length_override_remote_position = 0U;
+    vmc_stair_length_pending_remote_position = 0U;
+    vmc_stair_length_pending_since_ms = 0U;
   }
 
-  if (remote_control.s[0] == RC_SW_UP) {
-    vmc_control.target_length = VMC_LEG_TARGET_LONG;
-  } else if (remote_control.s[0] == RC_SW_MID) {
-    vmc_control.target_length = VMC_LEG_TARGET_MID;
-  } else if (remote_control.s[0] == RC_SW_DOWN) {
-    vmc_control.target_length = VMC_LEG_TARGET_SHORT;
+  vmc_control.target_length = (float)vmc_remote_leg_length_target();
+}
+
+static double vmc_remote_leg_length_target(void)
+{
+  const double position = clamp_double(
+      (double)remote_control_leg_length_position(), -1.0, 1.0);
+  return (double)VMC_LEG_TARGET_SHORT +
+         (position + 1.0) * 0.5 *
+             ((double)VMC_LEG_TARGET_LONG - (double)VMC_LEG_TARGET_SHORT);
+}
+
+static uint8_t vmc_remote_leg_length_gear(void)
+{
+  const double target = vmc_remote_leg_length_target();
+
+  if (target + (double)VMC_LEG_GEAR_THRESHOLD_TOL >=
+      (double)VMC_LEG_TARGET_LONG) {
+    return VMC_LEG_GEAR_HIGH;
   }
+  if (target + (double)VMC_LEG_GEAR_THRESHOLD_TOL >=
+      (double)VMC_LEG_TARGET_MID) {
+    return VMC_LEG_GEAR_MID;
+  }
+  return VMC_LEG_GEAR_LOW;
 }
 
 static double vmc_step_towards(double current, double target, double step)
@@ -1064,7 +1089,7 @@ static uint8_t vmc_jump_is_active(void)
              : 0U;
 }
 
-/* True for every stage of a jump, plus the aborted-with-S1-up case.
+/* True for every stage of a jump, plus the aborted-while-still-selected case.
  *
  * The leg torque path and the airborne detector gate on THIS: while a jump
  * runs the legs are driven by the jump length profile, and the detector must
@@ -1076,7 +1101,7 @@ static uint8_t vmc_jump_is_active_or_aborted(void)
   }
   return (vmc_control.jump_stage == VMC_JUMP_STAGE_ABORT &&
           remote_control.valid != 0U &&
-          remote_control.s[1] == RC_SW_UP)
+          remote_control_jump_mode() != RC_JUMP_DISABLED)
              ? 1U
              : 0U;
 }
@@ -1093,9 +1118,9 @@ static uint8_t vmc_jump_is_active_or_aborted(void)
  *
  * VMC_JUMP_MOVING_ENABLE_DEFAULT = 0 restores the old whole-jump blanking.
  *
- * NOTE the aborted-with-S1-up latch deliberately does NOT appear here, in
+ * NOTE the aborted-while-still-selected latch deliberately does NOT appear here, in
  * either mode.  It used to, and the effect was that an aborted jump left the
- * wheels dead until the pilot cycled S1 from up to middle: the balance loop
+ * wheels dead until the pilot moved the jump switch back through disabled: the balance loop
  * never came back, so the machine simply fell over on landing.  A jump aborts
  * for ordinary reasons - the landing pushes |pitch| past the attitude limit,
  * or one CAN frame is missed - so this happened intermittently and looked like
@@ -1128,7 +1153,7 @@ static uint8_t vmc_jump_overrides_target(void)
   }
   return (vmc_control.jump_stage == VMC_JUMP_STAGE_ABORT &&
           remote_control.valid != 0U &&
-          remote_control.s[1] == RC_SW_UP)
+          remote_control_jump_mode() != RC_JUMP_DISABLED)
              ? 1U
              : 0U;
 }
@@ -1249,7 +1274,6 @@ static uint8_t vmc_jump_abort_reason(void)
   if (vmc_control.jump_enable == 0U ||
       remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS ||
-      remote_control.s[1] == RC_SW_DOWN ||
       remote_control_allows_joint_enable() == 0U) {
     return VMC_JUMP_ABORT_REMOTE;
   }
@@ -1280,8 +1304,8 @@ static uint8_t vmc_jump_abort_reason(void)
 
 /* Automatic jump gate: are the two measurable conditions satisfied?
  *
- * S1 is the third condition and is checked by the caller, because it is also
- * the switch the normal drive logic reads.
+ * Channel 6 mode is checked by the caller, because it also controls manual
+ * jumps and the disabled state.
  *
  * Speed is the FUSED body velocity rather than the stick demand: the operator
  * asked for the robot to be actually travelling at 1 m/s, not for the stick to
@@ -1318,10 +1342,7 @@ static void vmc_jump_update(void)
 {
   const uint32_t now = HAL_GetTick();
   uint32_t dt_ms = 0U;
-  const uint8_t s1_mid =
-      (remote_control.valid != 0U && remote_control.s[1] == RC_SW_MID) ? 1U : 0U;
-  const uint8_t s1_is_up =
-      (remote_control.valid != 0U && remote_control.s[1] == RC_SW_UP) ? 1U : 0U;
+  const uint8_t jump_mode = remote_control_jump_mode();
   const uint32_t cooldown_ms =
       clamp_u32(vmc_control.jump_cooldown_ms, 0U, 5000U);
   const uint32_t total_timeout_ms =
@@ -1346,9 +1367,19 @@ static void vmc_jump_update(void)
     const uint8_t cooled_down =
         ((now - vmc_control.jump_last_finish_ms) >= cooldown_ms) ? 1U : 0U;
     const uint8_t auto_now =
-        (cooled_down != 0U && s1_is_up != 0U && vmc_jump_auto_ready() != 0U)
+        (cooled_down != 0U && jump_mode == RC_JUMP_AUTO &&
+         vmc_jump_auto_ready() != 0U)
             ? 1U
             : 0U;
+    const uint8_t manual_now =
+        (cooled_down != 0U && jump_mode == RC_JUMP_MANUAL &&
+         vmc_jump_manual_latched == 0U)
+            ? 1U
+            : 0U;
+
+    if (jump_mode != RC_JUMP_MANUAL) {
+      vmc_jump_manual_latched = 0U;
+    }
 
     vmc_control.jump_abort_reason = VMC_JUMP_ABORT_NONE;
 
@@ -1357,8 +1388,8 @@ static void vmc_jump_update(void)
      * sample, so no single frame may launch a jump.
      *
      * jump_armed is kept as the telemetry-visible "about to fire" indication:
-     * 1 means S1 is up, the robot is at speed, the laser is in the window and
-     * the confirmation has elapsed. */
+     * 1 means auto mode is selected, the robot is at speed, the laser is in the
+     * window and the confirmation has elapsed. */
     if (auto_now != 0U) {
       if (vmc_jump_auto_hold_ms < vmc_control.jump_auto_confirm_ms) {
         vmc_jump_auto_hold_ms += dt_ms;
@@ -1371,10 +1402,14 @@ static void vmc_jump_update(void)
             ? 1U
             : 0U;
 
-    if (vmc_control.jump_armed != 0U && vmc_jump_start_is_allowed() != 0U) {
+    if ((vmc_control.jump_armed != 0U || manual_now != 0U) &&
+        vmc_jump_start_is_allowed() != 0U) {
       vmc_control.jump_trigger_count++;
       vmc_control.jump_start_ms = now;
       vmc_jump_auto_hold_ms = 0U;
+      if (manual_now != 0U) {
+        vmc_jump_manual_latched = 1U;
+      }
       vmc_jump_enter_stage(VMC_JUMP_STAGE_COMPRESS, now);
     }
     return;
@@ -1386,7 +1421,8 @@ static void vmc_jump_update(void)
         ((now - vmc_control.jump_last_finish_ms) >= cooldown_ms) ? 1U : 0U;
 
     vmc_control.jump_target_length = (float)vmc_jump_stage_target_length();
-    if (s1_mid != 0U && cooled_down != 0U) {
+    if ((jump_mode == RC_JUMP_DISABLED || jump_mode == RC_JUMP_MANUAL) &&
+        cooled_down != 0U) {
       vmc_control.jump_stage = VMC_JUMP_STAGE_IDLE;
       vmc_control.jump_stage_start_ms = 0U;
       vmc_control.jump_stage_ms = 0U;
@@ -1511,8 +1547,8 @@ static uint8_t vmc_stair_start_is_allowed(void)
           vmc_getup_is_active() == 0U &&
           vmc_jump_is_active_or_aborted() == 0U &&
           vmc_descent_is_active() == 0U &&
-          remote_control.valid != 0U &&
-          remote_control.s[0] == RC_SW_UP &&
+          remote_control_stair_enabled() != 0U &&
+          vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH &&
           vmc_probe_state.body.imu_valid != 0U &&
           vmc_probe_state.body.imu_connected != 0U &&
           remote_control_allows_joint_enable() != 0U)
@@ -1550,7 +1586,8 @@ static void vmc_stair_enter_stage(uint8_t stage, uint32_t now)
         (float)((vmc_probe_state.left_leg.phi0 +
                  vmc_probe_state.right_leg.phi0) * 0.5);
     vmc_control.stair_length_override_active = 1U;
-    vmc_control.stair_length_override_remote_position = remote_control.s[0];
+    vmc_control.stair_length_override_remote_position =
+        sbus_remote_data.channels[RC_LEG_LENGTH];
     vmc_stair_length_pending_remote_position = 0U;
     vmc_stair_length_pending_since_ms = 0U;
     vmc_control.target_length = (float)vmc_stair_retract_target_length();
@@ -1882,8 +1919,6 @@ static double vmc_descent_target_length(void)
 
 static uint8_t vmc_descent_start_is_allowed(void)
 {
-  const double leg_length_avg =
-      (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5;
   const double start_speed =
       clamp_double(vmc_control.descent_start_speed, 0.0, 2.0);
   const uint32_t start_confirm_ms =
@@ -1896,7 +1931,7 @@ static uint8_t vmc_descent_start_is_allowed(void)
           : 0U;
   const uint8_t long_stance =
       (vmc_control.stair_length_override_active != 0U ||
-       leg_length_avg >= (double)VMC_LEG_TARGET_LONG - 0.030)
+       vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH)
           ? 1U
           : 0U;
   const uint8_t travelling =
@@ -1910,8 +1945,7 @@ static uint8_t vmc_descent_start_is_allowed(void)
           vmc_getup_is_active() == 0U &&
           vmc_jump_is_active_or_aborted() == 0U &&
           vmc_stair_is_active() == 0U &&
-          remote_control.valid != 0U &&
-          remote_control.s[0] == RC_SW_UP &&
+          remote_control_stair_enabled() != 0U &&
           remote_control_allows_joint_enable() != 0U &&
           long_stance != 0U && flight_detected != 0U &&
           (vmc_control.stair_length_override_active != 0U ||
@@ -2185,7 +2219,7 @@ static void vmc_update_getup_state(void)
   }
 
   /* Arm fall detection only after observing an upright running state.  This
-   * deliberately ignores the case where S1=3 is selected while the chassis
+   * deliberately ignores the case where channel 4 is already enabled while the chassis
    * was already lying down, allowing that explicit restart to perform one
    * get-up sequence. */
   if (fully_fallen == 0U &&
@@ -2193,8 +2227,9 @@ static void vmc_update_getup_state(void)
     vmc_fall_monitor_armed = 1U;
   }
 
-  /* Once re-armed by S1=2, only S1=3 may start the controller again.  The
-   * one-shot arm is consumed when starting recovery from a fallen pose. */
+  /* Once re-armed by channel 4 UP, only channel 4 DOWN may start the
+   * controller again.  The one-shot arm is consumed when starting recovery
+   * from a fallen pose. */
   if (vmc_fall_rearm_armed != 0U && remote_control.s[1] == RC_SW_MID) {
     if (fully_fallen == 0U ||
         (vmc_control.getup_state != VMC_GETUP_STATE_IDLE &&
@@ -2293,12 +2328,21 @@ static void vmc_update_remote_mode(void)
   double yaw_rate_max;
   const double dt = vmc_loop_dt();
   const uint32_t now = HAL_GetTick();
+  const uint8_t spin_enabled = remote_control_spin_mode_enabled();
+  const double speed_scale = (double)remote_control_max_speed_scale();
   uint8_t follow_requested = 0U;
 
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
   vmc_wheel_control.manual_forward_current = 0;
   vmc_wheel_control.manual_turn_current = 0;
+  vmc_balance.spin_mode_enabled = spin_enabled;
+
+  if (spin_enabled != vmc_spin_mode_last) {
+    vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_spin_mode_last = spin_enabled;
+  }
 
   if (remote_control_source != vmc_remote_source_last) {
     vmc_balance.yaw_target = vmc_probe_state.body.yaw;
@@ -2332,12 +2376,11 @@ static void vmc_update_remote_mode(void)
     return;
   }
 
-  if (remote_control.s[1] == RC_SW_UP ||
-      remote_control.s[1] == RC_SW_MID) {
+  if (remote_control_is_enabled() != 0U) {
     vmc_control.enabled = 1U;
-    /* Both positions drive.  S1 up additionally enables the automatic jump
-     * gate (see vmc_jump_auto_ready); S1 mid is normal driving, so moving the
-     * switch back to mid is what disarms the next jump. */
+    /* Channel 4 DOWN is the only position that drives.  Jump, stairs and spin
+     * have their own channels and are additionally gated by this master
+     * enable. */
     vmc_balance.wheel_output_enable =
         (vmc_getup_fully_fallen == 0U && vmc_getup_is_active() == 0U) ? 1U : 0U;
   } else {
@@ -2364,9 +2407,14 @@ static void vmc_update_remote_mode(void)
     return;
   }
 
-  forward_current = rc_channel_to_current(remote_control.ch[3],
-                                          VMC_RC_WHEEL_FWD_CURRENT_MAX);
-  turn_input = rc_channel_to_unit((int16_t)-remote_control.ch[2]);
+  forward_current = rc_channel_to_current(
+      (int16_t)(remote_control_channel(RC_CHASSIS_Y) *
+                RC_CHANNAL_ERROR_VALUE),
+      VMC_RC_WHEEL_FWD_CURRENT_MAX);
+  forward_current = (int16_t)((double)forward_current * speed_scale);
+  turn_input = rc_channel_to_unit(
+      (int16_t)(remote_control_channel(RC_CHASSIS_X) *
+                RC_CHANNAL_ERROR_VALUE));
   vmc_wheel_control.manual_forward_current = forward_current;
 
   if (remote_control_source == RC_SOURCE_CBOARD &&
@@ -2402,10 +2450,17 @@ static void vmc_update_remote_mode(void)
       vmc_balance.yaw_target = vmc_probe_state.body.yaw;
       vmc_balance.yaw_hold_active = 1U;
     }
-    yaw_rate_max = clamp_double(vmc_balance.yaw_target_rate_max, 0.0, 10.0);
-    vmc_balance.yaw_target =
-        (float)((double)vmc_balance.yaw_target +
-                turn_input * yaw_rate_max * dt);
+    if (spin_enabled != 0U) {
+      const double spin_rate =
+          clamp_double(vmc_balance.yaw_spin_rate, 0.0, 10.0);
+      vmc_balance.yaw_target =
+          (float)((double)vmc_balance.yaw_target + spin_rate * dt);
+    } else {
+      yaw_rate_max = clamp_double(vmc_balance.yaw_target_rate_max, 0.0, 10.0);
+      vmc_balance.yaw_target =
+          (float)((double)vmc_balance.yaw_target +
+                  turn_input * yaw_rate_max * dt);
+    }
   }
 
   if (vmc_balance.speed_control_enable != 0U) {
@@ -3026,6 +3081,8 @@ void vmc_balance_init(void)
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
+  vmc_balance.yaw_spin_rate = VMC_RC_YAW_SPIN_RATE_DEFAULT;
+  vmc_balance.spin_mode_enabled = 0U;
   vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
   vmc_balance.gimbal_follow_front_ecd = VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT;
   vmc_balance.gimbal_follow_kp = VMC_GIMBAL_FOLLOW_KP_DEFAULT;
@@ -3453,28 +3510,21 @@ void vmc_balance_update(void)
    * small differences this loop exists to correct, and the shared theta
    * target cancels out of the difference anyway.
    *
-   * Only active in the HIGHEST leg-length gear (S2 UP) once the measured legs
-   * have actually reached the long preset.  At shorter presets the legs have
-   * more stroke headroom and the plain balance loop is the established tune,
-   * so this loop must not silently change it.  The measured-length gate also
-   * covers the preset ramp and every deliberate short-leg override.
+   * Only active when the channel-9 knob is at/above the old high-leg target.
+   * At shorter knob positions the legs have more stroke headroom and the plain
+   * balance loop is the established tune, so this loop must not silently
+   * change it.  The latched stair short-leg override is excluded separately.
    *
    * Also deliberately inert while the get-up or jump state machines own the
    * legs: those sequences command both legs from their own profiles and are
    * tuned without this term. */
   const double leg_sync_limit =
       clamp_double(vmc_balance.leg_sync_torque_limit, 0.0, VMC_LEG_TP_MAX);
-  const double leg_sync_length_avg =
-      (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) *
-      0.5;
-  /* S2=UP is not sufficient: the stair length override can deliberately hold
-   * the legs near 0.16 m while S2 is still in the high-gear position.  Require
-   * both the high-gear selection and legs that are actually near the high
-   * preset, and stay out of the latched stair short-leg state entirely. */
+  /* The channel-9 knob selects the gear band.  The stair length override can
+   * deliberately hold the legs near 0.16 m after a trigger, so exclude that
+   * latched state as well. */
   const uint8_t leg_sync_high_gear =
-      (remote_control.valid != 0U &&
-       remote_control.s[0] == RC_SW_UP &&
-       leg_sync_length_avg >= (double)VMC_LEG_TARGET_LONG - 0.030)
+      (vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH)
           ? 1U
           : 0U;
   const uint8_t leg_sync_active =
@@ -4962,6 +5012,7 @@ void vmc_probe_task(void const *argument)
   (void)argument;
 
   memset((void *)&vmc_probe_state, 0, sizeof(vmc_probe_state));
+  sbus_remote_init();
   remote_control_init();
   hi12_imu_init();
   vmc_lqr_rtt_init();
@@ -4977,6 +5028,7 @@ void vmc_probe_task(void const *argument)
     vmc_loop_timing_update();
     hi12_imu_update();
     tf02_pro_update();
+    sbus_remote_update();
     remote_control_update_source();
     vmc_update_remote_mode();
     vmc_update_body_state();

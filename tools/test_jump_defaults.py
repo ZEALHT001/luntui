@@ -341,10 +341,11 @@ class MovingJumpTest(unittest.TestCase):
 
 
 class AutoJumpTest(unittest.TestCase):
-    """The jump is fired by the automatic gate, not by flipping S1 up.
+    """The jump is fired by the automatic gate in channel 6's middle position.
 
-    Operator conditions: S1 must be UP, the machine must actually be moving at
-    1 m/s, and the laser must read strictly inside (80, 100) cm.
+    Operator conditions: channel 4 must be enabled, channel 6 must be centred,
+    the machine must actually be moving at the configured speed, and the laser
+    must read strictly inside the configured distance window.
     """
 
     def test_thresholds_stay_in_a_sane_range(self) -> None:
@@ -387,34 +388,31 @@ class AutoJumpTest(unittest.TestCase):
         # A stale laser must never arm a jump.
         self.assertIn("tf02_connected", gate)
 
-    def test_s1_up_gates_the_automatic_trigger(self) -> None:
+    def test_auto_mode_gates_the_automatic_trigger(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
         idle = _function_body(source, "vmc_jump_update")
-        self.assertIn("s1_is_up", idle)
+        self.assertIn("jump_mode == RC_JUMP_AUTO", idle)
         self.assertIn("vmc_jump_auto_ready()", idle)
 
-    def test_s1_up_does_not_oscillate_the_leg_length(self) -> None:
-        """S1 UP is a jump gate, not the removed chassis-test waveform.
+    def test_jump_switch_does_not_oscillate_the_leg_length(self) -> None:
+        """Channel 6 is a jump-mode selector, not a chassis-test waveform.
 
         An early firmware revision deliberately drove a triangular leg-length
-        sweep while S1 was UP.  It was removed when the jump state machine
-        replaced that test mode, but the visible symptom - the machine
-        periodically dropping and rising while standing - is easy to mistake
-        for a leg-length control fault.  S2 is the only switch allowed to
-        choose a leg-length preset.
+        sweep while a switch was UP.  Leg length is now the continuous channel
+        9 knob and the jump switch must not write it.
         """
         source = SOURCE.read_text(encoding="utf-8")
         body = _function_body(source, "vmc_update_remote_target_length")
-        self.assertIn("remote_control.s[0]", body)
+        self.assertIn("vmc_remote_leg_length_target()", body)
+        self.assertNotIn("remote_control.s[0]", body)
         self.assertNotIn("remote_control.s[1]", body)
         self.assertNotIn("s1_up_oscillation_start_ms", source)
 
-    def test_the_manual_arm_step_is_gone(self) -> None:
-        """S1 MID used to arm and S1 UP used to fire; the gate replaced both.
+    def test_the_old_s1_manual_arm_step_is_gone(self) -> None:
+        """The old S1-MID arm / S1-UP fire sequence must stay removed.
 
-        If the old arming branch came back, moving S1 up would fire a jump
-        regardless of speed or distance, which is exactly what this change
-        removed.
+        Manual jump is now a separate, edge-triggered channel-6 DOWN action;
+        jump_armed remains an automatic-gate indication only.
         """
         source = SOURCE.read_text(encoding="utf-8")
         idle = _function_body(source, "vmc_jump_update")

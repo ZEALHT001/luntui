@@ -135,9 +135,9 @@ diagnostics below:
 | 171 | stair speed confirmation timer | ms |
 | 172 | stair pre-impact confirmation timer | ms |
 | 173 | stair impact confirmation timer | ms |
-| 174 | remote source | `0` none, `1` local SBUS, `2` C-board |
-| 175 | physical S1 switch | `1` up, `3` mid, `2` down |
-| 176 | physical S2 switch | `1` up, `3` mid, `2` down |
+| 174 | remote source | `0` none, `3` local SBUS |
+| 175 | master switch, synthesized from SBUS channel 4 | `1` up, `3` mid, `2` down |
+| 176 | leg knob, synthesized from SBUS channel 9 | `1` high, `3` middle, `2` low |
 | 177 | automatic descent stage | `0` idle, `1` air extend, `2` cushion, `3` finished, `4` abort |
 | 178 | descent abort reason | `0` none, `1` remote, `2` feedback, `3` get-up, `4` jump, `5` stair, `6` timeout |
 | 179 | touchdown detected | `0` or `1` |
@@ -153,8 +153,8 @@ the state machine, ready/pre-impact/impact show how far the trigger progressed,
 the per-leg flags show whether only one side saw the step, and the three timer
 channels show whether a threshold was missed or merely held too briefly.
 Fields 174..176 (schema 21) identify which remote produced the frame and the
-physical switch positions, so a REMOTE abort can be separated from an S1-down
-command or a source handover.
+synthesized master/leg-switch positions, so a REMOTE abort can be separated
+from a channel-4 stop command or a source handover.
 
 Fields 177..186 (schema 22) publish automatic platform descent.  Stage `1`
 extends the legs while both wheels remain gated.  Once field 179 is set, stage
@@ -167,8 +167,8 @@ Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 two separately-reported channels cannot separate "the legs never diverged" from
 "they diverged and the loop never fired".  Field 155 is the error the loop acts
 on and field 156 the differential torque it applied; both are zero while the
-feature is disabled, while S2 is not in its highest leg-length position, while
-the measured legs have not reached the long preset, or while the get-up, jump,
+feature is disabled, while the measured legs have not reached the long preset,
+or while the get-up, jump,
 stair, or descent state machines own the legs.  The measured-length gate avoids
 running the loop during the preset ramp and during the latched short-leg state
 after a stair climb.
@@ -212,7 +212,7 @@ Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" con
 (`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg
 that has stopped carrying the machine lets its length target chase outward so
 the support feedforward pushes that wheel back down, instead of the loop
-holding the S2 preset and pulling the wheel up toward the body.  The extension
+holding the channel-9 leg-length target and pulling the wheel up toward the body.  The extension
 is capped at `VMC_LEG_LENGTH_MAX`, so once the leg is fully extended further
 lifting is real flight and the airborne detector takes over.  Off by default.
 The 141-field layout is still parsed as `format-v14`.
@@ -231,8 +231,9 @@ fields straight into a verdict.  The 138-field layout is still parsed as
 `format-v13`.
 
 Fields 136/137 were added with schema 9.  The automatic jump gate fires on the
-laser reading strictly inside (80, 100) cm while S1 is UP and the fused speed is
-at least 1 m/s, so without the distance and the health flag a capture cannot
+laser reading strictly inside its configured window while channel 6 is centred
+and the fused speed is at least its configured minimum, so without the distance
+and the health flag a capture cannot
 distinguish "the window was never satisfied" from "the laser was not answering"
 from "the robot never reached speed".  The previous 136-field layout is still
 parsed as `format-v12`.

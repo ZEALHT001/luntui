@@ -139,8 +139,8 @@ def _probe(count: int, **updates) -> Probe:
 class RemoteStateTest(unittest.TestCase):
     """The operator's stop command is positive evidence, and is enough alone."""
 
-    def test_s1_down_is_accepted_even_with_active_outputs(self) -> None:
-        """S1 down forces every output to zero, so flashing is safe.
+    def test_channel4_stop_is_accepted_even_with_active_outputs(self) -> None:
+        """Channel 4 UP forces every output to zero, so flashing is safe.
 
         The output readings are deliberately left active here: the point is
         that the operator's command is authoritative, not that the outputs
@@ -149,21 +149,21 @@ class RemoteStateTest(unittest.TestCase):
         probe = _probe(
             100,
             remote_s1=RC_SW_DOWN,
-            rc_source=2.0,
+            rc_source=3.0,
             airborne_joint_torque_max=18.0,
             left_wheel_current=15000.0,
         )
         self.assertTrue(probe.s1_down())
         self.assertTrue(probe.busy())
 
-    def test_s1_not_down_is_rejected(self) -> None:
-        probe = _probe(100, remote_s1=1.0, rc_source=2.0)
+    def test_channel4_enabled_is_rejected(self) -> None:
+        probe = _probe(100, remote_s1=1.0, rc_source=3.0)
         self.assertFalse(probe.s1_down())
         self.assertTrue(probe.switched_on())
 
-    def test_s1_mid_position_still_counts_as_enabled(self) -> None:
-        """S1 MID is not a stop; the firmware only stops on DOWN."""
-        probe = _probe(100, remote_s1=3.0, rc_source=2.0)
+    def test_channel4_down_position_counts_as_enabled(self) -> None:
+        """Synthesized MID means channel 4 is DOWN and enabled."""
+        probe = _probe(100, remote_s1=3.0, rc_source=3.0)
         self.assertFalse(probe.s1_down())
         self.assertTrue(probe.switched_on())
 
@@ -184,7 +184,7 @@ class RemoteStateTest(unittest.TestCase):
         self.assertTrue(probe.rc_offline())
 
     def test_remote_online_and_not_stopped_blocks(self) -> None:
-        probe = _probe(100, remote_s1=1.0, rc_source=2.0)
+        probe = _probe(100, remote_s1=1.0, rc_source=3.0)
         self.assertFalse(probe.rc_offline())
         self.assertTrue(probe.switched_on())
 
@@ -199,8 +199,8 @@ class RemoteStateTest(unittest.TestCase):
 
     def test_a_single_stale_frame_does_not_decide(self) -> None:
         """The operator's command must hold across the window."""
-        probe = _probe(100, rc_source=2.0, remote_s1=1.0)
-        # One frame reporting the remote absent / S1 down must not flip it.
+        probe = _probe(100, rc_source=3.0, remote_s1=1.0)
+        # One frame reporting the remote absent / channel-4 stop must not flip it.
         probe.observe(_sample(rc_source=RC_SOURCE_NONE, remote_s1=RC_SW_DOWN))
         self.assertFalse(probe.rc_offline())
         self.assertFalse(probe.s1_down())
@@ -215,7 +215,7 @@ class RemoteStateTest(unittest.TestCase):
         self.assertLess(probe.frames, RC_STATE_MIN_FRAMES)
         self.assertFalse(probe.rc_offline())
 
-        probe = _probe(3, remote_s1=RC_SW_DOWN, rc_source=2.0)
+        probe = _probe(3, remote_s1=RC_SW_DOWN, rc_source=3.0)
         self.assertFalse(probe.s1_down())
 
 

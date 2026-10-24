@@ -105,7 +105,8 @@ extern "C" {
  *
  * Off by default.  While a leg is NOT carrying the machine - the per-side
  * load latch is set - its length target chases outward at leg_follow_rate
- * (m/s) instead of holding the S2 preset.  The existing support feedforward
+ * (m/s) instead of holding the channel-9 leg-length target.  The existing
+ * support feedforward
  * then pushes that wheel back down toward the ground, so a body that is
  * slowly lifted keeps its wheels in contact until the leg runs out of stroke
  * at VMC_LEG_LENGTH_MAX.  Only then does further lifting take the wheel off
@@ -211,9 +212,9 @@ extern "C" {
  * cannot be read.  Distinct from VMC_AIRBORNE_SIDE_LEFT/RIGHT. */
 #define VMC_LEG_FOLLOW_SIDE_NONE 2U
 
-/* S2 selects among these three presets: UP -> LONG, MID -> MID, DOWN ->
- * SHORT.  Units are metres; VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp
- * whatever is chosen here.
+/* SBUS channel 9 is a continuous leg-length knob.  Its -1 endpoint maps to
+ * SHORT, 0 maps to MID and +1 maps to LONG.  Units are metres;
+ * VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp the result.
  *
  * SHORT is also the length the self-righting sequence stands up on
  * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too.
@@ -223,6 +224,12 @@ extern "C" {
 #define VMC_LEG_TARGET_SHORT      0.160f
 #define VMC_LEG_TARGET_MID        0.260f
 #define VMC_LEG_TARGET_LONG       0.360f
+#define VMC_LEG_GEAR_LOW          0U
+#define VMC_LEG_GEAR_MID          1U
+#define VMC_LEG_GEAR_HIGH         2U
+/* Absorbs SBUS quantisation and knob jitter when comparing against the old
+ * discrete targets.  One SBUS count is about 0.13 mm over this knob range. */
+#define VMC_LEG_GEAR_THRESHOLD_TOL 0.0005f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
 #define VMC_JUMP_ENABLE_DEFAULT   1U
@@ -323,10 +330,11 @@ extern "C" {
 
 /* Automatic jump gate.
  *
- * The jump used to be fired by flipping S1 up; it now fires by itself once all
- * three operator conditions hold at once:
+ * In SBUS channel 6's middle position the jump fires by itself once the
+ * following gates hold at once:
  *
- *   - S1 is UP (RC_SW_UP);
+ *   - channel 4 is DOWN (master enable);
+ *   - channel 6 is centred (automatic-jump mode);
  *   - the machine is actually travelling at >= VMC_JUMP_AUTO_SPEED_MIN m/s;
  *   - the TF02 laser reads strictly inside the (min, max) window in cm.
  *
@@ -351,18 +359,19 @@ extern "C" {
 
 /* Automatic stair climb (impact-triggered leg retraction).
  *
- * Operator procedure: select the HIGHEST leg-length gear on S2 and drive into
- * a step whose top is below the body.  The wheels jam against the step, the
- * LQR keeps demanding wheel torque, and the legs are pushed back.  When both
- * per-leg impact tests agree, the state machine retracts both legs to
+ * Operator procedure: enable stairs with SBUS channel 7 DOWN, select a long
+ * leg-length setting with channel 9, and drive into a step whose top is below
+ * the body.  The wheels jam against the step, the LQR keeps demanding wheel
+ * torque, and the legs are pushed back.  When both per-leg impact tests agree,
+ * the state machine retracts both legs to
  * stair_retract_length and drives the absolute leg angle phi0 to
  * stair_phi0_target, which rolls the body over the step.  It then holds that
- * pose and, on completion, stays on the short legs until S2 is moved to a
- * different gear.
+ * pose and, on completion, stays on the short legs until the channel-9 knob is
+ * moved.
  *
  * This is deliberately NOT a jump: the wheels stay in the balance loop, and
- * the only actuators that move are the two virtual legs.  It is gated on the
- * S2 UP selection, so MID and DOWN keep the established tune unchanged.
+ * the only actuators that move are the two virtual legs.  Channel 7 must be
+ * DOWN and the configured ready length still requires a long stance.
  *
  * Impact test (both legs must agree):
  *     |left_wheel_torque_raw|  >= stair_impact_torque_threshold  AND
@@ -406,7 +415,8 @@ extern "C" {
 /* Automatic descent assist.
  *
  * After a stair climb the short-leg latch deliberately remains active until
- * S2 moves again.  Driving off the platform in that state used to fall through
+ * the channel-9 knob moves again.  Driving off the platform in that state used
+ * to fall through
  * to the generic airborne detector: the wheels stayed cut for its 500 ms
  * release hysteresis, so balance only returned after the body had already
  * tipped.  This state machine owns the same manoeuvre explicitly.
@@ -417,8 +427,9 @@ extern "C" {
  * same control cycle.  The target is rate-limited in software, so the measured
  * leg length never snaps between the two poses.
  *
- * The entry path is limited to S2 UP and either the post-stair short-leg lock
- * or an already-long measured stance.  A non-zero travel speed is also needed
+ * The entry path is limited to channel 7 enabled and either the post-stair
+ * short-leg lock or channel 9 at/above the old long-leg target.  A non-zero
+ * travel speed is also needed
  * unless the stair lock is present, which keeps a bench lift from starting the
  * action. */
 #define VMC_DESCENT_ENABLE_DEFAULT                  1U
@@ -1040,10 +1051,9 @@ extern "C" {
  * (Tp) domain, so the limit shares the +/-2*VMC_DM_J8009_TMAX range with
  * tp_limit.
  *
- * Only the HIGHEST leg-length gear (S2 UP) applies this term.  At MID and
- * SHORT the loop is forced to zero so the established standing tune there is
- * unchanged; the gate follows the S2 selection, not the measured length, so
- * the leg-length ramp cannot chatter it.
+ * Only a channel-9 setting at/above the old long-leg target applies this term.
+ * At mid and short knob positions the loop is forced to zero so the established
+ * standing tune there is unchanged.
  *
  * The applied term is independent of tp_output_enable: it is summed into the
  * same joint-torque command as both the LQR Tp and the phi0 PD, so it keeps
@@ -1129,6 +1139,7 @@ extern "C" {
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
+#define VMC_RC_YAW_SPIN_RATE_DEFAULT VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
@@ -1237,11 +1248,12 @@ typedef struct {
   uint8_t stair_enable;
   uint8_t stair_stage;
   uint8_t stair_abort_reason;
-  /* Latched after a trigger: keep the legs at stair_retract_length until S2
-   * has moved to a different, stable position.  This is what stops the long
-   * preset from snapping back while the machine is still climbing. */
+  /* Latched after a trigger: keep the legs at stair_retract_length until the
+   * channel-9 knob has moved to a different, stable position.  This is what
+   * stops the long-leg target from snapping back while the machine is still
+   * climbing. */
   uint8_t stair_length_override_active;
-  uint8_t stair_length_override_remote_position;
+  uint16_t stair_length_override_remote_position;
   uint8_t stair_fast_detected;
   uint8_t stair_impact_detected;
   uint8_t stair_ready_detected;
@@ -1458,6 +1470,8 @@ typedef struct {
   float yaw_hold_kd;
   float yaw_hold_deadband;
   float yaw_target_rate_max;
+  float yaw_spin_rate;
+  uint8_t spin_mode_enabled;
   int16_t yaw_hold_current_limit;
   uint16_t gimbal_follow_front_ecd;
   float gimbal_follow_kp;

@@ -89,6 +89,20 @@ class DefaultsTest(unittest.TestCase):
 
 
 class ControlPathTest(unittest.TestCase):
+    def test_knob_gear_thresholds_match_the_old_presets(self) -> None:
+        """Discrete gear logic now derives from the continuous channel 9 knob."""
+        gear = _body(SOURCE.read_text(encoding="utf-8"), "vmc_remote_leg_length_gear")
+        for needle in (
+            "VMC_LEG_GEAR_THRESHOLD_TOL",
+            "VMC_LEG_TARGET_LONG",
+            "VMC_LEG_TARGET_MID",
+            "return VMC_LEG_GEAR_HIGH",
+            "return VMC_LEG_GEAR_MID",
+            "return VMC_LEG_GEAR_LOW",
+        ):
+            with self.subTest(needle=needle):
+                _has(gear, needle, "the knob gear mapping is incomplete")
+
     def test_error_is_the_left_minus_right_difference(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_balance_update")
         _has(
@@ -154,17 +168,17 @@ class ControlPathTest(unittest.TestCase):
             "the sync term is not summed into the joint-torque command",
         )
 
-    def test_only_active_with_long_legs_in_the_highest_gear(self) -> None:
-        """S2 UP alone is not enough.
+    def test_only_active_with_the_high_leg_knob_band(self) -> None:
+        """The channel-9 knob must be at or above the old high target.
 
         The stair length override keeps the legs near 0.16 m after a climb
-        while S2 is still physically UP.  Gating on S2 alone therefore ran the
-        anti-splay loop at the short-leg preset.
+        while channel 9 may still command a long target; that latched override
+        must remain a separate exclusion.
         """
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_balance_update")
-        _has(body, "remote_control.s[0] == RC_SW_UP", "S2 high gear is not gated")
-        _has(body, "leg_sync_length_avg", "actual leg length is not gated")
-        _has(body, "VMC_LEG_TARGET_LONG - 0.030", "the long-leg threshold is missing")
+        _has(body, "vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH",
+             "the high leg-knob band is not gated")
+        self.assertNotIn("remote_control.s[0]", body, "leg sync still depends on the old S2")
         _has(body, "stair_length_override_active == 0U",
              "the latched short-leg stair state is not excluded")
         _has(body, "leg_sync_high_gear != 0U", "the high-gear flag is not used")

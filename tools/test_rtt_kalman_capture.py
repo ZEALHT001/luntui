@@ -351,7 +351,7 @@ class ParseTests(unittest.TestCase):
         """Schema 11 carries the ground-following extension per side.
 
         The per-leg targets already include it; these fields are what separate
-        "the operator moved S2" from "that leg lost the ground".
+        "the operator moved channel 9" from "that leg lost the ground".
         """
         parsed = parse_vmcvoa_line(
             format_line(leg_follow_offset_left=0.0,

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Regression tests for the automatic stair climb.
 
-Operator procedure: select the HIGHEST leg-length gear on S2 and drive into a
-step below the body.  The wheels jam, the LQR keeps demanding torque, the legs
-are pushed back, and both per-leg impact tests agree.  The state machine then
-retracts the legs, ramps the balance theta target forward, holds, and stays on
-the short legs until S2 is moved again.
+Operator procedure: enable the stair feature on SBUS channel 7, select a long
+leg length on channel 9, and drive into a step below the body.  The wheels jam,
+the LQR keeps demanding torque, the legs are pushed back, and both per-leg
+impact tests agree.  The state machine then retracts the legs, ramps the
+balance theta target forward, holds, and stays on the short legs until the
+channel-9 knob is moved again.
 
 These are source-level checks, in the same style as test_leg_sync.py: the
 firmware has no host-buildable control layer, so the shipped source is the
@@ -95,9 +96,11 @@ class DefaultsTest(unittest.TestCase):
 
 
 class DetectionTest(unittest.TestCase):
-    def test_only_the_highest_s2_gear_can_start(self) -> None:
+    def test_stair_channel_and_safety_gates_are_required(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_start_is_allowed")
-        _has(body, "remote_control.s[0] == RC_SW_UP", "S2 high gear is not required")
+        _has(body, "remote_control_stair_enabled()", "stair channel is not required")
+        _has(body, "vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH",
+             "the high leg-knob band is not required")
         _has(body, "vmc_getup_is_active()", "get-up is not excluded")
         _has(body, "vmc_jump_is_active_or_aborted()", "jump is not excluded")
         _has(body, "airborne_active", "airborne is not excluded")
@@ -156,7 +159,7 @@ class StateMachineTest(unittest.TestCase):
         _has(body, "VMC_STAIR_STAGE_HOLD", "HOLD is missing")
         _has(body, "stair_stage_ms >= hold_ms", "HOLD does not use stair_hold_ms")
 
-    def test_finish_keeps_a_length_override_until_s2_moves(self) -> None:
+    def test_finish_keeps_a_length_override_until_the_knob_moves(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_enter_stage")
         _has(body, "stair_length_override_active = 1U", "the length override is not latched")
         remote = _body(
@@ -164,7 +167,7 @@ class StateMachineTest(unittest.TestCase):
         )
         _has(remote, "vmc_stair_is_active()", "an active action can release the lock")
         _has(remote, "stair_length_override_remote_position",
-             "the override does not remember the triggering gear")
+             "the override does not remember the triggering knob position")
 
 
 class ControlIntegrationTest(unittest.TestCase):
@@ -275,8 +278,8 @@ class RuntimeTuningTest(unittest.TestCase):
         telemetry = _body(source, "vmc_lqr_rtt_telemetry_update")
         for needle, why in (
             ("remote_control_source", "the remote source is not published"),
-            ("remote_control.s[1]", "S1 is not published"),
-            ("remote_control.s[0]", "S2 is not published"),
+            ("remote_control.s[1]", "legacy master switch is not published"),
+            ("remote_control.s[0]", "legacy leg switch is not published"),
         ):
             _has(telemetry, needle, why)
         capture = CAPTURE.read_text(encoding="utf-8")

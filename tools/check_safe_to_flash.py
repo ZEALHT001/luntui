@@ -11,11 +11,11 @@ Two independent kinds of evidence are accepted, and either one is enough:
 
    The firmware gates EVERY joint and wheel output on
    ``remote_control_allows_joint_enable()``, which requires the remote to be
-   valid, its frames fresh, and S1 to be off the DOWN position.  So either of
-   the following states forces the whole drive chain - leg torque, wheel
-   current and the DM motor state machine - to zero:
+   valid, its frames fresh, and SBUS channel 4 to be in the enabled DOWN
+   position.  So either of the following states forces the whole drive chain -
+   leg torque, wheel current and the DM motor state machine - to zero:
 
-     * S1 moved to DOWN (emergency stop)
+     * channel 4 moved UP to -1 (emergency stop; telemetry remote_s1 == 2)
      * the remote is offline (``rc_source == 0``, RC_SOURCE_NONE)
 
    Both are read straight out of telemetry, so they are positive evidence of
@@ -35,11 +35,9 @@ Two independent kinds of evidence are accepted, and either one is enough:
        With the controller disabled the motors are disabled too, so this is
        zero; a machine holding its own weight cannot read near zero.
 
-S1 note: this branch's VMCVOFA layout does not carry the transmitter switch
-(``remote_s1``), so the S1 branch below only activates on a layout that does.
-With the switch absent, an S1-down machine is still accepted - it disables the
-outputs, which the fallback sees - and ``rc_source == 0`` covers the offline
-case directly.
+Switch note: ``remote_s1`` is synthesized from new-remote SBUS channel 4 on
+this layout.  It reads 2 when channel 4 is UP (-1, emergency stop).  The
+historic no-switch fallback remains for older telemetry layouts.
 
 Exit status:
     0   safe to flash (operator commanded stop, or outputs idle)
@@ -257,11 +255,11 @@ def main() -> int:
         )
     if probe.s1_frames:
         print(
-            f"  remote S1     DOWN in {probe.s1_down_frames}/{probe.s1_frames} "
+            f"  channel 4     STOP in {probe.s1_down_frames}/{probe.s1_frames} "
             f"frames = {probe.s1_down_frames / probe.s1_frames:.1%}"
         )
     else:
-        print("  remote S1     not carried by this telemetry layout")
+        print("  channel 4     not carried by this telemetry layout")
     print(
         f"  remote source offline in {probe.rc_offline_frames}/"
         f"{probe.frames} frames = {probe.rc_offline_frames / probe.frames:.1%}"
@@ -269,18 +267,18 @@ def main() -> int:
 
     busy = probe.busy()
 
-    # 1. The operator commanded a stop: S1 down, or the remote is absent.  Both
+    # 1. The operator commanded a stop: channel 4 up, or the remote is absent.  Both
     #    force the firmware to disable the whole drive chain.
     if probe.s1_down():
         print(
-            "\nSAFE TO FLASH: S1 reads DOWN for the whole window, so the "
+            "\nSAFE TO FLASH: SBUS channel 4 reads UP for the whole window, so the "
             "firmware is forcing the joints and wheels to zero."
         )
         if busy:
             print(
                 "  WARNING: gated outputs still read active ("
                 + "; ".join(busy)
-                + ") while S1 is DOWN.  That should be impossible - check the "
+                + ") while channel 4 is UP.  That should be impossible - check the "
                 "firmware before trusting this.",
                 file=sys.stderr,
             )
@@ -305,9 +303,9 @@ def main() -> int:
     # 2. The remote is present and NOT commanding a stop.
     if probe.switched_on():
         print(
-            "\nNOT SAFE TO FLASH: the remote is online and S1 is not DOWN, so "
+            "\nNOT SAFE TO FLASH: the remote is online and channel 4 is enabled, so "
             "the controller is enabled.\n"
-            "  -> Have the operator move S1 to DOWN (emergency stop) or power "
+            "  -> Have the operator move channel 4 UP (emergency stop) or power "
             "the transmitter off, and make sure the robot is supported, then "
             "run this again.",
             file=sys.stderr,
@@ -320,7 +318,7 @@ def main() -> int:
             "\nNOT SAFE TO FLASH: the controller is live - "
             + "; ".join(busy)
             + ".\n"
-            "  -> Have the operator move S1 to DOWN (emergency stop) or switch "
+            "  -> Have the operator move channel 4 UP (emergency stop) or switch "
             "the transmitter off, make sure the robot is supported, then run "
             "this again.",
             file=sys.stderr,

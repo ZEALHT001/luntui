@@ -84,12 +84,12 @@ class DefaultsTest(unittest.TestCase):
 
 
 class StateMachineTest(unittest.TestCase):
-    def test_start_requires_high_gear_long_or_stair_locked_stance(self) -> None:
+    def test_start_requires_high_knob_or_stair_locked_stance(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_descent_start_is_allowed")
         for needle in (
-            "remote_control.s[0] == RC_SW_UP",
+            "remote_control_stair_enabled()",
+            "vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH",
             "stair_length_override_active",
-            "VMC_LEG_TARGET_LONG - 0.030",
             "airborne_active",
             "airborne_candidate_ms",
             "motion.kf_dx",
