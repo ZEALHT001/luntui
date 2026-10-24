@@ -512,6 +512,70 @@
           </label>
         </div>
 
+        <h3>自动下平台（S2 最高档）</h3>
+        <div class="params">
+          <label>
+            下平台缓冲使能 / descent_enable
+            <input id="descentEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            空中伸腿目标 / descent_extend_length (m)
+            <input id="descentExtendLength" type="number" step="0.005" min="0.16" max="0.385" value="0.28" />
+          </label>
+          <label>
+            空中伸腿速度 / descent_extend_rate (m/s)
+            <input id="descentExtendRate" type="number" step="0.05" min="0" max="2" value="0.35" />
+          </label>
+          <label>
+            落地收腿速度 / descent_return_rate (m/s)
+            <input id="descentReturnRate" type="number" step="0.05" min="0" max="2" value="0.60" />
+          </label>
+          <label>
+            下平台腿长 KP / descent_kp_length
+            <input id="descentKpLength" type="number" step="1" min="0" max="5000" value="2000" />
+          </label>
+          <label>
+            下平台腿长 KD / descent_kd_length
+            <input id="descentKdLength" type="number" step="1" min="0" max="1000" value="120" />
+          </label>
+          <label>
+            下平台最大力 / descent_max_force
+            <input id="descentMaxForce" type="number" step="1" min="0" max="500" value="300" />
+          </label>
+          <label>
+            下平台支撑力 / descent_support_force
+            <input id="descentSupportForce" type="number" step="1" min="-250" max="250" value="0" />
+          </label>
+          <label>
+            触发行驶速度 / descent_start_speed (m/s)
+            <input id="descentStartSpeed" type="number" step="0.05" min="0" max="2" value="0.20" />
+          </label>
+          <label>
+            离地启动确认 / descent_start_confirm_ms
+            <input id="descentStartConfirmMs" type="number" step="5" min="1" max="500" value="40" />
+          </label>
+          <label>
+            触地力矩阈值 / descent_contact_torque (N.m)
+            <input id="descentContactTorque" type="number" step="0.1" min="0.1" max="54" value="4.0" />
+          </label>
+          <label>
+            触地确认 / descent_contact_confirm_ms
+            <input id="descentContactConfirmMs" type="number" step="1" min="1" max="200" value="20" />
+          </label>
+          <label>
+            空中超时 / descent_air_timeout_ms
+            <input id="descentAirTimeoutMs" type="number" step="50" min="100" max="5000" value="1000" />
+          </label>
+          <label>
+            缓冲超时 / descent_cushion_timeout_ms
+            <input id="descentCushionTimeoutMs" type="number" step="10" min="20" max="1000" value="240" />
+          </label>
+          <label>
+            再触发冷却 / descent_cooldown_ms
+            <input id="descentCooldownMs" type="number" step="50" min="0" max="5000" value="800" />
+          </label>
+        </div>
+
         <h3>Roll 补偿</h3>
         <div class="params">
           <label>

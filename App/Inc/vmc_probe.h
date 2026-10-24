@@ -403,6 +403,42 @@ extern "C" {
 #define VMC_STAIR_SUPPORT_FORCE_DEFAULT            100.0f
 #define VMC_STAIR_LENGTH_READY_TOL                 0.015f
 
+/* Automatic descent assist.
+ *
+ * After a stair climb the short-leg latch deliberately remains active until
+ * S2 moves again.  Driving off the platform in that state used to fall through
+ * to the generic airborne detector: the wheels stayed cut for its 500 ms
+ * release hysteresis, so balance only returned after the body had already
+ * tipped.  This state machine owns the same manoeuvre explicitly.
+ *
+ * EXTEND ramps the legs toward a landing-ready length while the wheels remain
+ * gated.  A short confirmation on measured joint load marks touchdown, after
+ * which CUSHION restores the pre-drop length and the wheels are enabled in the
+ * same control cycle.  The target is rate-limited in software, so the measured
+ * leg length never snaps between the two poses.
+ *
+ * The entry path is limited to S2 UP and either the post-stair short-leg lock
+ * or an already-long measured stance.  A non-zero travel speed is also needed
+ * unless the stair lock is present, which keeps a bench lift from starting the
+ * action. */
+#define VMC_DESCENT_ENABLE_DEFAULT                  1U
+#define VMC_DESCENT_EXTEND_LENGTH_DEFAULT           0.280f
+#define VMC_DESCENT_MIN_EXTEND_DELTA                0.020f
+#define VMC_DESCENT_EXTEND_RATE_DEFAULT             0.35f
+#define VMC_DESCENT_RETURN_RATE_DEFAULT             0.60f
+#define VMC_DESCENT_LENGTH_KP_DEFAULT               2000.0f
+#define VMC_DESCENT_LENGTH_KD_DEFAULT               120.0f
+#define VMC_DESCENT_FORCE_MAX_DEFAULT               300.0f
+#define VMC_DESCENT_SUPPORT_FORCE_DEFAULT           0.0f
+#define VMC_DESCENT_START_SPEED_DEFAULT             0.20f
+#define VMC_DESCENT_START_CONFIRM_MS_DEFAULT        40U
+#define VMC_DESCENT_CONTACT_TORQUE_DEFAULT          4.0f
+#define VMC_DESCENT_CONTACT_CONFIRM_MS_DEFAULT      20U
+#define VMC_DESCENT_AIR_TIMEOUT_MS_DEFAULT          1000U
+#define VMC_DESCENT_CUSHION_TIMEOUT_MS_DEFAULT      240U
+#define VMC_DESCENT_COOLDOWN_MS_DEFAULT             800U
+#define VMC_DESCENT_LENGTH_READY_TOL                0.015f
+
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
@@ -919,6 +955,20 @@ extern "C" {
 #define VMC_STAIR_ABORT_TIMEOUT    5U
 #define VMC_STAIR_ABORT_AIRBORNE   6U
 
+#define VMC_DESCENT_STAGE_IDLE     0U
+#define VMC_DESCENT_STAGE_EXTEND   1U
+#define VMC_DESCENT_STAGE_CUSHION  2U
+#define VMC_DESCENT_STAGE_FINISHED 3U
+#define VMC_DESCENT_STAGE_ABORT    4U
+
+#define VMC_DESCENT_ABORT_NONE     0U
+#define VMC_DESCENT_ABORT_REMOTE   1U
+#define VMC_DESCENT_ABORT_FEEDBACK 2U
+#define VMC_DESCENT_ABORT_GETUP    3U
+#define VMC_DESCENT_ABORT_JUMP     4U
+#define VMC_DESCENT_ABORT_STAIR    5U
+#define VMC_DESCENT_ABORT_TIMEOUT  6U
+
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
 #define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
@@ -1237,6 +1287,38 @@ typedef struct {
   float stair_kd_length;
   float stair_max_force;
   float stair_support_force;
+  /* Automatic descent assist.  entry_length is captured when the airborne
+   * gate starts the action; length_command is the rate-limited target shared
+   * by both legs. */
+  uint8_t descent_enable;
+  uint8_t descent_stage;
+  uint8_t descent_abort_reason;
+  uint8_t descent_contact_detected;
+  uint32_t descent_stage_start_ms;
+  uint32_t descent_start_ms;
+  uint32_t descent_last_finish_ms;
+  uint32_t descent_stage_ms;
+  uint32_t descent_contact_ms;
+  uint32_t descent_trigger_count;
+  uint32_t descent_abort_count;
+  uint32_t descent_start_confirm_ms;
+  uint32_t descent_contact_confirm_ms;
+  uint32_t descent_air_timeout_ms;
+  uint32_t descent_cushion_timeout_ms;
+  uint32_t descent_cooldown_ms;
+  float descent_extend_length;
+  float descent_extend_rate;
+  float descent_return_rate;
+  float descent_kp_length;
+  float descent_kd_length;
+  float descent_max_force;
+  float descent_support_force;
+  float descent_start_speed;
+  float descent_contact_torque;
+  float descent_entry_length;
+  float descent_extend_target;
+  float descent_length_command;
+  float descent_contact_torque_measured;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;

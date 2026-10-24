@@ -172,7 +172,8 @@ class ControlIntegrationTest(unittest.TestCase):
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
         _has(body, "target_length = vmc_stair_retract_target_length();",
              "the stair target is not selected")
-        _has(body, "jump_override != 0U || stair_override != 0U",
+        _has(body, "descent_override != 0U", "descent is missing from the direct-ramp gate")
+        _has(body, "stair_override != 0U",
              "the stair target still runs through the normal ramp")
 
     def test_roll_compensation_follow_and_sync_are_disabled_during_stair(self) -> None:

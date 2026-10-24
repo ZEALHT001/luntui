@@ -31,6 +31,7 @@ static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
 static uint32_t vmc_jump_auto_hold_ms;
 static uint32_t vmc_stair_last_update_ms;
+static uint32_t vmc_descent_last_update_ms;
 static uint32_t vmc_stair_speed_confirmed_ms;
 static uint32_t vmc_stair_preimpact_confirmed_ms;
 static uint32_t vmc_stair_impact_confirmed_ms;
@@ -83,6 +84,11 @@ static uint8_t vmc_stair_is_active(void);
 static uint8_t vmc_stair_overrides_target(void);
 static double vmc_stair_retract_target_length(void);
 static void vmc_stair_update(void);
+static uint8_t vmc_descent_is_active(void);
+static uint8_t vmc_descent_overrides_target(void);
+static uint8_t vmc_descent_blocks_wheel_output(void);
+static double vmc_descent_target_length(void);
+static void vmc_descent_update(void);
 static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
 static void vmc_update_getup_state(void);
@@ -1224,6 +1230,7 @@ static uint8_t vmc_jump_start_is_allowed(void)
           imu_ready != 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_getup_is_active() == 0U &&
+          vmc_descent_is_active() == 0U &&
           vmc_fall_rearm_required == 0U &&
           fabsf(vmc_probe_state.body.pitch) <= attitude_limit &&
           fabsf(vmc_probe_state.body.roll) <= attitude_limit)
@@ -1503,6 +1510,7 @@ static uint8_t vmc_stair_start_is_allowed(void)
           vmc_probe_state.airborne_active == 0U &&
           vmc_getup_is_active() == 0U &&
           vmc_jump_is_active_or_aborted() == 0U &&
+          vmc_descent_is_active() == 0U &&
           remote_control.valid != 0U &&
           remote_control.s[0] == RC_SW_UP &&
           vmc_probe_state.body.imu_valid != 0U &&
@@ -1843,6 +1851,251 @@ static void vmc_stair_update(void)
       }
     } else {
       vmc_stair_finish(VMC_STAIR_STAGE_ABORT, VMC_STAIR_ABORT_TIMEOUT, now);
+    }
+  }
+}
+
+static uint8_t vmc_descent_is_active(void)
+{
+  return (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND ||
+          vmc_control.descent_stage == VMC_DESCENT_STAGE_CUSHION)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_descent_overrides_target(void)
+{
+  return vmc_descent_is_active();
+}
+
+static uint8_t vmc_descent_blocks_wheel_output(void)
+{
+  return (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND) ? 1U : 0U;
+}
+
+static double vmc_descent_target_length(void)
+{
+  return clamp_double(vmc_control.descent_length_command,
+                      VMC_LEG_LENGTH_MIN,
+                      VMC_LEG_LENGTH_MAX);
+}
+
+static uint8_t vmc_descent_start_is_allowed(void)
+{
+  const double leg_length_avg =
+      (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5;
+  const double start_speed =
+      clamp_double(vmc_control.descent_start_speed, 0.0, 2.0);
+  const uint32_t start_confirm_ms =
+      clamp_u32(vmc_control.descent_start_confirm_ms, 1U, 500U);
+  const uint8_t flight_detected =
+      (vmc_probe_state.airborne_active != 0U ||
+       (vmc_probe_state.airborne_candidate != 0U &&
+        vmc_probe_state.airborne_candidate_ms >= start_confirm_ms))
+          ? 1U
+          : 0U;
+  const uint8_t long_stance =
+      (vmc_control.stair_length_override_active != 0U ||
+       leg_length_avg >= (double)VMC_LEG_TARGET_LONG - 0.030)
+          ? 1U
+          : 0U;
+  const uint8_t travelling =
+      (fabs(vmc_probe_state.motion.kf_dx) >= start_speed) ? 1U : 0U;
+
+  return (vmc_control.descent_enable != 0U &&
+          vmc_control.enabled != 0U &&
+          vmc_balance.wheel_output_enable != 0U &&
+          vmc_fall_rearm_required == 0U &&
+          vmc_probe_state.feedback_timeout_active == 0U &&
+          vmc_getup_is_active() == 0U &&
+          vmc_jump_is_active_or_aborted() == 0U &&
+          vmc_stair_is_active() == 0U &&
+          remote_control.valid != 0U &&
+          remote_control.s[0] == RC_SW_UP &&
+          remote_control_allows_joint_enable() != 0U &&
+          long_stance != 0U && flight_detected != 0U &&
+          (vmc_control.stair_length_override_active != 0U ||
+           travelling != 0U))
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_descent_abort_reason(void)
+{
+  if (vmc_control.descent_enable == 0U ||
+      remote_control.valid == 0U || remote_control.rx_count == 0U ||
+      (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS ||
+      remote_control_allows_joint_enable() == 0U) {
+    return VMC_DESCENT_ABORT_REMOTE;
+  }
+  if (vmc_probe_state.feedback_timeout_active != 0U) {
+    return VMC_DESCENT_ABORT_FEEDBACK;
+  }
+  if (vmc_getup_is_active() != 0U || vmc_fall_rearm_required != 0U) {
+    return VMC_DESCENT_ABORT_GETUP;
+  }
+  if (vmc_jump_is_active_or_aborted() != 0U) {
+    return VMC_DESCENT_ABORT_JUMP;
+  }
+  if (vmc_stair_is_active() != 0U) {
+    return VMC_DESCENT_ABORT_STAIR;
+  }
+  return VMC_DESCENT_ABORT_NONE;
+}
+
+static void vmc_descent_enter_stage(uint8_t stage, uint32_t now)
+{
+  vmc_control.descent_stage = stage;
+  vmc_control.descent_stage_start_ms = now;
+  vmc_control.descent_stage_ms = 0U;
+}
+
+static void vmc_descent_finish(uint8_t stage, uint8_t reason, uint32_t now)
+{
+  if (stage == VMC_DESCENT_STAGE_ABORT) {
+    vmc_control.descent_abort_count++;
+    vmc_control.descent_abort_reason = reason;
+  } else {
+    vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
+  }
+  vmc_control.descent_last_finish_ms = now;
+  vmc_control.descent_length_command = vmc_control.descent_entry_length;
+  vmc_descent_enter_stage(stage, now);
+}
+
+static void vmc_descent_update(void)
+{
+  const uint32_t now = HAL_GetTick();
+  uint32_t dt_ms = 1U;
+
+  if (vmc_descent_last_update_ms != 0U) {
+    dt_ms = now - vmc_descent_last_update_ms;
+    if (dt_ms == 0U) {
+      dt_ms = 1U;
+    } else if (dt_ms > 100U) {
+      dt_ms = 100U;
+    }
+  }
+  vmc_descent_last_update_ms = now;
+
+  if (vmc_control.descent_stage_start_ms != 0U) {
+    vmc_control.descent_stage_ms = now - vmc_control.descent_stage_start_ms;
+  } else {
+    vmc_control.descent_stage_ms = 0U;
+  }
+
+  if (vmc_control.descent_stage == VMC_DESCENT_STAGE_FINISHED ||
+      vmc_control.descent_stage == VMC_DESCENT_STAGE_ABORT) {
+    const uint32_t cooldown_ms =
+        clamp_u32(vmc_control.descent_cooldown_ms, 0U, 5000U);
+    if ((now - vmc_control.descent_last_finish_ms) >= cooldown_ms) {
+      vmc_control.descent_stage = VMC_DESCENT_STAGE_IDLE;
+      vmc_control.descent_stage_start_ms = 0U;
+      vmc_control.descent_stage_ms = 0U;
+      vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
+    }
+    return;
+  }
+
+  if (vmc_control.descent_stage == VMC_DESCENT_STAGE_IDLE) {
+    if (vmc_descent_start_is_allowed() != 0U) {
+      const double leg_length_avg =
+          (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) *
+          0.5;
+      const double configured_extend = clamp_double(
+          vmc_control.descent_extend_length,
+          VMC_LEG_LENGTH_MIN,
+          VMC_LEG_LENGTH_MAX);
+
+      vmc_control.descent_trigger_count++;
+      vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
+      vmc_control.descent_contact_detected = 0U;
+      vmc_control.descent_contact_confirm_ms = 0U;
+      vmc_control.descent_contact_ms = 0U;
+      vmc_control.descent_contact_torque_measured = 0.0f;
+      vmc_control.descent_entry_length = (float)leg_length_avg;
+      vmc_control.descent_extend_target = (float)clamp_double(
+          fmax(configured_extend,
+               leg_length_avg + (double)VMC_DESCENT_MIN_EXTEND_DELTA),
+          VMC_LEG_LENGTH_MIN,
+          VMC_LEG_LENGTH_MAX);
+      vmc_control.descent_length_command = (float)leg_length_avg;
+      vmc_control.descent_start_ms = now;
+      vmc_descent_enter_stage(VMC_DESCENT_STAGE_EXTEND, now);
+    }
+    return;
+  }
+
+  {
+    const uint8_t abort_reason = vmc_descent_abort_reason();
+    const uint32_t air_timeout_ms =
+        clamp_u32(vmc_control.descent_air_timeout_ms, 100U, 5000U);
+    const uint32_t cushion_timeout_ms =
+        clamp_u32(vmc_control.descent_cushion_timeout_ms, 20U, 1000U);
+    const float contact_torque_threshold =
+        clamp_float(vmc_control.descent_contact_torque, 0.1f, 54.0f);
+    const uint32_t contact_confirm_ms =
+        clamp_u32(vmc_control.descent_contact_confirm_ms, 1U, 200U);
+    const double extend_step =
+        clamp_double(vmc_control.descent_extend_rate, 0.0, 2.0) *
+        vmc_loop_dt();
+    const double return_step =
+        clamp_double(vmc_control.descent_return_rate, 0.0, 2.0) *
+        vmc_loop_dt();
+
+    if (abort_reason != VMC_DESCENT_ABORT_NONE) {
+      vmc_descent_finish(VMC_DESCENT_STAGE_ABORT, abort_reason, now);
+      return;
+    }
+
+    if (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND) {
+      const double contact_torque = vmc_average_joint_torque_abs();
+      vmc_control.descent_length_command = (float)vmc_step_towards(
+          vmc_control.descent_length_command,
+          vmc_control.descent_extend_target,
+          extend_step);
+
+      if (contact_torque >= (double)contact_torque_threshold) {
+        if (vmc_control.descent_contact_confirm_ms < contact_confirm_ms) {
+          vmc_control.descent_contact_confirm_ms += dt_ms;
+        }
+      } else {
+        vmc_control.descent_contact_confirm_ms = 0U;
+      }
+
+      if (vmc_control.descent_contact_confirm_ms >= contact_confirm_ms) {
+        vmc_control.descent_contact_detected = 1U;
+        vmc_control.descent_contact_ms = now - vmc_control.descent_start_ms;
+        vmc_control.descent_contact_torque_measured = (float)contact_torque;
+        vmc_descent_enter_stage(VMC_DESCENT_STAGE_CUSHION, now);
+      } else if (vmc_control.descent_stage_ms >= air_timeout_ms) {
+        vmc_descent_finish(VMC_DESCENT_STAGE_ABORT,
+                           VMC_DESCENT_ABORT_TIMEOUT,
+                           now);
+      }
+    } else if (vmc_control.descent_stage == VMC_DESCENT_STAGE_CUSHION) {
+      const double measured_leg_avg =
+          (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) *
+          0.5;
+      vmc_control.descent_length_command = (float)vmc_step_towards(
+          vmc_control.descent_length_command,
+          vmc_control.descent_entry_length,
+          return_step);
+
+      if ((fabs(vmc_control.descent_length_command -
+                vmc_control.descent_entry_length) <= 0.0005 &&
+           measured_leg_avg <=
+               (double)vmc_control.descent_entry_length +
+                   (double)VMC_DESCENT_LENGTH_READY_TOL) ||
+          vmc_control.descent_stage_ms >= cushion_timeout_ms) {
+        vmc_descent_finish(VMC_DESCENT_STAGE_FINISHED,
+                           VMC_DESCENT_ABORT_NONE,
+                           now);
+      }
+    } else {
+      vmc_descent_finish(VMC_DESCENT_STAGE_ABORT,
+                         VMC_DESCENT_ABORT_TIMEOUT,
+                         now);
     }
   }
 }
@@ -2451,6 +2704,7 @@ static uint8_t vmc_safety_allows_output(void)
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_probe_state.airborne_active == 0U &&
           vmc_jump_blocks_wheel_output() == 0U &&
+          vmc_descent_blocks_wheel_output() == 0U &&
           remote_control_allows_joint_enable() != 0U)
              ? 1U
              : 0U;
@@ -2512,6 +2766,7 @@ static void vmc_update_airborne_state(void)
        vmc_probe_state.feedback_timeout_active == 0U &&
       vmc_getup_is_active() == 0U &&
       vmc_jump_is_active_or_aborted() == 0U &&
+      vmc_descent_is_active() == 0U &&
       remote_control_allows_joint_enable() != 0U)
           ? 1U
           : 0U;
@@ -3228,6 +3483,7 @@ void vmc_balance_update(void)
        vmc_control.stair_length_override_active == 0U &&
        vmc_getup_is_active() == 0U &&
        vmc_stair_is_active() == 0U &&
+       vmc_descent_is_active() == 0U &&
        vmc_jump_is_active_or_aborted() == 0U)
           ? 1U
           : 0U;
@@ -3468,6 +3724,7 @@ static void vmc_balance_apply_wheel_output(void)
       vmc_balance.wheel_output_user_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       vmc_jump_blocks_wheel_output() == 0U &&
+      vmc_descent_blocks_wheel_output() == 0U &&
       vmc_safety_allows_output() != 0U) {
     if (vmc_balance.gimbal_follow_active != 0U) {
       yaw_current = vmc_update_gimbal_follow_current();
@@ -3815,6 +4072,38 @@ void vmc_control_init(void)
   vmc_control.stair_kd_length = VMC_STAIR_LENGTH_KD_DEFAULT;
   vmc_control.stair_max_force = VMC_STAIR_FORCE_MAX_DEFAULT;
   vmc_control.stair_support_force = VMC_STAIR_SUPPORT_FORCE_DEFAULT;
+  vmc_control.descent_enable = VMC_DESCENT_ENABLE_DEFAULT;
+  vmc_control.descent_stage = VMC_DESCENT_STAGE_IDLE;
+  vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
+  vmc_control.descent_contact_detected = 0U;
+  vmc_control.descent_stage_start_ms = 0U;
+  vmc_control.descent_start_ms = 0U;
+  vmc_control.descent_last_finish_ms = 0U;
+  vmc_control.descent_stage_ms = 0U;
+  vmc_control.descent_contact_ms = 0U;
+  vmc_control.descent_trigger_count = 0U;
+  vmc_control.descent_abort_count = 0U;
+  vmc_control.descent_start_confirm_ms =
+      VMC_DESCENT_START_CONFIRM_MS_DEFAULT;
+  vmc_control.descent_contact_confirm_ms =
+      VMC_DESCENT_CONTACT_CONFIRM_MS_DEFAULT;
+  vmc_control.descent_air_timeout_ms = VMC_DESCENT_AIR_TIMEOUT_MS_DEFAULT;
+  vmc_control.descent_cushion_timeout_ms =
+      VMC_DESCENT_CUSHION_TIMEOUT_MS_DEFAULT;
+  vmc_control.descent_cooldown_ms = VMC_DESCENT_COOLDOWN_MS_DEFAULT;
+  vmc_control.descent_extend_length = VMC_DESCENT_EXTEND_LENGTH_DEFAULT;
+  vmc_control.descent_extend_rate = VMC_DESCENT_EXTEND_RATE_DEFAULT;
+  vmc_control.descent_return_rate = VMC_DESCENT_RETURN_RATE_DEFAULT;
+  vmc_control.descent_kp_length = VMC_DESCENT_LENGTH_KP_DEFAULT;
+  vmc_control.descent_kd_length = VMC_DESCENT_LENGTH_KD_DEFAULT;
+  vmc_control.descent_max_force = VMC_DESCENT_FORCE_MAX_DEFAULT;
+  vmc_control.descent_support_force = VMC_DESCENT_SUPPORT_FORCE_DEFAULT;
+  vmc_control.descent_start_speed = VMC_DESCENT_START_SPEED_DEFAULT;
+  vmc_control.descent_contact_torque = VMC_DESCENT_CONTACT_TORQUE_DEFAULT;
+  vmc_control.descent_entry_length = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.descent_extend_target = VMC_DESCENT_EXTEND_LENGTH_DEFAULT;
+  vmc_control.descent_length_command = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.descent_contact_torque_measured = 0.0f;
   vmc_control.ramped_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.length_ramp_rate = VMC_LEG_LENGTH_RAMP_RATE_DEFAULT;
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
@@ -4037,7 +4326,9 @@ void vmc_control_update(void)
   double kd_phi0;
   uint8_t jump_override;
   uint8_t stair_override;
+  uint8_t descent_override;
   uint8_t jump_force_profile;
+  uint8_t descent_force_profile;
   uint8_t stair_force_profile;
 
   vmc_update_remote_target_length();
@@ -4049,6 +4340,7 @@ void vmc_control_update(void)
   }
   jump_override = vmc_jump_overrides_target();
   stair_override = vmc_stair_overrides_target();
+  descent_override = vmc_descent_overrides_target();
 
   if (vmc_control.enabled == 0U ||
       vmc_fall_rearm_required != 0U ||
@@ -4091,12 +4383,14 @@ void vmc_control_update(void)
     target_length = VMC_GETUP_STAND_LENGTH;
   } else if (jump_override != 0U) {
     target_length = vmc_jump_stage_target_length();
+  } else if (descent_override != 0U) {
+    target_length = vmc_descent_target_length();
   } else if (stair_override != 0U ||
              vmc_control.stair_length_override_active != 0U) {
     target_length = vmc_stair_retract_target_length();
   }
   vmc_control.jump_target_length = (float)target_length;
-  if (jump_override != 0U || stair_override != 0U ||
+  if (jump_override != 0U || descent_override != 0U || stair_override != 0U ||
       vmc_control.stair_length_override_active != 0U) {
     ramped_target_length = target_length;
   } else {
@@ -4116,6 +4410,7 @@ void vmc_control_update(void)
       (vmc_control.roll_comp_enable != 0U &&
        vmc_getup_is_active() == 0U &&
        jump_override == 0U &&
+       descent_override == 0U &&
        stair_override == 0U &&
        vmc_control.stair_length_override_active == 0U &&
        vmc_probe_state.body.imu_valid != 0U &&
@@ -4125,10 +4420,14 @@ void vmc_control_update(void)
                          roll_comp_limit)
           : 0.0;
   roll_comp_offset =
-      vmc_step_towards(vmc_control.roll_comp_offset,
-                       roll_comp_desired,
-                       clamp_double(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) *
-                           vmc_loop_dt());
+      (descent_override != 0U)
+          ? 0.0
+          : vmc_step_towards(vmc_control.roll_comp_offset,
+                             roll_comp_desired,
+                             clamp_double(vmc_control.roll_comp_ramp_rate,
+                                          0.0,
+                                          1.0) *
+                                 vmc_loop_dt());
   vmc_control.roll_comp_offset = (float)roll_comp_offset;
 
   left_target_length =
@@ -4167,6 +4466,7 @@ void vmc_control_update(void)
   if (vmc_control.leg_follow_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       jump_override == 0U &&
+      descent_override == 0U &&
       stair_override == 0U &&
       vmc_control.stair_length_override_active == 0U) {
     const double dt = vmc_loop_dt();
@@ -4341,32 +4641,50 @@ void vmc_control_update(void)
        vmc_control.jump_stage == VMC_JUMP_STAGE_RETRACT)
           ? 1U
           : 0U;
+  descent_force_profile = (descent_override != 0U) ? 1U : 0U;
   stair_force_profile =
-      (stair_override != 0U ||
-       vmc_control.stair_length_override_active != 0U)
+      (descent_force_profile == 0U &&
+       (stair_override != 0U ||
+        vmc_control.stair_length_override_active != 0U))
           ? 1U
           : 0U;
   kp_length = (jump_force_profile != 0U)
                   ? clamp_double(vmc_control.jump_kp_length, 0.0, 5000.0)
-                  : (stair_force_profile != 0U)
-                        ? clamp_double(vmc_control.stair_kp_length, 0.0, 5000.0)
-                        : clamp_double(vmc_control.kp_length, 0.0, 5000.0);
+                  : (descent_force_profile != 0U)
+                        ? clamp_double(vmc_control.descent_kp_length,
+                                       0.0,
+                                       5000.0)
+                        : (stair_force_profile != 0U)
+                              ? clamp_double(vmc_control.stair_kp_length,
+                                             0.0,
+                                             5000.0)
+                              : clamp_double(vmc_control.kp_length, 0.0, 5000.0);
   kd_length = (jump_force_profile != 0U)
                   ? clamp_double(vmc_control.jump_kd_length, 0.0, 1000.0)
-                  : (stair_force_profile != 0U)
-                        ? clamp_double(vmc_control.stair_kd_length, 0.0, 1000.0)
-                        : clamp_double(vmc_control.kd_length, 0.0, 1000.0);
+                  : (descent_force_profile != 0U)
+                        ? clamp_double(vmc_control.descent_kd_length,
+                                       0.0,
+                                       1000.0)
+                        : (stair_force_profile != 0U)
+                              ? clamp_double(vmc_control.stair_kd_length,
+                                             0.0,
+                                             1000.0)
+                              : clamp_double(vmc_control.kd_length, 0.0, 1000.0);
   max_force = (jump_force_profile != 0U)
                   ? clamp_double(vmc_control.jump_max_force,
                                  0.0,
                                  VMC_LEG_FORCE_MAX_DEFAULT)
-                  : (stair_force_profile != 0U)
-                        ? clamp_double(vmc_control.stair_max_force,
+                  : (descent_force_profile != 0U)
+                        ? clamp_double(vmc_control.descent_max_force,
                                        0.0,
                                        VMC_LEG_FORCE_MAX_DEFAULT)
-                        : clamp_double(vmc_control.max_force,
-                                       0.0,
-                                       VMC_LEG_FORCE_MAX_DEFAULT);
+                        : (stair_force_profile != 0U)
+                              ? clamp_double(vmc_control.stair_max_force,
+                                             0.0,
+                                             VMC_LEG_FORCE_MAX_DEFAULT)
+                              : clamp_double(vmc_control.max_force,
+                                             0.0,
+                                             VMC_LEG_FORCE_MAX_DEFAULT);
   left_target_phi0 = vmc_control.target_phi0;
   right_target_phi0 = vmc_control.target_phi0;
   if (vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
@@ -4439,13 +4757,17 @@ void vmc_control_update(void)
                       ? clamp_double(vmc_control.jump_support_force,
                                      -VMC_LEG_SUPPORT_FORCE_MAX,
                                      VMC_LEG_SUPPORT_FORCE_MAX)
-                      : (stair_force_profile != 0U)
-                            ? clamp_double(vmc_control.stair_support_force,
+                      : (descent_force_profile != 0U)
+                            ? clamp_double(vmc_control.descent_support_force,
                                            -VMC_LEG_SUPPORT_FORCE_MAX,
                                            VMC_LEG_SUPPORT_FORCE_MAX)
-                            : clamp_double(vmc_control.support_force,
-                                           -VMC_LEG_SUPPORT_FORCE_MAX,
-                                           VMC_LEG_SUPPORT_FORCE_MAX);
+                            : (stair_force_profile != 0U)
+                                  ? clamp_double(vmc_control.stair_support_force,
+                                                 -VMC_LEG_SUPPORT_FORCE_MAX,
+                                                 VMC_LEG_SUPPORT_FORCE_MAX)
+                                  : clamp_double(vmc_control.support_force,
+                                                 -VMC_LEG_SUPPORT_FORCE_MAX,
+                                                 VMC_LEG_SUPPORT_FORCE_MAX);
 
   update_leg_length_control(&vmc_probe_state.left_leg,
                             left_target_length,
@@ -4503,6 +4825,7 @@ void vmc_wheel_control_update(void)
          vmc_probe_state.airborne_active == 0U &&
          vmc_probe_state.feedback_timeout_active == 0U &&
          vmc_jump_blocks_wheel_output() == 0U &&
+         vmc_descent_blocks_wheel_output() == 0U &&
          remote_control_allows_joint_enable() != 0U)
             ? 1U
             : 0U;
@@ -4662,6 +4985,7 @@ void vmc_probe_task(void const *argument)
     vmc_update_motion_state();
     vmc_jump_update();
     vmc_update_airborne_state();
+    vmc_descent_update();
     vmc_stair_update();
     vmc_lqr_rtt_update();
     vmc_update_lqr_gain();

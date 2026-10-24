@@ -487,14 +487,34 @@ FORMAT_V24_PROFILE = Profile(
 
 # Remote identity and switch state (schema 21).  rc_age alone cannot tell an
 # operator S1-down stop from a source handover or a stale frame.
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V25_PROFILE = Profile(
+    name="format-v25",
     field_count=177,
     channels={
         **FORMAT_V24_PROFILE.channels,
         "rc_source": 174,
         "remote_s1": 175,
         "remote_s2": 176,
+    },
+)
+
+# Automatic descent assist (schema 22).  The stage is EXTEND while the wheels
+# remain gated, then CUSHION after measured joint load confirms touchdown.
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=187,
+    channels={
+        **FORMAT_V25_PROFILE.channels,
+        "descent_stage": 177,
+        "descent_abort_reason": 178,
+        "descent_contact_detected": 179,
+        "descent_entry_length": 180,
+        "descent_extend_target": 181,
+        "descent_length_command": 182,
+        "descent_contact_torque": 183,
+        "descent_contact_ms": 184,
+        "descent_trigger_count": 185,
+        "descent_abort_count": 186,
     },
 )
 
@@ -529,6 +549,7 @@ PROFILES = {
     "format-v22": FORMAT_V22_PROFILE,
     "format-v23": FORMAT_V23_PROFILE,
     "format-v24": FORMAT_V24_PROFILE,
+    "format-v25": FORMAT_V25_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -555,6 +576,7 @@ FORMAT_LAYOUTS = (
     FORMAT_V22_PROFILE,
     FORMAT_V23_PROFILE,
     FORMAT_V24_PROFILE,
+    FORMAT_V25_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -582,6 +604,7 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V22_PROFILE.field_count: FORMAT_V22_PROFILE,
     FORMAT_V23_PROFILE.field_count: FORMAT_V23_PROFILE,
     FORMAT_V24_PROFILE.field_count: FORMAT_V24_PROFILE,
+    FORMAT_V25_PROFILE.field_count: FORMAT_V25_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -745,6 +768,17 @@ CSV_FIELDS = [
     "rc_source",
     "remote_s1",
     "remote_s2",
+    # Automatic descent assist.
+    "descent_stage",
+    "descent_abort_reason",
+    "descent_contact_detected",
+    "descent_entry_length",
+    "descent_extend_target",
+    "descent_length_command",
+    "descent_contact_torque",
+    "descent_contact_ms",
+    "descent_trigger_count",
+    "descent_abort_count",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -916,6 +950,17 @@ class KalmanSample:
     stair_speed_ms: float = INVALID_VALUE
     stair_preimpact_ms: float = INVALID_VALUE
     stair_impact_ms: float = INVALID_VALUE
+    # Automatic descent assist (schema 22).
+    descent_stage: float = INVALID_VALUE
+    descent_abort_reason: float = INVALID_VALUE
+    descent_contact_detected: float = INVALID_VALUE
+    descent_entry_length: float = INVALID_VALUE
+    descent_extend_target: float = INVALID_VALUE
+    descent_length_command: float = INVALID_VALUE
+    descent_contact_torque: float = INVALID_VALUE
+    descent_contact_ms: float = INVALID_VALUE
+    descent_trigger_count: float = INVALID_VALUE
+    descent_abort_count: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -1298,6 +1343,16 @@ def parse_vmcvoa_line(
         stair_speed_ms=channel("stair_speed_ms"),
         stair_preimpact_ms=channel("stair_preimpact_ms"),
         stair_impact_ms=channel("stair_impact_ms"),
+        descent_stage=channel("descent_stage"),
+        descent_abort_reason=channel("descent_abort_reason"),
+        descent_contact_detected=channel("descent_contact_detected"),
+        descent_entry_length=channel("descent_entry_length"),
+        descent_extend_target=channel("descent_extend_target"),
+        descent_length_command=channel("descent_length_command"),
+        descent_contact_torque=channel("descent_contact_torque"),
+        descent_contact_ms=channel("descent_contact_ms"),
+        descent_trigger_count=channel("descent_trigger_count"),
+        descent_abort_count=channel("descent_abort_count"),
     )
     return profile, sample
 
@@ -2278,6 +2333,32 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 rc_source=_safe_float(row.get("rc_source", "")),
                 remote_s1=_safe_float(row.get("remote_s1", "")),
                 remote_s2=_safe_float(row.get("remote_s2", "")),
+                descent_stage=_safe_float(row.get("descent_stage", "")),
+                descent_abort_reason=_safe_float(
+                    row.get("descent_abort_reason", "")
+                ),
+                descent_contact_detected=_safe_float(
+                    row.get("descent_contact_detected", "")
+                ),
+                descent_entry_length=_safe_float(
+                    row.get("descent_entry_length", "")
+                ),
+                descent_extend_target=_safe_float(
+                    row.get("descent_extend_target", "")
+                ),
+                descent_length_command=_safe_float(
+                    row.get("descent_length_command", "")
+                ),
+                descent_contact_torque=_safe_float(
+                    row.get("descent_contact_torque", "")
+                ),
+                descent_contact_ms=_safe_float(row.get("descent_contact_ms", "")),
+                descent_trigger_count=_safe_float(
+                    row.get("descent_trigger_count", "")
+                ),
+                descent_abort_count=_safe_float(
+                    row.get("descent_abort_count", "")
+                ),
             )
 
 

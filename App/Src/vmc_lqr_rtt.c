@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 21U
+#define VMC_LQR_RTT_SCHEMA_VERSION 22U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -805,6 +805,83 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.stair_support_force =
         vmc_lqr_rtt_clamp_float(value, -VMC_LEG_SUPPORT_FORCE_MAX,
                                 VMC_LEG_SUPPORT_FORCE_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_enable", &value) != 0U) {
+    vmc_control.descent_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_extend_length", &value) != 0U) {
+    vmc_control.descent_extend_length =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_extend_rate", &value) != 0U) {
+    vmc_control.descent_extend_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_return_rate", &value) != 0U) {
+    vmc_control.descent_return_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_kp_length", &value) != 0U) {
+    vmc_control.descent_kp_length =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_kd_length", &value) != 0U) {
+    vmc_control.descent_kd_length =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_max_force", &value) != 0U) {
+    vmc_control.descent_max_force =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_LEG_FORCE_MAX_DEFAULT);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_support_force", &value) != 0U) {
+    vmc_control.descent_support_force =
+        vmc_lqr_rtt_clamp_float(value, -VMC_LEG_SUPPORT_FORCE_MAX,
+                                VMC_LEG_SUPPORT_FORCE_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_start_speed", &value) != 0U) {
+    vmc_control.descent_start_speed =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_start_confirm_ms", &value) != 0U) {
+    vmc_control.descent_start_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 500.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_contact_torque", &value) != 0U) {
+    vmc_control.descent_contact_torque =
+        vmc_lqr_rtt_clamp_float(value, 0.1f, 54.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_contact_confirm_ms",
+                                    &value) != 0U) {
+    vmc_control.descent_contact_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 200.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_air_timeout_ms", &value) != 0U) {
+    vmc_control.descent_air_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 100.0f, 5000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_cushion_timeout_ms",
+                                    &value) != 0U) {
+    vmc_control.descent_cushion_timeout_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 20.0f, 1000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "descent_cooldown_ms", &value) != 0U) {
+    vmc_control.descent_cooldown_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "roll_comp_enable", &value) != 0U) {
@@ -1821,6 +1898,34 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line), (double)remote_control.s[1]);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)remote_control.s[0]);
+
+  /* VMCVOFA fields 177..186: automatic descent-assist diagnostics.
+   *
+   * The stage separates the airborne extension from the post-contact cushion;
+   * entry/extend/command lengths expose the target trajectory; contact torque
+   * and elapsed time show whether wheel output was restored by real load or by
+   * a timeout. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_stage);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_abort_reason);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_contact_detected);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_entry_length);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_extend_target);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_length_command);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_control.descent_contact_torque_measured);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_contact_ms);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_trigger_count);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.descent_abort_count);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';
