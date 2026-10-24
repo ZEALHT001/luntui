@@ -452,6 +452,8 @@ extern "C" {
 
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
+#define VMC_ROLL_REMOTE_TARGET_MAX_DEFAULT 0.50f
+#define VMC_ROLL_REMOTE_DEADBAND_DEFAULT 0.03f
 #define VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT 0.4f
 /* Roll length compensation ceiling, in metres of symmetric leg-length offset.
  *
@@ -1093,6 +1095,7 @@ extern "C" {
 #define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 4.0f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT 2.25f
+#define VMC_BALANCE_SPIN_SPEED_RAMP_RATE_DEFAULT 4.5f
 #define VMC_BALANCE_SPEED_DEADBAND_DEFAULT 0.02f
 #define VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT 0.08f
 /* Braking-only Pitch feedforward gain (rad per m/s^2). */
@@ -1139,7 +1142,10 @@ extern "C" {
 #define VMC_RC_WHEEL_TURN_CURRENT_MAX 1000
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
-#define VMC_RC_YAW_SPIN_RATE_DEFAULT VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT
+#define VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT 0.0f
+#define VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT 6.0f
+#define VMC_SPIN_LINE_WINDOW_RAD_DEFAULT 0.436332f /* 25 degrees */
+#define VMC_SPIN_LINE_MIN_OPEN_MS_DEFAULT 200U
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
@@ -1343,6 +1349,8 @@ typedef struct {
   float support_force;
   uint8_t roll_comp_enable;
   float roll_target;
+  float roll_remote_target_max;
+  float roll_remote_deadband;
   float roll_comp_gain;
   float roll_comp_limit;
   float roll_comp_ramp_rate;
@@ -1425,8 +1433,10 @@ typedef struct {
   uint8_t gimbal_follow_enable;
   uint8_t gimbal_follow_active;
   uint8_t gimbal_follow_front_valid;
+  uint8_t roll_remote_active;
   float pitch_offset;
   float phi_offset;
+  float roll_remote_input;
   float theta_deadband;
   float phi_deadband;
   float x_offset;
@@ -1440,6 +1450,7 @@ typedef struct {
   float speed_target_ramped;
   float speed_target_max;
   float speed_ramp_rate;
+  float spin_speed_ramp_rate;
   float speed_deadband;
   float stop_speed_threshold;
   float speed_pitch_gain;
@@ -1471,7 +1482,21 @@ typedef struct {
   float yaw_hold_deadband;
   float yaw_target_rate_max;
   float yaw_spin_rate;
+  float yaw_spin_rate_max;
+  float spin_line_origin_yaw;
+  float spin_line_yaw;
+  float spin_line_input_forward;
+  float spin_line_input_lateral;
+  float spin_line_input_magnitude;
+  float spin_line_phase_error;
+  float spin_line_window_rad;
+  float spin_line_effective_window_rad;
+  uint32_t spin_line_min_open_ms;
+  float spin_line_forward_gate;
+  float spin_line_reverse_gate;
+  float spin_line_gate;
   uint8_t spin_mode_enabled;
+  uint8_t spin_line_heading_valid;
   int16_t yaw_hold_current_limit;
   uint16_t gimbal_follow_front_ecd;
   float gimbal_follow_kp;

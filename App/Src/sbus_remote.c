@@ -88,6 +88,9 @@ static uint8_t sbus_remote_startup_control_reason(void)
   }
 
   for (uint8_t i = 4U; i <= 9U; i++) {
+    if (i == SBUS_REMOTE_SPEED_CHANNEL) {
+      continue;
+    }
     if (sbus_remote_data.normalized[i] >
         (-1.0f + SBUS_REMOTE_STARTUP_TOLERANCE)) {
       reason |= SBUS_REMOTE_STARTUP_BAD_CONTROL;

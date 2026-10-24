@@ -205,7 +205,7 @@ uint8_t remote_control_stair_enabled(void)
              : 0U;
 }
 
-float remote_control_max_speed_scale(void)
+float remote_control_spin_rate_scale(void)
 {
   float scale;
 

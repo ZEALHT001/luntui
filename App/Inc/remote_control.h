@@ -22,12 +22,14 @@ extern "C" {
 #define RC_NORMALIZED_CHANNEL_COUNT 10U
 
 /* New FS-i6S SBUS layout.  Indices match sbus_remote_data.normalized[].
- * 0/1 are chassis X/Y, 2/3 are gimbal X/Y, 4 is master start-stop, 5 is spin,
- * 6 is jump mode, 7 is stair enable, 8 is speed scale and 9 is leg length. */
+ * 0/1 are left-stick chassis X/Y, 2/3 are right-stick vertical/horizontal,
+ * 4 is master start-stop, 5 is spin, 6 is jump mode, 7 is stair enable,
+ * 8 is speed scale and 9 is leg length.  With local SBUS, channel 3 is Roll. */
 #define RC_CHASSIS_X 0U
 #define RC_CHASSIS_Y 1U
 #define RC_GIMBAL_X 2U
 #define RC_GIMBAL_Y 3U
+#define RC_ROLL RC_GIMBAL_Y
 #define RC_START_STOP 4U
 #define RC_SPIN_MODE 5U
 #define RC_JUMP_MODE 6U
@@ -69,7 +71,7 @@ uint8_t remote_control_is_enabled(void);
 uint8_t remote_control_spin_mode_enabled(void);
 uint8_t remote_control_jump_mode(void);
 uint8_t remote_control_stair_enabled(void);
-float remote_control_max_speed_scale(void);
+float remote_control_spin_rate_scale(void);
 float remote_control_leg_length_position(void);
 
 #ifdef __cplusplus

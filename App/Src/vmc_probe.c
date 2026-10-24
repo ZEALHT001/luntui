@@ -97,6 +97,8 @@ static void vmc_descent_update(void);
 static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
 static void vmc_update_getup_state(void);
+static double vmc_spin_line_gate(double phase_error, double window_rad);
+static void vmc_update_remote_roll_target(void);
 static void vmc_update_remote_mode(void);
 static void vmc_update_body_state(void);
 static void vmc_update_gravity_compensation(void);
@@ -2320,6 +2322,44 @@ static void vmc_update_getup_state(void)
   }
 }
 
+static void vmc_update_remote_roll_target(void)
+{
+  const uint8_t active =
+      (remote_control_source == RC_SOURCE_SBUS &&
+       remote_control_is_enabled() != 0U)
+          ? 1U
+          : 0U;
+  float input = 0.0f;
+  float target = 0.0f;
+
+  if (active != 0U) {
+    const float deadband =
+        clamp_float(vmc_control.roll_remote_deadband, 0.0f, 0.50f);
+    const float max_target =
+        clamp_float(vmc_control.roll_remote_target_max, 0.0f, 0.50f);
+
+    input = remote_control_channel(RC_ROLL);
+    if (fabsf(input) <= deadband) {
+      input = 0.0f;
+    }
+    /* body.roll is positive when the right side is high.  Channel 3 uses the
+     * requested reversed direction: stick-left commands the opposite roll. */
+    target = clamp_float(input * max_target, -0.50f, 0.50f);
+  }
+
+  vmc_control.roll_target = target;
+  vmc_balance.roll_remote_input = input;
+  vmc_balance.roll_remote_active = active;
+}
+
+static double vmc_spin_line_gate(double phase_error, double window_rad)
+{
+  if (window_rad <= 0.0 || fabs(phase_error) >= window_rad) {
+    return 0.0;
+  }
+  return 0.5 * (1.0 + cos(VMC_PI * phase_error / window_rad));
+}
+
 static void vmc_update_remote_mode(void)
 {
   int16_t forward_current;
@@ -2329,19 +2369,73 @@ static void vmc_update_remote_mode(void)
   const double dt = vmc_loop_dt();
   const uint32_t now = HAL_GetTick();
   const uint8_t spin_enabled = remote_control_spin_mode_enabled();
-  const double speed_scale = (double)remote_control_max_speed_scale();
+  const double knob_scale = (double)remote_control_spin_rate_scale();
+  const double forward_speed_scale =
+      (spin_enabled != 0U) ? 1.0 : knob_scale;
+  const double spin_rate_max =
+      clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 6.0);
+  const uint8_t imu_ready =
+      (vmc_probe_state.body.imu_valid != 0U &&
+       vmc_probe_state.body.imu_connected != 0U)
+          ? 1U
+          : 0U;
+  const float spin_forward_input =
+      remote_control_channel(RC_CHASSIS_Y);
+  const float spin_left_input =
+      -remote_control_channel(RC_CHASSIS_X);
+  const float spin_input_magnitude = clamp_float(
+      sqrtf(spin_forward_input * spin_forward_input +
+            spin_left_input * spin_left_input),
+      0.0f, 1.0f);
+  const uint8_t spin_input_active =
+      (spin_input_magnitude >
+       ((float)VMC_RC_CH_DEADBAND / (float)RC_CHANNAL_ERROR_VALUE))
+          ? 1U
+          : 0U;
   uint8_t follow_requested = 0U;
 
+  vmc_update_remote_roll_target();
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
   vmc_wheel_control.manual_forward_current = 0;
   vmc_wheel_control.manual_turn_current = 0;
   vmc_balance.spin_mode_enabled = spin_enabled;
+  vmc_balance.spin_line_input_forward = spin_forward_input;
+  vmc_balance.spin_line_input_lateral = spin_left_input;
+  vmc_balance.spin_line_input_magnitude = spin_input_magnitude;
+  vmc_balance.yaw_spin_rate =
+      (spin_enabled != 0U)
+          ? (float)((double)VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT +
+                    knob_scale * (spin_rate_max -
+                                  (double)VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT))
+          : 0.0f;
+  vmc_balance.spin_line_phase_error = 0.0f;
+  vmc_balance.spin_line_forward_gate = 0.0f;
+  vmc_balance.spin_line_reverse_gate = 0.0f;
+  vmc_balance.spin_line_gate = 0.0f;
 
   if (spin_enabled != vmc_spin_mode_last) {
     vmc_balance.yaw_target = vmc_probe_state.body.yaw;
     vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.spin_line_heading_valid = imu_ready;
+    if (imu_ready != 0U) {
+      vmc_balance.spin_line_origin_yaw = vmc_probe_state.body.yaw;
+      vmc_balance.spin_line_yaw = vmc_probe_state.body.yaw;
+    }
     vmc_spin_mode_last = spin_enabled;
+  }
+
+  if (spin_enabled != 0U && vmc_balance.spin_line_heading_valid == 0U &&
+      imu_ready != 0U) {
+    vmc_balance.spin_line_origin_yaw = vmc_probe_state.body.yaw;
+    vmc_balance.spin_line_yaw = vmc_probe_state.body.yaw;
+    vmc_balance.spin_line_heading_valid = 1U;
+  }
+
+  if (spin_enabled != 0U && spin_input_active != 0U) {
+    const float direction_offset = atan2f(spin_left_input, spin_forward_input);
+    vmc_balance.spin_line_yaw = vmc_rad_format(
+        vmc_balance.spin_line_origin_yaw + direction_offset);
   }
 
   if (remote_control_source != vmc_remote_source_last) {
@@ -2407,13 +2501,62 @@ static void vmc_update_remote_mode(void)
     return;
   }
 
-  forward_current = rc_channel_to_current(
-      (int16_t)(remote_control_channel(RC_CHASSIS_Y) *
-                RC_CHANNAL_ERROR_VALUE),
-      VMC_RC_WHEEL_FWD_CURRENT_MAX);
-  forward_current = (int16_t)((double)forward_current * speed_scale);
+  if (spin_enabled != 0U) {
+    double phase_error;
+    const double min_window = clamp_double(
+        vmc_balance.spin_line_window_rad, 0.087266, 1.570796);
+    const uint32_t min_open_ms =
+        clamp_u32(vmc_balance.spin_line_min_open_ms, 100U, 2000U);
+    const double adaptive_window =
+        0.5 * (double)vmc_balance.yaw_spin_rate *
+        ((double)min_open_ms * 0.001);
+    const double window = clamp_double(
+        (adaptive_window > min_window) ? adaptive_window : min_window,
+        0.087266,
+        1.570796);
+
+    if (vmc_balance.spin_line_heading_valid != 0U && imu_ready != 0U) {
+      double reverse_phase_error;
+      double forward_gate;
+      double reverse_gate;
+
+      vmc_balance.spin_line_effective_window_rad = (float)window;
+      phase_error = (double)vmc_rad_format(
+          (float)((double)vmc_probe_state.body.yaw -
+                  (double)vmc_balance.spin_line_yaw));
+      reverse_phase_error = (double)vmc_rad_format(
+          (float)(phase_error - (double)VMC_PI));
+      forward_gate = vmc_spin_line_gate(phase_error, window);
+      reverse_gate = vmc_spin_line_gate(reverse_phase_error, window);
+      vmc_balance.spin_line_phase_error = (float)phase_error;
+      vmc_balance.spin_line_forward_gate = (float)forward_gate;
+      vmc_balance.spin_line_reverse_gate = (float)reverse_gate;
+      vmc_balance.spin_line_gate = (float)(forward_gate - reverse_gate);
+    } else {
+      vmc_balance.spin_line_effective_window_rad = (float)window;
+      vmc_balance.spin_line_forward_gate = 0.0f;
+      vmc_balance.spin_line_reverse_gate = 0.0f;
+      vmc_balance.spin_line_gate = 0.0f;
+    }
+  } else {
+    vmc_balance.spin_line_forward_gate = 1.0f;
+    vmc_balance.spin_line_reverse_gate = 0.0f;
+    vmc_balance.spin_line_gate = 1.0f;
+  }
+
+  forward_current =
+      (spin_enabled != 0U)
+          ? rc_channel_to_current(
+                (int16_t)(spin_input_magnitude * RC_CHANNAL_ERROR_VALUE),
+                VMC_RC_WHEEL_FWD_CURRENT_MAX)
+          : rc_channel_to_current(
+                (int16_t)(remote_control_channel(RC_CHASSIS_Y) *
+                          RC_CHANNAL_ERROR_VALUE),
+                VMC_RC_WHEEL_FWD_CURRENT_MAX);
+  forward_current = (int16_t)((double)forward_current * forward_speed_scale *
+                              (double)vmc_balance.spin_line_gate);
   turn_input = rc_channel_to_unit(
-      (int16_t)(remote_control_channel(RC_CHASSIS_X) *
+      (int16_t)(-remote_control_channel(RC_CHASSIS_X) *
                 RC_CHANNAL_ERROR_VALUE));
   vmc_wheel_control.manual_forward_current = forward_current;
 
@@ -2451,8 +2594,10 @@ static void vmc_update_remote_mode(void)
       vmc_balance.yaw_hold_active = 1U;
     }
     if (spin_enabled != 0U) {
-      const double spin_rate =
-          clamp_double(vmc_balance.yaw_spin_rate, 0.0, 10.0);
+      const double spin_rate = clamp_double(
+          vmc_balance.yaw_spin_rate,
+          (double)VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT,
+          (double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT);
       vmc_balance.yaw_target =
           (float)((double)vmc_balance.yaw_target + spin_rate * dt);
     } else {
@@ -3019,6 +3164,8 @@ void vmc_balance_init(void)
   vmc_balance.dx_feedback_enable = VMC_BALANCE_DX_FEEDBACK_ENABLE_DEFAULT;
   vmc_balance.x_feedback_enable = VMC_BALANCE_X_FEEDBACK_ENABLE_DEFAULT;
   vmc_balance.safety_allows_output = 0U;
+  vmc_balance.roll_remote_active = 0U;
+  vmc_balance.roll_remote_input = 0.0f;
   vmc_balance.pitch_offset = VMC_BALANCE_PITCH_OFFSET_DEFAULT;
   vmc_balance.phi_offset = VMC_BALANCE_PHI_OFFSET_DEFAULT;
   vmc_balance.theta_deadband = VMC_BALANCE_THETA_DEADBAND_DEFAULT;
@@ -3034,6 +3181,7 @@ void vmc_balance_init(void)
   vmc_balance.speed_target_ramped = 0.0f;
   vmc_balance.speed_target_max = VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT;
   vmc_balance.speed_ramp_rate = VMC_BALANCE_SPEED_RAMP_RATE_DEFAULT;
+  vmc_balance.spin_speed_ramp_rate = VMC_BALANCE_SPIN_SPEED_RAMP_RATE_DEFAULT;
   vmc_balance.speed_deadband = VMC_BALANCE_SPEED_DEADBAND_DEFAULT;
   vmc_balance.stop_speed_threshold = VMC_BALANCE_STOP_SPEED_THRESHOLD_DEFAULT;
   vmc_balance.speed_pitch_gain = VMC_BALANCE_SPEED_PITCH_GAIN_DEFAULT;
@@ -3081,7 +3229,21 @@ void vmc_balance_init(void)
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
-  vmc_balance.yaw_spin_rate = VMC_RC_YAW_SPIN_RATE_DEFAULT;
+  vmc_balance.yaw_spin_rate = VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT;
+  vmc_balance.yaw_spin_rate_max = VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT;
+  vmc_balance.spin_line_origin_yaw = 0.0f;
+  vmc_balance.spin_line_yaw = 0.0f;
+  vmc_balance.spin_line_input_forward = 0.0f;
+  vmc_balance.spin_line_input_lateral = 0.0f;
+  vmc_balance.spin_line_input_magnitude = 0.0f;
+  vmc_balance.spin_line_phase_error = 0.0f;
+  vmc_balance.spin_line_window_rad = VMC_SPIN_LINE_WINDOW_RAD_DEFAULT;
+  vmc_balance.spin_line_effective_window_rad = VMC_SPIN_LINE_WINDOW_RAD_DEFAULT;
+  vmc_balance.spin_line_min_open_ms = VMC_SPIN_LINE_MIN_OPEN_MS_DEFAULT;
+  vmc_balance.spin_line_forward_gate = 1.0f;
+  vmc_balance.spin_line_reverse_gate = 0.0f;
+  vmc_balance.spin_line_gate = 1.0f;
+  vmc_balance.spin_line_heading_valid = 0U;
   vmc_balance.spin_mode_enabled = 0U;
   vmc_balance.yaw_hold_current_limit = VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT;
   vmc_balance.gimbal_follow_front_ecd = VMC_GIMBAL_FOLLOW_FRONT_ECD_DEFAULT;
@@ -3179,8 +3341,11 @@ void vmc_balance_update(void)
        stale ramped command into the parking controller. */
     speed_target_ramped = 0.0;
   }
-  const double speed_ramp_step =
-      clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0) * vmc_loop_dt();
+  const double active_speed_ramp_rate =
+      (vmc_balance.spin_mode_enabled != 0U)
+          ? clamp_double(vmc_balance.spin_speed_ramp_rate, 0.0, 10.0)
+          : clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0);
+  const double speed_ramp_step = active_speed_ramp_rate * vmc_loop_dt();
   const double dx_target =
       vmc_step_towards(speed_target_ramped, speed_target, speed_ramp_step);
   const double stop_speed_threshold =
@@ -4166,6 +4331,8 @@ void vmc_control_init(void)
   vmc_control.support_force = VMC_LEG_SUPPORT_FORCE_DEFAULT;
   vmc_control.roll_comp_enable = VMC_ROLL_COMP_ENABLE_DEFAULT;
   vmc_control.roll_target = VMC_ROLL_TARGET_DEFAULT;
+  vmc_control.roll_remote_target_max = VMC_ROLL_REMOTE_TARGET_MAX_DEFAULT;
+  vmc_control.roll_remote_deadband = VMC_ROLL_REMOTE_DEADBAND_DEFAULT;
   vmc_control.roll_comp_gain = VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT;
   vmc_control.roll_comp_limit = VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT;
   vmc_control.roll_comp_ramp_rate = VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT;
