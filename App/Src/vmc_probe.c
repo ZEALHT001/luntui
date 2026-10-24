@@ -97,7 +97,9 @@ static void vmc_descent_update(void);
 static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
 static void vmc_update_getup_state(void);
-static double vmc_spin_line_gate(double phase_error, double window_rad);
+static double vmc_spin_phase_lead_rad(double spin_rate);
+static double vmc_spin_projection_gain(double phase_error, double phase_lead,
+                                       double power);
 static void vmc_update_remote_roll_target(void);
 static void vmc_update_remote_mode(void);
 static void vmc_update_body_state(void);
@@ -2352,12 +2354,43 @@ static void vmc_update_remote_roll_target(void)
   vmc_balance.roll_remote_active = active;
 }
 
-static double vmc_spin_line_gate(double phase_error, double window_rad)
+static double vmc_spin_phase_lead_rad(double spin_rate)
 {
-  if (window_rad <= 0.0 || fabs(phase_error) >= window_rad) {
-    return 0.0;
+  const double omega = clamp_double(spin_rate, 0.0, 6.0);
+  double lead_deg;
+
+  if (omega <= 1.0) {
+    lead_deg = 0.0;
+  } else if (omega <= 2.0) {
+    lead_deg = 11.0 * (omega - 1.0);
+  } else if (omega <= 3.0) {
+    lead_deg = 11.0 + 9.0 * (omega - 2.0);
+  } else if (omega <= 4.0) {
+    lead_deg = 20.0 + 5.0 * (omega - 3.0);
+  } else if (omega <= 5.0) {
+    lead_deg = 25.0 + 5.0 * (omega - 4.0);
+  } else {
+    lead_deg = 30.0 + 3.0 * (omega - 5.0);
   }
-  return 0.5 * (1.0 + cos(VMC_PI * phase_error / window_rad));
+
+  return lead_deg * (double)VMC_PI / 180.0;
+}
+
+static double vmc_spin_projection_gain(double phase_error, double phase_lead,
+                                       double power)
+{
+  const double phase = (double)vmc_rad_format(
+      (float)(phase_error + phase_lead));
+  const double cosine = cos(phase);
+  const double exponent = clamp_double(power, 1.0, 8.0);
+
+  if (cosine > 0.0) {
+    return pow(cosine, exponent);
+  }
+  if (cosine < 0.0) {
+    return -pow(-cosine, exponent);
+  }
+  return 0.0;
 }
 
 static void vmc_update_remote_mode(void)
@@ -2374,6 +2407,9 @@ static void vmc_update_remote_mode(void)
       (spin_enabled != 0U) ? 1.0 : knob_scale;
   const double spin_rate_max =
       clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 6.0);
+  const double path_offset_rad =
+      (double)clamp_float(vmc_balance.spin_line_path_offset_deg, -180.0f, 180.0f) *
+      (double)VMC_PI / 180.0;
   const uint8_t imu_ready =
       (vmc_probe_state.body.imu_valid != 0U &&
        vmc_probe_state.body.imu_connected != 0U)
@@ -2410,8 +2446,7 @@ static void vmc_update_remote_mode(void)
                                   (double)VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT))
           : 0.0f;
   vmc_balance.spin_line_phase_error = 0.0f;
-  vmc_balance.spin_line_forward_gate = 0.0f;
-  vmc_balance.spin_line_reverse_gate = 0.0f;
+  vmc_balance.spin_line_phase_lead_rad = 0.0f;
   vmc_balance.spin_line_gate = 0.0f;
 
   if (spin_enabled != vmc_spin_mode_last) {
@@ -2420,7 +2455,8 @@ static void vmc_update_remote_mode(void)
     vmc_balance.spin_line_heading_valid = imu_ready;
     if (imu_ready != 0U) {
       vmc_balance.spin_line_origin_yaw = vmc_probe_state.body.yaw;
-      vmc_balance.spin_line_yaw = vmc_probe_state.body.yaw;
+      vmc_balance.spin_line_yaw = vmc_rad_format(
+          vmc_probe_state.body.yaw + (float)path_offset_rad);
     }
     vmc_spin_mode_last = spin_enabled;
   }
@@ -2428,14 +2464,16 @@ static void vmc_update_remote_mode(void)
   if (spin_enabled != 0U && vmc_balance.spin_line_heading_valid == 0U &&
       imu_ready != 0U) {
     vmc_balance.spin_line_origin_yaw = vmc_probe_state.body.yaw;
-    vmc_balance.spin_line_yaw = vmc_probe_state.body.yaw;
+    vmc_balance.spin_line_yaw = vmc_rad_format(
+        vmc_probe_state.body.yaw + (float)path_offset_rad);
     vmc_balance.spin_line_heading_valid = 1U;
   }
 
   if (spin_enabled != 0U && spin_input_active != 0U) {
     const float direction_offset = atan2f(spin_left_input, spin_forward_input);
     vmc_balance.spin_line_yaw = vmc_rad_format(
-        vmc_balance.spin_line_origin_yaw + direction_offset);
+        vmc_balance.spin_line_origin_yaw + direction_offset +
+        (float)path_offset_rad);
   }
 
   if (remote_control_source != vmc_remote_source_last) {
@@ -2502,45 +2540,24 @@ static void vmc_update_remote_mode(void)
   }
 
   if (spin_enabled != 0U) {
-    double phase_error;
-    const double min_window = clamp_double(
-        vmc_balance.spin_line_window_rad, 0.087266, 1.570796);
-    const uint32_t min_open_ms =
-        clamp_u32(vmc_balance.spin_line_min_open_ms, 100U, 2000U);
-    const double adaptive_window =
-        0.5 * (double)vmc_balance.yaw_spin_rate *
-        ((double)min_open_ms * 0.001);
-    const double window = clamp_double(
-        (adaptive_window > min_window) ? adaptive_window : min_window,
-        0.087266,
-        1.570796);
-
     if (vmc_balance.spin_line_heading_valid != 0U && imu_ready != 0U) {
-      double reverse_phase_error;
-      double forward_gate;
-      double reverse_gate;
-
-      vmc_balance.spin_line_effective_window_rad = (float)window;
-      phase_error = (double)vmc_rad_format(
+      const double phase_error = (double)vmc_rad_format(
           (float)((double)vmc_probe_state.body.yaw -
                   (double)vmc_balance.spin_line_yaw));
-      reverse_phase_error = (double)vmc_rad_format(
-          (float)(phase_error - (double)VMC_PI));
-      forward_gate = vmc_spin_line_gate(phase_error, window);
-      reverse_gate = vmc_spin_line_gate(reverse_phase_error, window);
+      const double phase_lead =
+          vmc_spin_phase_lead_rad((double)vmc_balance.yaw_spin_rate);
+
       vmc_balance.spin_line_phase_error = (float)phase_error;
-      vmc_balance.spin_line_forward_gate = (float)forward_gate;
-      vmc_balance.spin_line_reverse_gate = (float)reverse_gate;
-      vmc_balance.spin_line_gate = (float)(forward_gate - reverse_gate);
+      vmc_balance.spin_line_phase_lead_rad = (float)phase_lead;
+      vmc_balance.spin_line_gate = (float)vmc_spin_projection_gain(
+          phase_error, phase_lead,
+          (double)vmc_balance.spin_line_projection_power);
     } else {
-      vmc_balance.spin_line_effective_window_rad = (float)window;
-      vmc_balance.spin_line_forward_gate = 0.0f;
-      vmc_balance.spin_line_reverse_gate = 0.0f;
+      vmc_balance.spin_line_phase_lead_rad = 0.0f;
       vmc_balance.spin_line_gate = 0.0f;
     }
   } else {
-    vmc_balance.spin_line_forward_gate = 1.0f;
-    vmc_balance.spin_line_reverse_gate = 0.0f;
+    vmc_balance.spin_line_phase_lead_rad = 0.0f;
     vmc_balance.spin_line_gate = 1.0f;
   }
 
@@ -3233,15 +3250,14 @@ void vmc_balance_init(void)
   vmc_balance.yaw_spin_rate_max = VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT;
   vmc_balance.spin_line_origin_yaw = 0.0f;
   vmc_balance.spin_line_yaw = 0.0f;
+  vmc_balance.spin_line_path_offset_deg =
+      VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT;
   vmc_balance.spin_line_input_forward = 0.0f;
   vmc_balance.spin_line_input_lateral = 0.0f;
   vmc_balance.spin_line_input_magnitude = 0.0f;
   vmc_balance.spin_line_phase_error = 0.0f;
-  vmc_balance.spin_line_window_rad = VMC_SPIN_LINE_WINDOW_RAD_DEFAULT;
-  vmc_balance.spin_line_effective_window_rad = VMC_SPIN_LINE_WINDOW_RAD_DEFAULT;
-  vmc_balance.spin_line_min_open_ms = VMC_SPIN_LINE_MIN_OPEN_MS_DEFAULT;
-  vmc_balance.spin_line_forward_gate = 1.0f;
-  vmc_balance.spin_line_reverse_gate = 0.0f;
+  vmc_balance.spin_line_phase_lead_rad = 0.0f;
+  vmc_balance.spin_line_projection_power = VMC_SPIN_PROJECTION_POWER_DEFAULT;
   vmc_balance.spin_line_gate = 1.0f;
   vmc_balance.spin_line_heading_valid = 0U;
   vmc_balance.spin_mode_enabled = 0U;

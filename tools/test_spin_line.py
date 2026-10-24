@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Regression tests for world-direction gating during small-gyro motion."""
+"""Regression tests for continuous world-direction projection."""
 
 from __future__ import annotations
 
-import math
 import re
 import unittest
 from pathlib import Path
@@ -42,41 +41,58 @@ def _body(source: str, name: str) -> str:
 
 
 class SpinLineTest(unittest.TestCase):
-    def test_default_window_is_twenty_five_degrees(self) -> None:
-        self.assertAlmostEqual(
-            _macro("VMC_SPIN_LINE_WINDOW_RAD_DEFAULT"),
-            math.radians(25.0),
-            places=6,
-        )
+    def test_default_projection_power_is_five(self) -> None:
+        self.assertEqual(_macro("VMC_SPIN_PROJECTION_POWER_DEFAULT"), 5.0)
 
     def test_spin_entry_captures_world_yaw(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
         self.assertIn("spin_enabled != vmc_spin_mode_last", body)
-        self.assertIn("vmc_balance.spin_line_yaw = vmc_probe_state.body.yaw", body)
+        self.assertIn("vmc_balance.spin_line_origin_yaw = vmc_probe_state.body.yaw", body)
+        self.assertIn("vmc_probe_state.body.yaw + (float)path_offset_rad", body)
         self.assertIn("vmc_balance.spin_line_heading_valid = imu_ready", body)
 
-    def test_forward_is_gated_by_wrapped_heading_error(self) -> None:
+    def test_projection_is_continuous_signed_power_of_cosine(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        projection = _body(source, "vmc_spin_projection_gain")
+        for needle in (
+            "phase_error + phase_lead",
+            "cos(phase)",
+            "pow(cosine, exponent)",
+            "-pow(-cosine, exponent)",
+            "clamp_double(power, 1.0, 8.0)",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, projection)
+
+    def test_phase_lead_increases_with_spin_rate(self) -> None:
+        lead = _body(
+            SOURCE.read_text(encoding="utf-8"), "vmc_spin_phase_lead_rad"
+        )
+        for needle in (
+            "omega <= 1.0",
+            "lead_deg = 0.0",
+            "11.0 * (omega - 1.0)",
+            "11.0 + 9.0 * (omega - 2.0)",
+            "20.0 + 5.0 * (omega - 3.0)",
+            "25.0 + 5.0 * (omega - 4.0)",
+            "30.0 + 3.0 * (omega - 5.0)",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, lead)
+
+    def test_remote_mode_uses_projection_not_window_gates(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
         body = _body(source, "vmc_update_remote_mode")
-        gate = _body(source, "vmc_spin_line_gate")
-        self.assertIn("vmc_rad_format(", body)
-        self.assertIn("vmc_spin_line_gate(phase_error, window)", body)
-        self.assertIn("cos(VMC_PI * phase_error / window_rad)", gate)
-        self.assertIn("(double)vmc_balance.spin_line_gate);", body)
-        self.assertIn("forward_speed_scale", body)
-
-    def test_opposite_heading_uses_reverse_drive_for_the_same_world_direction(
-        self,
-    ) -> None:
-        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
         for needle in (
-            "phase_error - (double)VMC_PI",
-            "vmc_spin_line_gate(reverse_phase_error, window)",
-            "forward_gate - reverse_gate",
-            "spin_line_reverse_gate",
+            "vmc_spin_phase_lead_rad((double)vmc_balance.yaw_spin_rate)",
+            "vmc_spin_projection_gain(",
+            "(double)vmc_balance.spin_line_projection_power",
+            "(double)vmc_balance.spin_line_gate);",
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, body)
+        self.assertNotIn("spin_line_window_rad", source)
+        self.assertNotIn("spin_line_reverse_gate", source)
 
     def test_left_stick_vector_selects_any_world_travel_direction(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
@@ -86,24 +102,19 @@ class SpinLineTest(unittest.TestCase):
             "sqrtf(spin_forward_input * spin_forward_input",
             "atan2f(spin_left_input, spin_forward_input)",
             "vmc_balance.spin_line_origin_yaw + direction_offset",
+            "(float)path_offset_rad",
             "spin_input_magnitude * RC_CHANNAL_ERROR_VALUE",
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, body)
 
-    def test_window_expands_to_preserve_minimum_open_time(self) -> None:
+    def test_default_path_offset_compensates_left_bias(self) -> None:
+        self.assertEqual(_macro("VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT"), -75.0)
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
-        self.assertEqual(_macro("VMC_SPIN_LINE_MIN_OPEN_MS_DEFAULT"), 200.0)
-        for needle in (
-            "vmc_balance.spin_line_min_open_ms",
-            "adaptive_window",
-            "0.5 * (double)vmc_balance.yaw_spin_rate",
-            "vmc_balance.spin_line_effective_window_rad",
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, body)
+        self.assertIn("vmc_balance.spin_line_path_offset_deg", body)
+        self.assertIn("clamp_float(vmc_balance.spin_line_path_offset_deg", body)
 
-    def test_gate_is_open_when_spin_is_disabled(self) -> None:
+    def test_projection_is_open_when_spin_is_disabled(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
         self.assertIn("vmc_balance.spin_line_gate = 1.0f;", body)
 

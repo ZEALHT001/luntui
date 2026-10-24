@@ -1144,8 +1144,8 @@ extern "C" {
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
 #define VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT 0.0f
 #define VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT 6.0f
-#define VMC_SPIN_LINE_WINDOW_RAD_DEFAULT 0.436332f /* 25 degrees */
-#define VMC_SPIN_LINE_MIN_OPEN_MS_DEFAULT 200U
+#define VMC_SPIN_PROJECTION_POWER_DEFAULT 5.0f
+#define VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT -75.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
 #define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
@@ -1485,15 +1485,13 @@ typedef struct {
   float yaw_spin_rate_max;
   float spin_line_origin_yaw;
   float spin_line_yaw;
+  float spin_line_path_offset_deg;
   float spin_line_input_forward;
   float spin_line_input_lateral;
   float spin_line_input_magnitude;
   float spin_line_phase_error;
-  float spin_line_window_rad;
-  float spin_line_effective_window_rad;
-  uint32_t spin_line_min_open_ms;
-  float spin_line_forward_gate;
-  float spin_line_reverse_gate;
+  float spin_line_phase_lead_rad;
+  float spin_line_projection_power;
   float spin_line_gate;
   uint8_t spin_mode_enabled;
   uint8_t spin_line_heading_valid;
