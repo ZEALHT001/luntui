@@ -41,9 +41,9 @@ def _body(source: str, name: str) -> str:
 
 
 class SpinSpeedTest(unittest.TestCase):
-    def test_range_is_zero_to_six_rad_per_second(self) -> None:
+    def test_range_is_zero_to_nine_rad_per_second(self) -> None:
         self.assertEqual(_macro("VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT"), 0.0)
-        self.assertEqual(_macro("VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT"), 6.0)
+        self.assertEqual(_macro("VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT"), 9.0)
 
     def test_channel_eight_knob_scales_spin_speed(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
@@ -56,9 +56,9 @@ class SpinSpeedTest(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, body)
 
-    def test_spin_rate_is_clamped_to_zero_and_six(self) -> None:
+    def test_spin_rate_is_clamped_to_zero_and_nine(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
-        self.assertIn("clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 6.0)", body)
+        self.assertIn("clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 9.0)", body)
         self.assertIn("clamp_double(", body)
         self.assertIn("vmc_balance.yaw_spin_rate,", body)
         self.assertNotIn("VMC_RC_YAW_SPIN_RATE_DEFAULT", body)

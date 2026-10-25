@@ -48,12 +48,12 @@ class AnalyseTest(unittest.TestCase):
 
     def test_clip_is_detected(self) -> None:
         # Offset asks for +-80 mm, but the retract side is pinned on MIN, so
-        # the delivered differential is short of the request: 0.25 - 0.160.
+        # the delivered differential is short of the request near the 17 cm floor.
         rows = _rows(offset=0.08, left=0.25, right=LEG_LENGTH_MIN, roll=0.2,
                      measured_left=0.25, measured_right=LEG_LENGTH_MIN)
         result = analyse(rows)
         self.assertAlmostEqual(float(result["want_diff_max"]), 0.16, places=6)
-        self.assertAlmostEqual(float(result["commanded_diff_max"]), 0.09, places=6)
+        self.assertAlmostEqual(float(result["commanded_diff_max"]), 0.08, places=6)
         self.assertEqual(int(result["clipped_total_frames"]), len(rows))
 
     def test_no_clip_when_stroke_allows_it(self) -> None:

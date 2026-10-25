@@ -50,10 +50,10 @@ extern "C" {
 #define VMC_LEG_TP_MAX            108.0f
 
 #define VMC_LEG_LENGTH_DEFAULT     0.280f
-/* Physical leg-length travel, in metres.
+/* Leg-length command travel, in metres.
  *
  * MIN was 0.120 until this was actually measured.  On the vehicle the leg
- * cannot get shorter than 0.160 m: commanded to 0.119 m it sat at
+ * cannot physically get shorter than 0.160 m: commanded to 0.119 m it sat at
  * 0.161 +-1 mm for 40 s, which is a mechanical end stop, not a control
  * limitation.  A tape measure confirmed 0.160 m.  The old value let every
  * length target be driven 40 mm below the hard stop, which silently turned
@@ -61,12 +61,13 @@ extern "C" {
  * far weaker than it is - the target was pinned at MIN while the leg was
  * pinned against metal.
  *
- * MAX stays 0.385; the leg reaches the end of its stroke there.
+ * The software minimum is now 0.170, leaving 10 mm of safety margin above the
+ * measured 0.160 hard stop.  MAX stays 0.385.
  *
  * CONSEQUENCE - the headroom each preset leaves is much smaller than it
  * looked, especially downward.  See the table at
  * VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT below, which is the same arithmetic. */
-#define VMC_LEG_LENGTH_MIN         0.160f
+#define VMC_LEG_LENGTH_MIN         0.170f
 #define VMC_LEG_LENGTH_MAX         0.385f
 #define VMC_LEG_LENGTH_KP_DEFAULT  2000.0f
 #define VMC_LEG_LENGTH_KD_DEFAULT  100.0f
@@ -213,22 +214,24 @@ extern "C" {
 #define VMC_LEG_FOLLOW_SIDE_NONE 2U
 
 /* SBUS channel 9 is a continuous leg-length knob.  Its -1 endpoint maps to
- * SHORT, 0 maps to MID and +1 maps to LONG.  Units are metres;
- * VMC_LEG_LENGTH_MIN/MAX (0.160/0.385) still clamp the result.
+ * VMC_LEG_KNOB_MIN_DEFAULT, midpoint is the linear midpoint, and +1 maps to
+ * LONG.  Units are metres;
+ * VMC_LEG_LENGTH_MIN/MAX (0.170/0.385) still clamp the result.
  *
  * SHORT is also the length the self-righting sequence stands up on
  * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too.
  *
- * SHORT sits at the measured mechanical stop; LONG leaves only 25 mm before
+ * SHORT sits at the software minimum; LONG leaves only 25 mm before
  * the maximum stroke. */
-#define VMC_LEG_TARGET_SHORT      0.160f
+#define VMC_LEG_TARGET_SHORT      0.170f
 #define VMC_LEG_TARGET_MID        0.260f
 #define VMC_LEG_TARGET_LONG       0.360f
+#define VMC_LEG_KNOB_MIN_DEFAULT  0.170f
 #define VMC_LEG_GEAR_LOW          0U
 #define VMC_LEG_GEAR_MID          1U
 #define VMC_LEG_GEAR_HIGH         2U
 /* Absorbs SBUS quantisation and knob jitter when comparing against the old
- * discrete targets.  One SBUS count is about 0.13 mm over this knob range. */
+ * discrete targets.  One SBUS count is about 0.12 mm over this knob range. */
 #define VMC_LEG_GEAR_THRESHOLD_TOL 0.0005f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_LEG_LENGTH_RAMP_RATE_DEFAULT 0.225f
@@ -248,7 +251,7 @@ extern "C" {
  * the leg moved 1 mm against a target 20 mm away, i.e. the phase is a 180 ms
  * pause rather than a crouch. Changing this number therefore has no effect
  * until COMPRESS is given the jump gains with no extension feedforward. */
-#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.16f
+#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.17f
 #define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.38f
 #define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.18f
 #define VMC_JUMP_LAND_LENGTH_DEFAULT     0.23f
@@ -385,7 +388,7 @@ extern "C" {
  * Every timing value is runtime tunable over RTT so the detector can be
  * characterised from the web page without a reflash. */
 #define VMC_STAIR_ENABLE_DEFAULT                   1U
-#define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.160f
+#define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.170f
 #define VMC_STAIR_PHI0_TARGET_DEFAULT              2.500f
 #define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           4.0f
 #define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
@@ -465,29 +468,29 @@ extern "C" {
  * so the largest offset that can NEVER be clipped is half the travel:
  *
  *     (VMC_LEG_LENGTH_MAX - VMC_LEG_LENGTH_MIN) / 2
- *         = (0.385 - 0.160) / 2 = 0.1125 m
+ *         = (0.385 - 0.170) / 2 = 0.1075 m
  *
  * That is only reachable when the preset sits exactly at the travel centre
- * (0.2725 m).  Every real preset is off-centre, so the binding limit is the
+ * (0.2775 m).  Every real preset is off-centre, so the binding limit is the
  * SMALLER of the two headrooms, which is not always the retract side:
  *
  *     preset   retract   extend   symmetric ceiling
- *     SHORT     0 mm     225 mm    0 mm
- *     MID     100 mm     125 mm  100 mm
- *     LONG    200 mm      25 mm   25 mm
+ *     SHORT     0 mm     215 mm    0 mm
+ *     MID      90 mm     125 mm   90 mm
+ *     LONG    190 mm      25 mm   25 mm
  *
  * SHORT and LONG are both limit-bound, just on opposite sides: SHORT cannot
  * retract and LONG cannot extend.  An offset larger than the ceiling is not
  * rejected, it is silently clipped per leg, and while it is being clipped the
  * pair stops levelling and starts raising the machine instead - so this is the
  * physical limit, not a tuning preference.  With the gain at 0.4 the clamp
- * engages past 0.1125 / 0.4 = 0.281 rad (16.1 deg) of roll, where it used to
+ * engages past 0.1075 / 0.4 = 0.269 rad (15.4 deg) of roll, where it used to
  * saturate at 0.08 / 0.4 = 0.200 rad (11.5 deg).
  *
  * Plain literals on purpose: the LQR tuner and its tests read these tokens as
  * numbers and cannot evaluate macro arithmetic. */
-#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.1125f
-#define VMC_ROLL_LENGTH_COMP_LIMIT_MAX     0.1125f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.1075f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_MAX     0.1075f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.054f
 /* Fallback control period in seconds, used before the first measurement and
@@ -1143,7 +1146,7 @@ extern "C" {
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
 #define VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT 0.0f
-#define VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT 6.0f
+#define VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT 9.0f
 #define VMC_SPIN_PROJECTION_POWER_DEFAULT 5.0f
 #define VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT -75.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U

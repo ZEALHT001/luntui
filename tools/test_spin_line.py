@@ -76,6 +76,7 @@ class SpinLineTest(unittest.TestCase):
             "20.0 + 5.0 * (omega - 3.0)",
             "25.0 + 5.0 * (omega - 4.0)",
             "30.0 + 3.0 * (omega - 5.0)",
+            "33.0 + 2.0 * (omega - 6.0)",
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, lead)

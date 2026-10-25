@@ -14,6 +14,13 @@ extern "C" {
 #define SBUS_REMOTE_RECOVERY_HOLD_MS 5000U
 #define SBUS_REMOTE_STARTUP_TOLERANCE 0.03f
 #define SBUS_REMOTE_SPEED_CHANNEL 8U
+#define SBUS_REMOTE_LEG_LENGTH_CHANNEL 9U
+/* Keep these endpoints in sync with VMC_LEG_KNOB_MIN_DEFAULT and
+ * VMC_LEG_TARGET_LONG.  Startup accepts any knob position that maps below
+ * 0.220 m, not only the -1 endpoint. */
+#define SBUS_REMOTE_LEG_LENGTH_MIN_M 0.170f
+#define SBUS_REMOTE_LEG_LENGTH_MAX_M 0.360f
+#define SBUS_REMOTE_STARTUP_LEG_LENGTH_MAX_M 0.220f
 
 #define SBUS_REMOTE_STARTUP_BAD_STICK    (1U << 0)
 #define SBUS_REMOTE_STARTUP_BAD_CONTROL  (1U << 1)

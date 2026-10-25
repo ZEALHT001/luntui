@@ -176,7 +176,7 @@ _BALANCE_PARAM_FALLBACK = {
     "roll_comp_enable": 1.0,
     "roll_target": 0.0,
     "roll_comp_gain": 0.10,
-    "roll_comp_limit": 0.1125,
+    "roll_comp_limit": 0.1075,
     "roll_comp_ramp_rate": 0.054,
     # Ground-following leg extension.  Off by default: the unloaded leg's
     # target chases outward so the wheel is pushed back to the ground instead

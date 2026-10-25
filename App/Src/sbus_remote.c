@@ -91,6 +91,24 @@ static uint8_t sbus_remote_startup_control_reason(void)
     if (i == SBUS_REMOTE_SPEED_CHANNEL) {
       continue;
     }
+    if (i == SBUS_REMOTE_LEG_LENGTH_CHANNEL) {
+      float position = sbus_remote_data.normalized[i];
+      float leg_length;
+
+      if (position < -1.0f) {
+        position = -1.0f;
+      } else if (position > 1.0f) {
+        position = 1.0f;
+      }
+      leg_length = SBUS_REMOTE_LEG_LENGTH_MIN_M +
+                   (position + 1.0f) * 0.5f *
+                       (SBUS_REMOTE_LEG_LENGTH_MAX_M -
+                        SBUS_REMOTE_LEG_LENGTH_MIN_M);
+      if (leg_length >= SBUS_REMOTE_STARTUP_LEG_LENGTH_MAX_M) {
+        reason |= SBUS_REMOTE_STARTUP_BAD_CONTROL;
+      }
+      continue;
+    }
     if (sbus_remote_data.normalized[i] >
         (-1.0f + SBUS_REMOTE_STARTUP_TOLERANCE)) {
       reason |= SBUS_REMOTE_STARTUP_BAD_CONTROL;

@@ -89,7 +89,7 @@ class RollCompLimitTest(unittest.TestCase):
                     self.assertNotIn("0.10", line)
 
     def test_short_preset_is_limited_by_the_stroke_not_the_constant(self) -> None:
-        """Documented symmetric headroom: SHORT 0, MID 100, LONG 25 mm.
+        """Documented symmetric headroom: SHORT 0, MID 90, LONG 25 mm.
 
         This is why raising the constant alone cannot fix the platform case -
         at SHORT the retract side has nothing left.  At LONG the EXTEND side
@@ -100,7 +100,7 @@ class RollCompLimitTest(unittest.TestCase):
         leg_max = _macro("VMC_LEG_LENGTH_MAX")
         expected = {
             "VMC_LEG_TARGET_SHORT": 0.000,
-            "VMC_LEG_TARGET_MID": 0.100,
+            "VMC_LEG_TARGET_MID": 0.090,
             "VMC_LEG_TARGET_LONG": 0.025,
         }
         for name, headroom in expected.items():
@@ -110,14 +110,14 @@ class RollCompLimitTest(unittest.TestCase):
                     min(target - leg_min, leg_max - target), headroom, places=6
                 )
 
-    def test_min_is_the_measured_mechanical_stop(self) -> None:
-        """MIN is a measurement, not a convenient number.
+    def test_min_keeps_a_margin_above_the_measured_stop(self) -> None:
+        """The software floor is 10 mm above the measured mechanical stop.
 
         It was 0.120, which let every length target be driven 40 mm past the
         real end stop: a capture showed a target pinned at 0.120 while the leg
         sat at 0.161 +-1 mm for 40 s.  The stop measures 0.160 m.
         """
-        self.assertAlmostEqual(_macro("VMC_LEG_LENGTH_MIN"), 0.160)
+        self.assertAlmostEqual(_macro("VMC_LEG_LENGTH_MIN"), 0.170)
 
     def test_no_preset_sits_below_the_mechanical_stop(self) -> None:
         """A preset under MIN would be clipped the instant it is applied."""

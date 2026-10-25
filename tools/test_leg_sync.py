@@ -71,6 +71,12 @@ def _has(haystack: str, needle: str, why: str) -> None:
 
 
 class DefaultsTest(unittest.TestCase):
+    def test_leg_knob_minimum_is_seventeen_centimetres(self) -> None:
+        self.assertEqual(_macro("VMC_LEG_KNOB_MIN_DEFAULT"), 0.170)
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_remote_leg_length_target")
+        _has(body, "VMC_LEG_KNOB_MIN_DEFAULT", "the knob target does not use its 17 cm endpoint")
+        self.assertNotIn("(double)VMC_LEG_TARGET_SHORT +", body)
+
     def test_enable_is_a_flag(self) -> None:
         """The macro is only the power-on default; the web UI writes it."""
         self.assertIn(_macro("VMC_LEG_SYNC_ENABLE_DEFAULT"), (0.0, 1.0))
@@ -171,7 +177,7 @@ class ControlPathTest(unittest.TestCase):
     def test_only_active_with_the_high_leg_knob_band(self) -> None:
         """The channel-9 knob must be at or above the old high target.
 
-        The stair length override keeps the legs near 0.16 m after a climb
+        The stair length override keeps the legs near 0.17 m after a climb
         while channel 9 may still command a long target; that latched override
         must remain a separate exclusion.
         """

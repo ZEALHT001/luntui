@@ -203,12 +203,49 @@ static void test_speed_knob_is_excluded_from_startup(void)
         "speed-knob position must not invalidate control data");
 }
 
+static void test_leg_knob_below_22cm_is_accepted(void)
+{
+  uint8_t frame[SBUS_REMOTE_FRAME_SIZE];
+  uint16_t channels[SBUS_REMOTE_CHANNEL_COUNT];
+
+  sbus_remote_init();
+  setup_safe_channels(channels);
+  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 650U;
+  test_tick_ms = 0U;
+  for (uint8_t i = 0U; i < 5U; i++) {
+    feed_safe_frame(frame, channels, 0U);
+    test_tick_ms += 50U;
+  }
+  check(sbus_remote_data.startup_rejected == 0U,
+        "a leg knob below 22 cm must be accepted at startup");
+  check(sbus_remote_data.startup_checked == 1U,
+        "startup should pass with the leg knob below 22 cm");
+  check(sbus_remote_data.valid == 1U,
+        "leg knob below 22 cm must expose valid control data");
+}
+
+static void test_leg_knob_at_or_above_22cm_is_rejected(void)
+{
+  uint8_t frame[SBUS_REMOTE_FRAME_SIZE];
+  uint16_t channels[SBUS_REMOTE_CHANNEL_COUNT];
+
+  sbus_remote_init();
+  setup_safe_channels(channels);
+  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 660U;
+  test_tick_ms = 0U;
+  feed_safe_frame(frame, channels, 0U);
+  check(sbus_remote_data.startup_rejected == 1U,
+        "a leg knob at or above 22 cm must reject startup");
+}
+
 int main(void)
 {
   test_good_startup_and_recoverable_runtime_fault();
   test_bad_startup_recovers_after_five_seconds();
   test_bad_startup_control_latches();
   test_speed_knob_is_excluded_from_startup();
+  test_leg_knob_below_22cm_is_accepted();
+  test_leg_knob_at_or_above_22cm_is_rejected();
   printf("%d failure(s)\n", failures);
   return (failures == 0) ? 0 : 1;
 }

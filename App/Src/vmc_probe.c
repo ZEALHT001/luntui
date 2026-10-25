@@ -992,9 +992,9 @@ static double vmc_remote_leg_length_target(void)
 {
   const double position = clamp_double(
       (double)remote_control_leg_length_position(), -1.0, 1.0);
-  return (double)VMC_LEG_TARGET_SHORT +
+  return (double)VMC_LEG_KNOB_MIN_DEFAULT +
          (position + 1.0) * 0.5 *
-             ((double)VMC_LEG_TARGET_LONG - (double)VMC_LEG_TARGET_SHORT);
+             ((double)VMC_LEG_TARGET_LONG - (double)VMC_LEG_KNOB_MIN_DEFAULT);
 }
 
 static uint8_t vmc_remote_leg_length_gear(void)
@@ -2356,7 +2356,7 @@ static void vmc_update_remote_roll_target(void)
 
 static double vmc_spin_phase_lead_rad(double spin_rate)
 {
-  const double omega = clamp_double(spin_rate, 0.0, 6.0);
+  const double omega = clamp_double(spin_rate, 0.0, 9.0);
   double lead_deg;
 
   if (omega <= 1.0) {
@@ -2369,8 +2369,10 @@ static double vmc_spin_phase_lead_rad(double spin_rate)
     lead_deg = 20.0 + 5.0 * (omega - 3.0);
   } else if (omega <= 5.0) {
     lead_deg = 25.0 + 5.0 * (omega - 4.0);
-  } else {
+  } else if (omega <= 6.0) {
     lead_deg = 30.0 + 3.0 * (omega - 5.0);
+  } else {
+    lead_deg = 33.0 + 2.0 * (omega - 6.0);
   }
 
   return lead_deg * (double)VMC_PI / 180.0;
@@ -2406,7 +2408,7 @@ static void vmc_update_remote_mode(void)
   const double forward_speed_scale =
       (spin_enabled != 0U) ? 1.0 : knob_scale;
   const double spin_rate_max =
-      clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 6.0);
+      clamp_double(vmc_balance.yaw_spin_rate_max, 0.0, 9.0);
   const double path_offset_rad =
       (double)clamp_float(vmc_balance.spin_line_path_offset_deg, -180.0f, 180.0f) *
       (double)VMC_PI / 180.0;
