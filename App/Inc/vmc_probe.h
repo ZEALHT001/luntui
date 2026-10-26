@@ -941,6 +941,10 @@ extern "C" {
 #define VMC_GETUP_STATE_SHRINK     2U
 #define VMC_GETUP_STATE_READY      3U
 #define VMC_GETUP_STATE_LEG_RECOVER 4U
+#define VMC_GETUP_STATE_BRACE      5U
+#define VMC_GETUP_STATE_UPRIGHT    6U
+#define VMC_GETUP_STATE_BODY_ALIGN 7U
+#define VMC_GETUP_STATE_BODY_FLIP  8U
 
 #define VMC_JUMP_STAGE_IDLE        0U
 #define VMC_JUMP_STAGE_COMPRESS    1U
@@ -988,17 +992,72 @@ extern "C" {
 #define VMC_GETUP_START_PITCH_RAD  0.80f
 #define VMC_GETUP_TURN_LENGTH      0.300f
 #define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
-#define VMC_GETUP_PHI0_STEP        0.200f
+/* Keep the posture loop deliberately slow and weak while the chassis is on
+ * the ground.  Current + PHI0_LEAD is a velocity command: it stays inside the
+ * get-up torque ceiling instead of asking the normal 108 N.m posture loop for
+ * a step response every cycle. */
+#define VMC_GETUP_PHI0_LEAD_RAD    0.060f
+#define VMC_GETUP_FAN_PHI0_LEAD_RAD 0.250f
+#define VMC_GETUP_PHI0_KP          70.0f
+#define VMC_GETUP_PHI0_KD          4.0f
+#define VMC_GETUP_FAN_PHI0_KP      70.0f
+#define VMC_GETUP_FAN_PHI0_KD      2.0f
+#define VMC_GETUP_PHI0_TORQUE_MAX  36.0f
+#define VMC_GETUP_LENGTH_KP        300.0f
+#define VMC_GETUP_LENGTH_KD        25.0f
+#define VMC_GETUP_FORCE_MAX        180.0f
+#define VMC_GETUP_SUPPORT_FORCE    30.0f
+#define VMC_GETUP_FAN_SUPPORT_FORCE 20.0f
+#define VMC_GETUP_LENGTH_RAMP_RATE 0.180f
 #define VMC_GETUP_THETA_MIN_RAD    0.500f
 #define VMC_GETUP_THETA_MAX_RAD    1.400f
 #define VMC_GETUP_PITCH_READY_RAD  0.300f
-#define VMC_GETUP_LENGTH_READY_TOL 0.080f
+#define VMC_GETUP_LENGTH_READY_TOL 0.030f
 #define VMC_GETUP_LEG_BAD_NEG_MIN_RAD -3.140f
 #define VMC_GETUP_LEG_BAD_NEG_MAX_RAD -0.790f
 #define VMC_GETUP_LEG_BAD_POS_MIN_RAD  2.000f
 #define VMC_GETUP_LEG_BAD_POS_MAX_RAD  3.140f
-#define VMC_GETUP_LEG_RECOVER_TARGET_RAD 1.100f
+#define VMC_GETUP_LEG_RECOVER_TARGET_RAD 1.300f
 #define VMC_GETUP_LEG_RECOVER_TOL_RAD    0.100f
+/* Direction used for the theta bad-zone recovery path.  Flip this sign to
+ * choose the other physical winding around the same safe theta target. */
+#define VMC_GETUP_LEG_RECOVER_DIRECTION -1.0f
+/* Shanhai-style pre-positioning for a fully inverted chassis.  The two body
+ * pitch directions use different rear-link targets and opposite flip
+ * directions instead of one generic TURN path. */
+#define VMC_GETUP_BODY_START_PITCH_RAD   1.5707963f
+#define VMC_GETUP_BODY_POS_TARGET_RAD   -2.3561945f
+#define VMC_GETUP_BODY_NEG_TARGET_RAD   -1.5707963f
+#define VMC_GETUP_BODY_TARGET_TOL_RAD    0.1745329f
+#define VMC_GETUP_BODY_INNER_ANGLE_RAD  -0.3490659f
+#define VMC_GETUP_BODY_EXIT_PITCH_RAD    0.1745329f
+#define VMC_GETUP_BODY_ALIGN_CONFIRM_MS  30U
+#define VMC_GETUP_BODY_FLIP_CONFIRM_MS   50U
+#define VMC_GETUP_LEG_RECOVER_CONFIRM_MS  50U
+/* If the body did not invert and both virtual legs are already on this side,
+ * a folded phi4 is just the compact linkage pose.  Shrink directly instead of
+ * driving another full turn through LEG_RECOVER. */
+#define VMC_GETUP_SHRINK_READY_THETA_MIN_RAD 0.650f
+#define VMC_GETUP_SHRINK_READY_THETA_MAX_RAD 1.550f
+/* The sequence must not hand the chassis back to the normal balance loop from
+ * the broad TURN window.  UPRIGHT ramps theta to zero first, then waits for a
+ * quiet, level pose before READY releases wheel and LQR-joint output. */
+#define VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS 1.200f
+#define VMC_GETUP_UPRIGHT_THETA_TOL_RAD   0.150f
+/* The supported chassis settles around 0.30 rad pitch when the legs are at
+ * the short stand length.  Requiring 0.18 kept a mechanically completed
+ * recovery in UPRIGHT until timeout. */
+#define VMC_GETUP_UPRIGHT_PITCH_RAD       0.350f
+#define VMC_GETUP_UPRIGHT_DTHETA_MAX_RADPS 0.350f
+#define VMC_GETUP_UPRIGHT_DPITCH_MAX_RADPS 0.350f
+#define VMC_GETUP_BRACE_MS                250U
+#define VMC_GETUP_POSE_CONFIRM_MS         100U
+#define VMC_GETUP_LENGTH_CONFIRM_MS       100U
+#define VMC_GETUP_SHRINK_THETA_TARGET_RAD 0.800f
+#define VMC_GETUP_SHRINK_THETA_RATE_RADPS 0.500f
+#define VMC_GETUP_READY_CONFIRM_MS        250U
+#define VMC_GETUP_RELEASE_RAMP_MS         300U
+#define VMC_GETUP_TIMEOUT_MS              10000U
 
 /* Phi0 range protection is intentionally disabled.  These diagnostic state
  * values remain for debugger/telemetry compatibility only. */
@@ -1400,11 +1459,27 @@ typedef struct {
   float leg_follow_offset_right;
   uint8_t getup_state;
   int8_t getup_turn_direction;
+  int8_t getup_body_flip_direction;
+  int8_t getup_left_direction;
+  int8_t getup_right_direction;
+  uint8_t getup_left_done;
+  uint8_t getup_right_done;
+  uint8_t getup_leg_align_complete;
+  uint32_t getup_left_confirm_ms;
+  uint32_t getup_right_confirm_ms;
+  float getup_left_hold_length;
+  float getup_right_hold_length;
+  float getup_left_hold_theta;
+  float getup_right_hold_theta;
   uint8_t getup_lqr_release_pending;
   float getup_shrink_target_theta_left;
   float getup_shrink_target_theta_right;
   float getup_target_phi0_left;
   float getup_target_phi0_right;
+  float getup_upright_phi0_left;
+  float getup_upright_phi0_right;
+  uint32_t getup_state_ms;
+  uint32_t getup_confirm_ms;
   uint8_t ramp_active;
 } vmc_control_t;
 
