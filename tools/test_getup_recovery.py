@@ -4,8 +4,8 @@
 The normal stand-up path must not hand a fallen chassis straight to the LQR
 wheel and joint loops.  These source-level checks lock in the Shanhai-style
 body-inversion and per-leg fold preconditions plus the staged handoff: brace,
-turn, retract, then READY.  They also verify that the get-up profile has its
-own weak gains and torque ceiling.
+turn, retract, upright, then READY.  They also verify that the get-up profile
+has its own weak gains and torque ceiling.
 """
 
 from __future__ import annotations
@@ -76,14 +76,23 @@ class ProfileTest(unittest.TestCase):
         for name in (
             "VMC_GETUP_PHI0_LEAD_RAD",
             "VMC_GETUP_LENGTH_RAMP_RATE",
+            "VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS",
             "VMC_GETUP_BRACE_MS",
             "VMC_GETUP_POSE_CONFIRM_MS",
             "VMC_GETUP_LENGTH_CONFIRM_MS",
+            "VMC_GETUP_READY_CONFIRM_MS",
             "VMC_GETUP_RELEASE_RAMP_MS",
             "VMC_GETUP_TIMEOUT_MS",
         ):
             with self.subTest(name=name):
                 self.assertGreater(_macro(name), 0.0)
+
+    def test_upright_accepts_the_measured_supported_pitch(self) -> None:
+        self.assertGreaterEqual(
+            _macro("VMC_GETUP_UPRIGHT_PITCH_RAD"),
+            0.35,
+            "the verified supported chassis settles near 0.30 rad pitch",
+        )
 
     def test_body_and_leg_recovery_preconditions_have_distinct_targets(self) -> None:
         self.assertAlmostEqual(_macro("VMC_GETUP_BODY_POS_TARGET_RAD"), -3 * 3.14159265 / 4)
@@ -115,19 +124,11 @@ class StateMachineTest(unittest.TestCase):
         _has(body, "VMC_GETUP_POSE_CONFIRM_MS", "TURN can change stage on one frame")
         _has(body, "VMC_GETUP_STATE_SHRINK", "TURN never hands off to retraction")
 
-    def test_length_settle_goes_directly_to_ready(self) -> None:
+    def test_length_settle_goes_to_upright_not_ready(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_getup_state")
-        self.assertNotIn(
-            "VMC_GETUP_STATE_UPRIGHT",
-            body,
-            "the recovery still enters the intermediate upright posture",
-        )
+        _has(body, "VMC_GETUP_STATE_UPRIGHT", "the final posture stage is missing")
         _has(body, "VMC_GETUP_LENGTH_CONFIRM_MS", "retraction readiness is not debounced")
-        _has(
-            body,
-            "vmc_control.getup_state = VMC_GETUP_STATE_READY;",
-            "retraction completion does not hand off directly to READY",
-        )
+        _has(body, "vmc_getup_upright_ready()", "UPRIGHT has no readiness check")
         _has(body, "vmc_control.getup_lqr_release_pending = 0U;",
              "LQR release is not reserved for the end of the sequence")
         _has(body, "VMC_GETUP_SHRINK_THETA_TARGET_RAD",
@@ -237,6 +238,7 @@ class ControlIntegrationTest(unittest.TestCase):
             "TURN",
             "SHRINK",
             "LEG_RECOVER",
+            "UPRIGHT",
             "BODY_ALIGN",
             "BODY_FLIP",
         ):
@@ -261,10 +263,8 @@ class ControlIntegrationTest(unittest.TestCase):
 
     def test_shrink_uses_length_pd_without_extension_feedforward(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        support_start = body.index("left_support_force = support_force;")
         shrink_start = body.index(
-            "} else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {",
-            support_start,
+            "} else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {"
         )
         recover_start = body.index(
             "} else if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {",
@@ -290,13 +290,13 @@ class ControlIntegrationTest(unittest.TestCase):
         _has(body, "left_target_phi0 = vmc_probe_state.left_leg.phi0",
              "brace does not hold the measured posture")
 
-    def test_getup_has_no_intermediate_upright_leg_target(self) -> None:
+    def test_upright_target_is_absolute_and_rate_limited(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        self.assertNotIn(
-            "VMC_GETUP_STATE_UPRIGHT",
-            body,
-            "the final stage still takes over the leg angle before READY",
-        )
+        _has(body, "vmc_angle_nearest_to", "the upright angle is not wrap-safe")
+        _has(body, "VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch",
+             "theta is not being driven toward zero")
+        _has(body, "VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS",
+             "the final posture ramp has no rate limit")
 
     def test_recovery_preconditions_use_per_leg_phi0_commands(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
@@ -323,7 +323,7 @@ class ControlIntegrationTest(unittest.TestCase):
 
     def test_board_comms_inhibits_gimbal_for_all_new_stages(self) -> None:
         body = BOARD_COMM.read_text(encoding="utf-8")
-        for state in ("BRACE", "BODY_ALIGN", "BODY_FLIP"):
+        for state in ("BRACE", "UPRIGHT", "BODY_ALIGN", "BODY_FLIP"):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}",
                      "gimbal heartbeat ignores a get-up stage")

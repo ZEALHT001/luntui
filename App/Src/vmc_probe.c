@@ -96,6 +96,7 @@ static double vmc_descent_target_length(void);
 static void vmc_descent_update(void);
 static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
+static uint8_t vmc_getup_upright_ready(void);
 static double vmc_getup_ready_release_scale(void);
 static int8_t vmc_getup_body_mode(double pitch);
 static int8_t vmc_getup_body_align_direction(double phi4, int8_t body_mode);
@@ -210,6 +211,15 @@ static double clamp_double(double value, double min_value, double max_value)
     return min_value;
   }
   return value;
+}
+
+/* Convert an angle target to the representation nearest the measured angle.
+ * phi0 is reported on [-pi, pi], so an absolute target near the wrap boundary
+ * otherwise looks like a full-turn position error. */
+static double vmc_angle_nearest_to(double target, double reference)
+{
+  return reference +
+         (double)vmc_rad_format((float)(target - reference));
 }
 
 static void vmc_body_motion_kf_slip_reset(double wheel_left_raw_speed,
@@ -2152,6 +2162,7 @@ static uint8_t vmc_getup_is_active(void)
           vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
           vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
           vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER ||
+          vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT ||
           vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
           vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
           vmc_control.getup_lqr_release_pending != 0U)
@@ -2296,6 +2307,27 @@ static uint8_t vmc_getup_pose_ready(void)
              : 0U;
 }
 
+static uint8_t vmc_getup_upright_ready(void)
+{
+  return (fabs(vmc_probe_state.motion.left_theta) <
+              VMC_GETUP_UPRIGHT_THETA_TOL_RAD &&
+          fabs(vmc_probe_state.motion.right_theta) <
+              VMC_GETUP_UPRIGHT_THETA_TOL_RAD &&
+          fabs(vmc_probe_state.body.pitch) < VMC_GETUP_UPRIGHT_PITCH_RAD &&
+          fabs(vmc_probe_state.motion.left_d_theta) <
+              VMC_GETUP_UPRIGHT_DTHETA_MAX_RADPS &&
+          fabs(vmc_probe_state.motion.right_d_theta) <
+              VMC_GETUP_UPRIGHT_DTHETA_MAX_RADPS &&
+          fabs(vmc_probe_state.body.pitch_rate) <
+              VMC_GETUP_UPRIGHT_DPITCH_MAX_RADPS &&
+          fabs(vmc_probe_state.left_leg.length - VMC_GETUP_STAND_LENGTH) <
+              VMC_GETUP_LENGTH_READY_TOL &&
+          fabs(vmc_probe_state.right_leg.length - VMC_GETUP_STAND_LENGTH) <
+              VMC_GETUP_LENGTH_READY_TOL)
+             ? 1U
+             : 0U;
+}
+
 static double vmc_getup_ready_release_scale(void)
 {
   if (vmc_control.getup_state != VMC_GETUP_STATE_READY) {
@@ -2330,6 +2362,8 @@ static void vmc_getup_enter_brace(int8_t turn_direction)
   vmc_control.getup_lqr_release_pending = 1U;
   vmc_control.getup_state_ms = 0U;
   vmc_control.getup_confirm_ms = 0U;
+  vmc_control.getup_upright_phi0_left = vmc_probe_state.left_leg.phi0;
+  vmc_control.getup_upright_phi0_right = vmc_probe_state.right_leg.phi0;
 }
 
 static void vmc_getup_enter_stage(uint8_t state)
@@ -2483,6 +2517,7 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_state == VMC_GETUP_STATE_TURN ||
       vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER ||
+      vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP) {
     vmc_control.getup_state_ms += dt_ms;
@@ -2771,6 +2806,23 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_confirm_ms = 0U;
     }
     if (vmc_control.getup_confirm_ms >= VMC_GETUP_LENGTH_CONFIRM_MS) {
+      vmc_getup_enter_stage(VMC_GETUP_STATE_UPRIGHT);
+      vmc_control.getup_upright_phi0_left =
+          vmc_probe_state.left_leg.phi0;
+      vmc_control.getup_upright_phi0_right =
+          vmc_probe_state.right_leg.phi0;
+    }
+  }
+
+  if (vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT) {
+    if (vmc_getup_upright_ready() != 0U) {
+      if (vmc_control.getup_confirm_ms < VMC_GETUP_READY_CONFIRM_MS) {
+        vmc_control.getup_confirm_ms += dt_ms;
+      }
+    } else {
+      vmc_control.getup_confirm_ms = 0U;
+    }
+    if (vmc_control.getup_confirm_ms >= VMC_GETUP_READY_CONFIRM_MS) {
       vmc_control.getup_state = VMC_GETUP_STATE_READY;
       vmc_control.getup_turn_direction = 0;
       vmc_control.getup_body_flip_direction = 0;
@@ -4856,6 +4908,8 @@ void vmc_control_init(void)
   vmc_control.getup_shrink_target_theta_right = 0.0f;
   vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.getup_upright_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.getup_upright_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_state_ms = 0U;
   vmc_control.getup_confirm_ms = 0U;
   vmc_getup_fully_fallen = 0U;
@@ -5113,7 +5167,8 @@ void vmc_control_update(void)
         0.5;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
     target_length = VMC_GETUP_TURN_LENGTH;
-  } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
+             vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT) {
     target_length = VMC_GETUP_STAND_LENGTH;
   } else if (jump_override != 0U) {
     target_length = vmc_jump_stage_target_length();
@@ -5479,6 +5534,27 @@ void vmc_control_update(void)
         vmc_probe_state.motion.right_theta));
     left_target_phi0 = vmc_probe_state.left_leg.phi0 + left_theta_error;
     right_target_phi0 = vmc_probe_state.right_leg.phi0 + right_theta_error;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT) {
+    const double left_raw_target = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch,
+        vmc_probe_state.left_leg.phi0);
+    const double right_raw_target = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch,
+        vmc_probe_state.right_leg.phi0);
+    const double upright_step =
+        clamp_double(VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS, 0.0, 5.0) *
+        vmc_loop_dt();
+
+    vmc_control.getup_upright_phi0_left = (float)vmc_step_towards(
+        vmc_control.getup_upright_phi0_left,
+        left_raw_target,
+        upright_step);
+    vmc_control.getup_upright_phi0_right = (float)vmc_step_towards(
+        vmc_control.getup_upright_phi0_right,
+        right_raw_target,
+        upright_step);
+    left_target_phi0 = vmc_control.getup_upright_phi0_left;
+    right_target_phi0 = vmc_control.getup_upright_phi0_right;
   }
   if (vmc_stair_is_active() != 0U) {
     const double stair_phi0_step =
