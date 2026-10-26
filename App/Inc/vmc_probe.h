@@ -942,6 +942,7 @@ extern "C" {
 #define VMC_GETUP_STATE_READY      3U
 #define VMC_GETUP_STATE_LEG_RECOVER 4U
 #define VMC_GETUP_STATE_BRACE      5U
+/* Legacy telemetry value.  Recovery now hands SHRINK directly to READY. */
 #define VMC_GETUP_STATE_UPRIGHT    6U
 #define VMC_GETUP_STATE_BODY_ALIGN 7U
 #define VMC_GETUP_STATE_BODY_FLIP  8U
@@ -1039,23 +1040,11 @@ extern "C" {
  * driving another full turn through LEG_RECOVER. */
 #define VMC_GETUP_SHRINK_READY_THETA_MIN_RAD 0.650f
 #define VMC_GETUP_SHRINK_READY_THETA_MAX_RAD 1.550f
-/* The sequence must not hand the chassis back to the normal balance loop from
- * the broad TURN window.  UPRIGHT ramps theta to zero first, then waits for a
- * quiet, level pose before READY releases wheel and LQR-joint output. */
-#define VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS 1.200f
-#define VMC_GETUP_UPRIGHT_THETA_TOL_RAD   0.150f
-/* The supported chassis settles around 0.30 rad pitch when the legs are at
- * the short stand length.  Requiring 0.18 kept a mechanically completed
- * recovery in UPRIGHT until timeout. */
-#define VMC_GETUP_UPRIGHT_PITCH_RAD       0.350f
-#define VMC_GETUP_UPRIGHT_DTHETA_MAX_RADPS 0.350f
-#define VMC_GETUP_UPRIGHT_DPITCH_MAX_RADPS 0.350f
 #define VMC_GETUP_BRACE_MS                250U
 #define VMC_GETUP_POSE_CONFIRM_MS         100U
 #define VMC_GETUP_LENGTH_CONFIRM_MS       100U
 #define VMC_GETUP_SHRINK_THETA_TARGET_RAD 0.800f
 #define VMC_GETUP_SHRINK_THETA_RATE_RADPS 0.500f
-#define VMC_GETUP_READY_CONFIRM_MS        250U
 #define VMC_GETUP_RELEASE_RAMP_MS         300U
 #define VMC_GETUP_TIMEOUT_MS              10000U
 
@@ -1476,8 +1465,6 @@ typedef struct {
   float getup_shrink_target_theta_right;
   float getup_target_phi0_left;
   float getup_target_phi0_right;
-  float getup_upright_phi0_left;
-  float getup_upright_phi0_right;
   uint32_t getup_state_ms;
   uint32_t getup_confirm_ms;
   uint8_t ramp_active;
