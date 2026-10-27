@@ -322,13 +322,13 @@ class StateMachineTest(unittest.TestCase):
         )
         _has(
             state,
-            "fan_escape_can_finish",
-            "the escape can finish on a roll-only Euler-angle jump",
+            "if (vmc_getup_body_fan_sync_ready() != 0U)",
+            "BODY_FAN_SYNC can exit without completing leg synchronization",
         )
-        _has(
+        self.assertNotIn(
+            "fan_required == 0U && fan_escape_can_finish != 0U",
             state,
-            "VMC_GETUP_START_PITCH_RAD",
-            "fan synchronization can finish without pitch leaving the fallen range",
+            "body attitude still bypasses synchronization",
         )
         _has(
             state,

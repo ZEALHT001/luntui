@@ -2765,10 +2765,6 @@ static void vmc_update_getup_state(void)
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN_SYNC) {
     const uint8_t fan_required = vmc_getup_body_fan_is_required();
-    const uint8_t fan_escape_can_finish =
-        (fabs(pitch) < VMC_GETUP_START_PITCH_RAD)
-            ? 1U
-            : 0U;
 
     if (vmc_control.getup_body_fan_sync_prelift_active != 0U) {
       const uint8_t lengths_ready =
@@ -2867,32 +2863,35 @@ static void vmc_update_getup_state(void)
           (float)right_sync_theta;
     }
 
-    /* Once fan synchronization starts, roll crossing its entry threshold is
-     * not enough to hand off.  Near pitch = +/-90 deg the Euler roll can jump
-     * through zero while the body is still inverted, so require pitch to
-     * leave the fallen range as well. */
-    if (fan_required == 0U && fan_escape_can_finish != 0U) {
-      uint8_t next_state;
-
-      vmc_control.getup_turn_direction = 0;
-      vmc_control.getup_left_direction = 0;
-      vmc_control.getup_right_direction = 0;
-      next_state = vmc_getup_next_precondition_state();
-      vmc_getup_enter_stage(next_state);
-    } else {
-      if (vmc_getup_body_fan_sync_ready() != 0U) {
-        if (vmc_control.getup_confirm_ms <
-            VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS) {
-          vmc_control.getup_confirm_ms += dt_ms;
-        }
-      } else {
-        vmc_control.getup_confirm_ms = 0U;
-      }
-      if (vmc_control.getup_confirm_ms >=
+    if (vmc_getup_body_fan_sync_ready() != 0U) {
+      if (vmc_control.getup_confirm_ms <
           VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS) {
-        vmc_control.getup_body_fan_sync_complete = 1U;
-        vmc_control.getup_body_fan_escape_active = 0U;
+        vmc_control.getup_confirm_ms += dt_ms;
+      }
+    } else {
+      vmc_control.getup_confirm_ms = 0U;
+    }
+    if (vmc_control.getup_confirm_ms >=
+        VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS) {
+      vmc_control.getup_body_fan_sync_complete = 1U;
+      vmc_control.getup_body_fan_escape_active = 0U;
+      if (fan_required != 0U) {
         vmc_getup_enter_stage(VMC_GETUP_STATE_BODY_FAN);
+      } else {
+        uint8_t next_state;
+
+        vmc_control.getup_turn_direction = 0;
+        vmc_control.getup_left_direction = 0;
+        vmc_control.getup_right_direction = 0;
+        next_state = vmc_getup_next_precondition_state();
+        if (next_state == VMC_GETUP_STATE_BODY_ALIGN) {
+          vmc_control.getup_body_flip_direction =
+              (pitch > 0.0) ? 1 : -1;
+        } else if (next_state == VMC_GETUP_STATE_TURN) {
+          vmc_control.getup_turn_direction =
+              (pitch < 0.0) ? 1 : -1;
+        }
+        vmc_getup_enter_stage(next_state);
       }
     }
   }
