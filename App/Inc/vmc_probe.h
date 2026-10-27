@@ -946,6 +946,7 @@ extern "C" {
 #define VMC_GETUP_STATE_BODY_ALIGN 7U
 #define VMC_GETUP_STATE_BODY_FLIP  8U
 #define VMC_GETUP_STATE_BODY_FAN   9U
+#define VMC_GETUP_STATE_BODY_FAN_SYNC 10U
 
 #define VMC_JUMP_STAGE_IDLE        0U
 #define VMC_JUMP_STAGE_COMPRESS    1U
@@ -1016,7 +1017,7 @@ extern "C" {
 #define VMC_GETUP_LENGTH_READY_TOL 0.030f
 #define VMC_GETUP_LEG_BAD_NEG_MIN_RAD -3.140f
 #define VMC_GETUP_LEG_BAD_NEG_MAX_RAD -0.790f
-#define VMC_GETUP_LEG_BAD_POS_MIN_RAD  2.000f
+#define VMC_GETUP_LEG_BAD_POS_MIN_RAD  1.800f
 #define VMC_GETUP_LEG_BAD_POS_MAX_RAD  3.140f
 #define VMC_GETUP_LEG_RECOVER_TARGET_RAD 1.300f
 #define VMC_GETUP_LEG_RECOVER_TOL_RAD    0.100f
@@ -1039,11 +1040,29 @@ extern "C" {
  * covered by the pitch-only BODY_ALIGN path.  Drive both phi0 joints with a
  * real velocity command, keep the legs long, and wait until the body returns
  * near level before retracting. */
-#define VMC_GETUP_BODY_FAN_START_ROLL_RAD  2.000f
+#define VMC_GETUP_BODY_FAN_START_ROLL_RAD  1.900f
+#define VMC_GETUP_BODY_FAN_SYNC_LENGTH     0.385f
+#define VMC_GETUP_BODY_FAN_SYNC_LENGTH_MIN 0.340f
+#define VMC_GETUP_BODY_FAN_SYNC_LENGTH_TOL_M 0.025f
+#define VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE 0.100f
+#define VMC_GETUP_BODY_FAN_SYNC_THETA_TOL_RAD 0.120f
+#define VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS 1.000f
+#define VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS 100U
+#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STARTUP_MS 200U
+#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_RATE_RADPS 0.050f
+#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS 300U
 #define VMC_GETUP_BODY_FAN_SPEED_RADPS     3.000f
-#define VMC_GETUP_BODY_FAN_SPEED_GAIN      0.250f
-#define VMC_GETUP_BODY_FAN_PHI0_LEAD_MAX_RAD 1.000f
+#define VMC_GETUP_BODY_FAN_SPEED_KP        10.0f
+#define VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS 0.050f
+#define VMC_GETUP_BODY_FAN_SPEED_TORQUE_MAX 15.0f
+#define VMC_GETUP_BODY_FAN_TORQUE_MAX      19.0f
+#define VMC_GETUP_BODY_FAN_PHI0_KP         0.0f
 #define VMC_GETUP_BODY_FAN_PHI0_KD         0.0f
+#define VMC_GETUP_BODY_FAN_ENTRY_THETA_RAD 0.0f
+#define VMC_GETUP_BODY_FAN_STALL_RATE_RADPS 0.100f
+#define VMC_GETUP_BODY_FAN_STALL_ROLL_RATE_RADPS 0.050f
+#define VMC_GETUP_BODY_FAN_STALL_STARTUP_MS 250U
+#define VMC_GETUP_BODY_FAN_STALL_CONFIRM_MS 300U
 #define VMC_GETUP_BODY_FAN_GRAVITY_GAIN    10.0f
 #define VMC_GETUP_BODY_FAN_GRAVITY_ANGLE_RAD 0.3490659f
 #define VMC_GETUP_BODY_FAN_EXIT_RAD        0.1745329f
@@ -1486,6 +1505,19 @@ typedef struct {
   float getup_right_hold_length;
   float getup_left_hold_theta;
   float getup_right_hold_theta;
+  float getup_body_fan_sync_theta_left;
+  float getup_body_fan_sync_theta_right;
+  float getup_body_fan_sync_phi0_target;
+  uint8_t getup_body_fan_sync_complete;
+  uint8_t getup_body_fan_sync_fold_side;
+  uint8_t getup_body_fan_sync_fold_fallback;
+  uint32_t getup_body_fan_sync_fold_stall_ms;
+  uint8_t getup_body_fan_sync_prelift_active;
+  uint8_t getup_body_fan_sync_targets_ready;
+  uint32_t getup_body_fan_sync_prelift_confirm_ms;
+  uint8_t getup_body_fan_escape_active;
+  uint8_t getup_body_fan_retry_used;
+  uint32_t getup_body_fan_stall_ms;
   uint8_t getup_lqr_release_pending;
   float getup_shrink_target_theta_left;
   float getup_shrink_target_theta_right;

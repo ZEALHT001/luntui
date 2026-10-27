@@ -111,6 +111,11 @@ class ProfileTest(unittest.TestCase):
 
     def test_body_fan_uses_shanhai_speed_and_timeout_scale(self) -> None:
         self.assertGreaterEqual(_macro("VMC_GETUP_BODY_FAN_SPEED_RADPS"), 3.0)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_SPEED_KP"), 10.0)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS"), 0.05)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_SPEED_TORQUE_MAX"), 15.0)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_TORQUE_MAX"), 19.0)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_PHI0_KP"), 0.0)
         self.assertEqual(_macro("VMC_GETUP_BODY_FAN_PHI0_KD"), 0.0)
         self.assertGreater(
             _macro("VMC_GETUP_BODY_FAN_TIMEOUT_MS"),
@@ -118,6 +123,47 @@ class ProfileTest(unittest.TestCase):
             "the slow inverted windmill inherits the normal 10 s timeout",
         )
         self.assertLessEqual(_macro("VMC_GETUP_BODY_FAN_EXIT_RAD"), 0.2)
+
+    def test_body_fan_synchronizes_both_legs_before_spinning(self) -> None:
+        self.assertLessEqual(
+            _macro("VMC_GETUP_LEG_BAD_POS_MIN_RAD"),
+            1.80,
+            "the measured 1.942 rad folded leg is misclassified as normal",
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_LENGTH_MIN"), 0.30
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_LENGTH_TOL_M"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE"), 0.0
+        )
+        self.assertLessEqual(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_THETA_TOL_RAD"), 0.15
+        )
+        self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS"), 0.0)
+        self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS"), 0.0)
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_FOLD_STARTUP_MS"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS"), 0.0
+        )
+
+    def test_body_fan_has_a_direction_preserving_deadpoint_escape(self) -> None:
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_STALL_STARTUP_MS"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_STALL_CONFIRM_MS"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_STALL_RATE_RADPS"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_STALL_ROLL_RATE_RADPS"), 0.0
+        )
 
 
 class StateMachineTest(unittest.TestCase):
@@ -181,6 +227,11 @@ class StateMachineTest(unittest.TestCase):
              "the right-side alignment does not wait for the other leg")
 
     def test_roll_dominant_inversion_uses_body_fan(self) -> None:
+        self.assertLessEqual(
+            _macro("VMC_GETUP_BODY_FAN_START_ROLL_RAD"),
+            1.90,
+            "the fan entry leaves out the measured 1.989 rad folded-leg pose",
+        )
         source = SOURCE.read_text(encoding="utf-8")
         required = _body(source, "vmc_getup_body_fan_is_required")
         _has(required, "VMC_GETUP_BODY_FAN_START_ROLL_RAD",
@@ -200,6 +251,120 @@ class StateMachineTest(unittest.TestCase):
         fan = precondition.index("VMC_GETUP_STATE_BODY_FAN")
         turn = precondition.index("VMC_GETUP_STATE_TURN")
         self.assertLess(fan, turn, "windmill classification is shadowed by TURN")
+
+    def test_body_fan_requires_matching_leg_state_first(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        state = _body(source, "vmc_update_getup_state")
+        ready = _body(source, "vmc_getup_body_fan_sync_ready")
+        for needle in (
+            "VMC_GETUP_BODY_FAN_SYNC_LENGTH_MIN",
+            "VMC_GETUP_BODY_FAN_SYNC_LENGTH_TOL_M",
+            "VMC_GETUP_BODY_FAN_SYNC_THETA_TOL_RAD",
+        ):
+            with self.subTest(needle=needle):
+                _has(ready, needle, "the windmill synchronization gate is incomplete")
+
+        target = _body(source, "vmc_getup_body_fan_sync_targets")
+        _has(target, "getup_body_fan_sync_fold_side",
+             "the synchronization does not latch which leg is folded")
+        _has(target, "getup_body_fan_sync_fold_fallback",
+             "the folded-leg fallback is not preserved")
+        _has(target, "getup_body_fan_sync_phi0_target",
+             "the healthy leg anchor does not latch an absolute phi0")
+        _has(target, "? left_theta",
+             "the folded left leg cannot become the fallback leader")
+        _has(target, "? right_theta",
+             "the folded right leg cannot become the fallback leader")
+        _has(target, "*left_target = leader_theta;",
+             "the left leg does not follow the selected leader")
+        _has(target, "*right_target = leader_theta;",
+             "the right leg does not follow the selected leader")
+        _has(target, "left_phase", "the windmill direction does not choose the leader")
+        _has(target, "right_phase", "the windmill direction does not choose the leader")
+
+        precondition = _body(source, "vmc_getup_next_precondition_state")
+        _has(
+            precondition,
+            "getup_body_fan_sync_complete",
+            "BODY_FAN can bypass the synchronization stage",
+        )
+        _has(
+            precondition,
+            "VMC_GETUP_STATE_BODY_FAN_SYNC",
+            "the unsynchronized windmill state is unreachable",
+        )
+        _has(
+            state,
+            "getup_body_fan_sync_complete = 1U;",
+            "a completed synchronization does not enable BODY_FAN",
+        )
+        _has(
+            state,
+            "getup_body_fan_escape_active = 1U;",
+            "a stalled windmill cannot request the forward deadpoint escape",
+        )
+        _has(
+            state,
+            "vmc_getup_enter_stage(VMC_GETUP_STATE_BODY_FAN_SYNC);",
+            "the deadpoint escape bypasses synchronization",
+        )
+
+        escape = _body(source, "vmc_getup_body_fan_sync_targets")
+        _has(
+            escape,
+            "VMC_GETUP_BODY_FAN_ENTRY_THETA_RAD",
+            "the escape target is not the verified windmill entry phase",
+        )
+        _has(
+            escape,
+            "vmc_angle_forward_to",
+            "the escape can rotate the folded leg backwards through the deadpoint",
+        )
+        _has(
+            state,
+            "fan_escape_can_finish",
+            "the escape can finish on a roll-only Euler-angle jump",
+        )
+        _has(
+            state,
+            "VMC_GETUP_START_PITCH_RAD",
+            "fan synchronization can finish without pitch leaving the fallen range",
+        )
+        _has(
+            state,
+            "VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS",
+            "a folded leg that cannot move never falls back to leader mode",
+        )
+        _has(
+            ready,
+            "vmc_probe_state.left_leg.phi0",
+            "synchronization readiness still relies on body-relative theta",
+        )
+        _has(
+            ready,
+            "getup_body_fan_sync_prelift_active",
+            "theta synchronization can start before the folded leg is extended",
+        )
+        _has(
+            state,
+            "getup_body_fan_sync_targets_ready",
+            "BODY_FAN_SYNC does not wait for the lift-first preparation",
+        )
+        _has(
+            state,
+            "getup_body_fan_sync_prelift_confirm_ms",
+            "the lift-first confirmation shares the synchronization timer",
+        )
+        _has(
+            source,
+            "while the length loop extends the folded leg",
+            "the folded leg is not held while its length is extended",
+        )
+        _has(
+            source,
+            "const double anchor_phi0",
+            "BODY_FAN_SYNC never holds the healthy leg at a fixed phi0",
+        )
 
     def test_single_leg_fold_is_detected_from_theta_and_recovered_independently(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
@@ -273,6 +438,7 @@ class ControlIntegrationTest(unittest.TestCase):
             "BODY_ALIGN",
             "BODY_FLIP",
             "BODY_FAN",
+            "BODY_FAN_SYNC",
         ):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}", "state is not treated as active")
@@ -334,16 +500,40 @@ class ControlIntegrationTest(unittest.TestCase):
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
         for needle in (
             "VMC_GETUP_BODY_FAN_SPEED_RADPS",
-            "VMC_GETUP_BODY_FAN_SPEED_GAIN",
+            "VMC_GETUP_BODY_FAN_SPEED_KP",
+            "VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS",
+            "VMC_GETUP_BODY_FAN_SPEED_TORQUE_MAX",
             "VMC_GETUP_BODY_FAN_PHI0_KD",
             "left_speed_error",
             "right_speed_error",
+            "left_speed_torque",
+            "right_speed_torque",
             "left_phi0_feedforward",
             "right_phi0_feedforward",
             "VMC_GETUP_BODY_FAN_GRAVITY_GAIN",
+            "apply_zero_deadband",
         ):
             with self.subTest(needle=needle):
                 _has(body, needle, "the Shanhai-style windmill control is incomplete")
+        self.assertNotIn(
+            "left_phi0_lead",
+            body,
+            "BODY_FAN still converts speed error into a position target",
+        )
+
+    def test_body_fan_sync_uses_shared_theta_and_long_legs(self) -> None:
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        for needle in (
+            "VMC_GETUP_STATE_BODY_FAN_SYNC",
+            "VMC_GETUP_BODY_FAN_SYNC_LENGTH",
+            "VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE",
+            "VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS",
+            "getup_body_fan_sync_theta_left",
+            "getup_body_fan_sync_theta_right",
+            "vmc_angle_forward_to",
+        ):
+            with self.subTest(needle=needle):
+                _has(body, needle, "BODY_FAN_SYNC does not align both legs")
 
     def test_recovery_preconditions_use_per_leg_phi0_commands(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
@@ -370,7 +560,14 @@ class ControlIntegrationTest(unittest.TestCase):
 
     def test_board_comms_inhibits_gimbal_for_all_new_stages(self) -> None:
         body = BOARD_COMM.read_text(encoding="utf-8")
-        for state in ("BRACE", "UPRIGHT", "BODY_ALIGN", "BODY_FLIP", "BODY_FAN"):
+        for state in (
+            "BRACE",
+            "UPRIGHT",
+            "BODY_ALIGN",
+            "BODY_FLIP",
+            "BODY_FAN",
+            "BODY_FAN_SYNC",
+        ):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}",
                      "gimbal heartbeat ignores a get-up stage")
