@@ -109,6 +109,16 @@ class ProfileTest(unittest.TestCase):
         )
         self.assertGreater(_macro("VMC_GETUP_BODY_ALIGN_CONFIRM_MS"), 0.0)
 
+    def test_body_fan_uses_shanhai_speed_and_timeout_scale(self) -> None:
+        self.assertGreaterEqual(_macro("VMC_GETUP_BODY_FAN_SPEED_RADPS"), 3.0)
+        self.assertEqual(_macro("VMC_GETUP_BODY_FAN_PHI0_KD"), 0.0)
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_TIMEOUT_MS"),
+            _macro("VMC_GETUP_TIMEOUT_MS"),
+            "the slow inverted windmill inherits the normal 10 s timeout",
+        )
+        self.assertLessEqual(_macro("VMC_GETUP_BODY_FAN_EXIT_RAD"), 0.2)
+
 
 class StateMachineTest(unittest.TestCase):
     def test_entry_starts_with_brace_instead_of_turn(self) -> None:
@@ -169,6 +179,27 @@ class StateMachineTest(unittest.TestCase):
              "the left-side alignment does not wait for the other leg")
         _has(state, "left_at_target == 0U",
              "the right-side alignment does not wait for the other leg")
+
+    def test_roll_dominant_inversion_uses_body_fan(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        required = _body(source, "vmc_getup_body_fan_is_required")
+        _has(required, "VMC_GETUP_BODY_FAN_START_ROLL_RAD",
+             "roll-dominant inversion is not detected")
+
+        state = _body(source, "vmc_update_getup_state")
+        _has(state, "VMC_GETUP_STATE_BODY_FAN",
+             "the windmill state is unreachable")
+        _has(state, "VMC_GETUP_BODY_FAN_EXIT_RAD",
+             "the windmill has no level-body exit window")
+        _has(state, "VMC_GETUP_BODY_FAN_CONFIRM_MS",
+             "the windmill exit is not debounced")
+        _has(state, "VMC_GETUP_BODY_FAN_TIMEOUT_MS",
+             "the windmill uses the normal short get-up timeout")
+
+        precondition = _body(source, "vmc_getup_next_precondition_state")
+        fan = precondition.index("VMC_GETUP_STATE_BODY_FAN")
+        turn = precondition.index("VMC_GETUP_STATE_TURN")
+        self.assertLess(fan, turn, "windmill classification is shadowed by TURN")
 
     def test_single_leg_fold_is_detected_from_theta_and_recovered_independently(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
@@ -241,6 +272,7 @@ class ControlIntegrationTest(unittest.TestCase):
             "UPRIGHT",
             "BODY_ALIGN",
             "BODY_FLIP",
+            "BODY_FAN",
         ):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}", "state is not treated as active")
@@ -298,6 +330,21 @@ class ControlIntegrationTest(unittest.TestCase):
         _has(body, "VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS",
              "the final posture ramp has no rate limit")
 
+    def test_body_fan_uses_velocity_control_and_gravity_feedforward(self) -> None:
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        for needle in (
+            "VMC_GETUP_BODY_FAN_SPEED_RADPS",
+            "VMC_GETUP_BODY_FAN_SPEED_GAIN",
+            "VMC_GETUP_BODY_FAN_PHI0_KD",
+            "left_speed_error",
+            "right_speed_error",
+            "left_phi0_feedforward",
+            "right_phi0_feedforward",
+            "VMC_GETUP_BODY_FAN_GRAVITY_GAIN",
+        ):
+            with self.subTest(needle=needle):
+                _has(body, needle, "the Shanhai-style windmill control is incomplete")
+
     def test_recovery_preconditions_use_per_leg_phi0_commands(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
         _has(body, "getup_left_direction", "the left leg has no independent direction")
@@ -323,7 +370,7 @@ class ControlIntegrationTest(unittest.TestCase):
 
     def test_board_comms_inhibits_gimbal_for_all_new_stages(self) -> None:
         body = BOARD_COMM.read_text(encoding="utf-8")
-        for state in ("BRACE", "UPRIGHT", "BODY_ALIGN", "BODY_FLIP"):
+        for state in ("BRACE", "UPRIGHT", "BODY_ALIGN", "BODY_FLIP", "BODY_FAN"):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}",
                      "gimbal heartbeat ignores a get-up stage")

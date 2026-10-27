@@ -126,6 +126,7 @@ static HAL_StatusTypeDef board_comm_send_heartbeat(void)
        vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT ||
        vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
        vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
+       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN ||
        vmc_control.getup_lqr_release_pending != 0U) ? 1U : 0U;
   const uint8_t pitch_ready =
       (fabsf(vmc_probe_state.body.pitch) < VMC_GETUP_PITCH_READY_RAD) ? 1U : 0U;

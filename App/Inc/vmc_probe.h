@@ -945,6 +945,7 @@ extern "C" {
 #define VMC_GETUP_STATE_UPRIGHT    6U
 #define VMC_GETUP_STATE_BODY_ALIGN 7U
 #define VMC_GETUP_STATE_BODY_FLIP  8U
+#define VMC_GETUP_STATE_BODY_FAN   9U
 
 #define VMC_JUMP_STAGE_IDLE        0U
 #define VMC_JUMP_STAGE_COMPRESS    1U
@@ -1034,6 +1035,20 @@ extern "C" {
 #define VMC_GETUP_BODY_ALIGN_CONFIRM_MS  30U
 #define VMC_GETUP_BODY_FLIP_CONFIRM_MS   50U
 #define VMC_GETUP_LEG_RECOVER_CONFIRM_MS  50U
+/* Shanhai-style inverted-body windmill.  Body roll near +/-180 degrees is not
+ * covered by the pitch-only BODY_ALIGN path.  Drive both phi0 joints with a
+ * real velocity command, keep the legs long, and wait until the body returns
+ * near level before retracting. */
+#define VMC_GETUP_BODY_FAN_START_ROLL_RAD  2.000f
+#define VMC_GETUP_BODY_FAN_SPEED_RADPS     3.000f
+#define VMC_GETUP_BODY_FAN_SPEED_GAIN      0.250f
+#define VMC_GETUP_BODY_FAN_PHI0_LEAD_MAX_RAD 1.000f
+#define VMC_GETUP_BODY_FAN_PHI0_KD         0.0f
+#define VMC_GETUP_BODY_FAN_GRAVITY_GAIN    10.0f
+#define VMC_GETUP_BODY_FAN_GRAVITY_ANGLE_RAD 0.3490659f
+#define VMC_GETUP_BODY_FAN_EXIT_RAD        0.1745329f
+#define VMC_GETUP_BODY_FAN_CONFIRM_MS      50U
+#define VMC_GETUP_BODY_FAN_TIMEOUT_MS      30000U
 /* If the body did not invert and both virtual legs are already on this side,
  * a folded phi4 is just the compact linkage pose.  Shrink directly instead of
  * driving another full turn through LEG_RECOVER. */
