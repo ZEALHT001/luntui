@@ -142,14 +142,23 @@ class ProfileTest(unittest.TestCase):
         self.assertLessEqual(
             _macro("VMC_GETUP_BODY_FAN_SYNC_THETA_TOL_RAD"), 0.15
         )
+        self.assertLessEqual(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_EARLY_PHASE_TOL_RAD"), 0.15
+        )
         self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS"), 0.0)
+        self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_PHASE_KP"), 0.0)
+        self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF"), 0.0)
+        self.assertLess(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF"),
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_MAX"),
+        )
+        self.assertGreaterEqual(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_MAX"), 30.0
+        )
+        self.assertEqual(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_SUPPORT_FORCE"), 0.0
+        )
         self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS"), 0.0)
-        self.assertGreater(
-            _macro("VMC_GETUP_BODY_FAN_SYNC_FOLD_STARTUP_MS"), 0.0
-        )
-        self.assertGreater(
-            _macro("VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS"), 0.0
-        )
 
     def test_body_fan_has_a_direction_preserving_deadpoint_escape(self) -> None:
         self.assertGreater(
@@ -267,14 +276,12 @@ class StateMachineTest(unittest.TestCase):
         target = _body(source, "vmc_getup_body_fan_sync_targets")
         _has(target, "getup_body_fan_sync_fold_side",
              "the synchronization does not latch which leg is folded")
-        _has(target, "getup_body_fan_sync_fold_fallback",
-             "the folded-leg fallback is not preserved")
         _has(target, "getup_body_fan_sync_phi0_target",
-             "the healthy leg anchor does not latch an absolute phi0")
-        _has(target, "? left_theta",
-             "the folded left leg cannot become the fallback leader")
-        _has(target, "? right_theta",
-             "the folded right leg cannot become the fallback leader")
+             "the selected leader phi0 is not latched")
+        _has(target, "leader_side = (left_phase >= right_phase) ? 1U : 2U",
+             "the windmill direction does not choose the leader")
+        _has(target, "leader_theta = (leader_side == 1U) ? left_theta : right_theta",
+             "the selected phase leader is not used")
         _has(target, "*left_target = leader_theta;",
              "the left leg does not follow the selected leader")
         _has(target, "*right_target = leader_theta;",
@@ -331,11 +338,6 @@ class StateMachineTest(unittest.TestCase):
             "body attitude still bypasses synchronization",
         )
         _has(
-            state,
-            "VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS",
-            "a folded leg that cannot move never falls back to leader mode",
-        )
-        _has(
             ready,
             "vmc_probe_state.left_leg.phi0",
             "synchronization readiness still relies on body-relative theta",
@@ -352,6 +354,16 @@ class StateMachineTest(unittest.TestCase):
         )
         _has(
             state,
+            "getup_body_fan_sync_initial_phase_close",
+            "the initial close-phase pose does not get an early fan handoff",
+        )
+        _has(
+            state,
+            "vmc_getup_enter_stage(VMC_GETUP_STATE_BODY_FAN);",
+            "a ready short-leg pose cannot hand off directly to BODY_FAN",
+        )
+        _has(
+            state,
             "getup_body_fan_sync_prelift_confirm_ms",
             "the lift-first confirmation shares the synchronization timer",
         )
@@ -362,8 +374,28 @@ class StateMachineTest(unittest.TestCase):
         )
         _has(
             source,
-            "const double anchor_phi0",
-            "BODY_FAN_SYNC never holds the healthy leg at a fixed phi0",
+            "getup_body_fan_sync_phi0_target",
+            "BODY_FAN_SYNC never latches the healthy-leg phi0",
+        )
+        _has(
+            source,
+            "getup_sync_torque_profile",
+            "BODY_FAN_SYNC still uses only position control",
+        )
+        _has(
+            source,
+            "follower_delta",
+            "the follower leg has no phase-error velocity target",
+        )
+        _has(
+            source,
+            "vmc_getup_body_fan_sync_torque_feedforward",
+            "the synchronization stage has no breakaway torque feedforward",
+        )
+        _has(
+            target,
+            "getup_body_fan_sync_leader_side",
+            "the synchronization leader is not latched for torque control",
         )
 
     def test_single_leg_fold_is_detected_from_theta_and_recovered_independently(self) -> None:
@@ -498,23 +530,31 @@ class ControlIntegrationTest(unittest.TestCase):
 
     def test_body_fan_uses_velocity_control_and_gravity_feedforward(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
+        torque = _body(
+            SOURCE.read_text(encoding="utf-8"),
+            "vmc_body_fan_speed_torque",
+        )
         for needle in (
             "VMC_GETUP_BODY_FAN_SPEED_RADPS",
+            "fan_speed_target",
             "VMC_GETUP_BODY_FAN_SPEED_KP",
-            "VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS",
             "VMC_GETUP_BODY_FAN_SPEED_TORQUE_MAX",
             "VMC_GETUP_BODY_FAN_PHI0_KD",
-            "left_speed_error",
-            "right_speed_error",
-            "left_speed_torque",
-            "right_speed_torque",
             "left_phi0_feedforward",
             "right_phi0_feedforward",
+        ):
+            with self.subTest(needle=needle):
+                _has(body, needle, "the Shanhai-style windmill control is incomplete")
+        for needle in (
+            "VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS",
+            "speed_torque_limit",
+            "speed_error",
+            "speed_torque",
             "VMC_GETUP_BODY_FAN_GRAVITY_GAIN",
             "apply_zero_deadband",
         ):
             with self.subTest(needle=needle):
-                _has(body, needle, "the Shanhai-style windmill control is incomplete")
+                _has(torque, needle, "the Shanhai-style speed torque helper is incomplete")
         self.assertNotIn(
             "left_phi0_lead",
             body,
@@ -543,6 +583,8 @@ class ControlIntegrationTest(unittest.TestCase):
         _has(body, "right_support_force", "the right support force is not independent")
         _has(body, "VMC_GETUP_FAN_SUPPORT_FORCE",
              "the fan stages do not use Shanhai's 20 N support")
+        _has(body, "VMC_GETUP_BODY_FAN_SYNC_SUPPORT_FORCE",
+             "the synchronization stage does not unload ground pressure")
 
     def test_ready_blends_lqr_joint_and_wheel_output(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")

@@ -1046,11 +1046,13 @@ extern "C" {
 #define VMC_GETUP_BODY_FAN_SYNC_LENGTH_TOL_M 0.025f
 #define VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE 0.100f
 #define VMC_GETUP_BODY_FAN_SYNC_THETA_TOL_RAD 0.120f
+#define VMC_GETUP_BODY_FAN_SYNC_EARLY_PHASE_TOL_RAD 0.120f
 #define VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS 1.000f
+#define VMC_GETUP_BODY_FAN_SYNC_PHASE_KP 2.000f
+#define VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF 20.0f
+#define VMC_GETUP_BODY_FAN_SYNC_TORQUE_MAX 36.0f
+#define VMC_GETUP_BODY_FAN_SYNC_SUPPORT_FORCE 0.0f
 #define VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS 100U
-#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STARTUP_MS 200U
-#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_RATE_RADPS 0.050f
-#define VMC_GETUP_BODY_FAN_SYNC_FOLD_STALL_CONFIRM_MS 300U
 #define VMC_GETUP_BODY_FAN_SPEED_RADPS     3.000f
 #define VMC_GETUP_BODY_FAN_SPEED_KP        10.0f
 #define VMC_GETUP_BODY_FAN_SPEED_DEADBAND_RADPS 0.050f
@@ -1510,10 +1512,10 @@ typedef struct {
   float getup_body_fan_sync_phi0_target;
   uint8_t getup_body_fan_sync_complete;
   uint8_t getup_body_fan_sync_fold_side;
-  uint8_t getup_body_fan_sync_fold_fallback;
-  uint32_t getup_body_fan_sync_fold_stall_ms;
   uint8_t getup_body_fan_sync_prelift_active;
   uint8_t getup_body_fan_sync_targets_ready;
+  uint8_t getup_body_fan_sync_initial_phase_close;
+  uint8_t getup_body_fan_sync_leader_side;
   uint32_t getup_body_fan_sync_prelift_confirm_ms;
   uint8_t getup_body_fan_escape_active;
   uint8_t getup_body_fan_retry_used;
