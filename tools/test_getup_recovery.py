@@ -145,7 +145,10 @@ class ProfileTest(unittest.TestCase):
         self.assertLessEqual(
             _macro("VMC_GETUP_BODY_FAN_SYNC_EARLY_PHASE_TOL_RAD"), 0.15
         )
-        self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS"), 0.0)
+        self.assertEqual(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS"),
+            2.0,
+        )
         self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_PHASE_KP"), 0.0)
         self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF"), 0.0)
         self.assertLess(
@@ -159,6 +162,62 @@ class ProfileTest(unittest.TestCase):
             _macro("VMC_GETUP_BODY_FAN_SYNC_SUPPORT_FORCE"), 0.0
         )
         self.assertGreater(_macro("VMC_GETUP_BODY_FAN_SYNC_CONFIRM_MS"), 0.0)
+
+    def test_sync_breakaway_feedforward_exits_above_low_speed(self) -> None:
+        full_speed = _macro(
+            "VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_FULL_SPEED_RADPS"
+        )
+        exit_speed = _macro(
+            "VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_EXIT_SPEED_RADPS"
+        )
+        self.assertGreaterEqual(full_speed, 0.15)
+        self.assertLessEqual(full_speed, 0.25)
+        self.assertGreater(exit_speed, full_speed)
+        self.assertLessEqual(exit_speed, 0.25)
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_RISE_RATE"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_FALL_RATE"),
+            _macro("VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_RISE_RATE"),
+            "the sync feedforward does not release faster than it builds",
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_TORQUE_FF_RISE_RATE"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_BODY_FAN_TORQUE_FF_FALL_RATE"),
+            _macro("VMC_GETUP_BODY_FAN_TORQUE_FF_RISE_RATE"),
+            "the fan feedforward does not release faster than it builds",
+        )
+
+        source = SOURCE.read_text(encoding="utf-8")
+        feedforward = _body(
+            source,
+            "vmc_getup_body_fan_sync_torque_feedforward",
+        )
+        for needle in (
+            "fabs(measured_speed)",
+            "VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_FULL_SPEED_RADPS",
+            "VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_EXIT_SPEED_RADPS",
+            "breakaway_scale = 1.0;",
+            "breakaway_scale = 0.0;",
+            "breakaway_scale;",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    feedforward,
+                    needle,
+                    "the synchronization feedforward is not speed gated",
+                )
+        slew = _body(source, "vmc_getup_phi0_feedforward_slew")
+        for needle in ("rise_rate", "fall_rate", "vmc_step_towards"):
+            with self.subTest(needle=needle):
+                _has(
+                    slew,
+                    needle,
+                    "the get-up feedforward has no asymmetric slew limit",
+                )
 
     def test_body_fan_has_a_direction_preserving_deadpoint_escape(self) -> None:
         self.assertGreater(
@@ -542,6 +601,7 @@ class ControlIntegrationTest(unittest.TestCase):
             "VMC_GETUP_BODY_FAN_PHI0_KD",
             "left_phi0_feedforward",
             "right_phi0_feedforward",
+            "vmc_getup_phi0_feedforward_slew",
         ):
             with self.subTest(needle=needle):
                 _has(body, needle, "the Shanhai-style windmill control is incomplete")

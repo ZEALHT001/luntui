@@ -507,10 +507,26 @@ static double vmc_getup_body_fan_sync_torque_feedforward(
     double speed_limit)
 {
   const double direction = (target_speed < 0.0) ? -1.0 : 1.0;
+  const double full_speed = clamp_double(
+      VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_FULL_SPEED_RADPS, 0.0, 10.0);
+  const double exit_speed = clamp_double(
+      VMC_GETUP_BODY_FAN_SYNC_BREAKAWAY_EXIT_SPEED_RADPS,
+      full_speed + 0.001,
+      10.0);
+  const double measured_speed_abs = fabs(measured_speed);
+  double breakaway_scale;
   double speed_error;
 
   if (target_speed == 0.0 || speed_limit <= 0.0) {
     return 0.0;
+  }
+  if (measured_speed_abs <= full_speed) {
+    breakaway_scale = 1.0;
+  } else if (measured_speed_abs >= exit_speed) {
+    breakaway_scale = 0.0;
+  } else {
+    breakaway_scale =
+        (exit_speed - measured_speed_abs) / (exit_speed - full_speed);
   }
   speed_error = (target_speed - measured_speed) * direction;
   if (speed_error <= 0.0) {
@@ -518,7 +534,8 @@ static double vmc_getup_body_fan_sync_torque_feedforward(
   }
   return direction *
          clamp_double(VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF, 0.0, 50.0) *
-         clamp_double(speed_error / speed_limit, 0.0, 1.0);
+         clamp_double(speed_error / speed_limit, 0.0, 1.0) *
+         breakaway_scale;
 }
 
 static double apply_encoder_deadband(double value, double deadband)
@@ -1111,6 +1128,20 @@ static double vmc_step_towards(double current, double target, double step)
     return (current < target) ? target : current;
   }
   return current;
+}
+
+static double vmc_getup_phi0_feedforward_slew(double previous,
+                                              double target,
+                                              double rise_rate,
+                                              double fall_rate)
+{
+  const uint8_t falling =
+      (fabs(target) < fabs(previous) || previous * target < 0.0) ? 1U : 0U;
+  const double rate =
+      falling != 0U ? clamp_double(fall_rate, 0.0, 10000.0)
+                    : clamp_double(rise_rate, 0.0, 10000.0);
+
+  return vmc_step_towards(previous, target, rate * vmc_loop_dt());
 }
 
 static float vmc_average_joint_torque_abs(void)
@@ -2555,6 +2586,8 @@ static void vmc_getup_enter_brace(int8_t turn_direction)
   vmc_control.getup_confirm_ms = 0U;
   vmc_control.getup_upright_phi0_left = vmc_probe_state.left_leg.phi0;
   vmc_control.getup_upright_phi0_right = vmc_probe_state.right_leg.phi0;
+  vmc_control.getup_phi0_feedforward_left = 0.0f;
+  vmc_control.getup_phi0_feedforward_right = 0.0f;
 }
 
 static void vmc_getup_enter_stage(uint8_t state)
@@ -5304,6 +5337,8 @@ void vmc_control_init(void)
   vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_upright_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
   vmc_control.getup_upright_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.getup_phi0_feedforward_left = 0.0f;
+  vmc_control.getup_phi0_feedforward_right = 0.0f;
   vmc_control.getup_state_ms = 0U;
   vmc_control.getup_confirm_ms = 0U;
   vmc_getup_fully_fallen = 0U;
@@ -5552,6 +5587,8 @@ void vmc_control_update(void)
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
     vmc_control.getup_target_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
+    vmc_control.getup_phi0_feedforward_left = 0.0f;
+    vmc_control.getup_phi0_feedforward_right = 0.0f;
     vmc_control.getup_state_ms = 0U;
     vmc_control.getup_confirm_ms = 0U;
     clear_leg_command(&vmc_probe_state.left_leg);
@@ -6114,6 +6151,37 @@ void vmc_control_update(void)
             right_phi0_speed_target,
             vmc_probe_state.right_leg.d_phi0,
             sync_speed_limit);
+  }
+  if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN ||
+      getup_sync_torque_profile != 0U) {
+    const uint8_t body_fan =
+        (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) ? 1U : 0U;
+    const double rise_rate =
+        (body_fan != 0U)
+            ? (double)VMC_GETUP_BODY_FAN_TORQUE_FF_RISE_RATE
+            : (double)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_RISE_RATE;
+    const double fall_rate =
+        (body_fan != 0U)
+            ? (double)VMC_GETUP_BODY_FAN_TORQUE_FF_FALL_RATE
+            : (double)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_FALL_RATE;
+
+    left_phi0_feedforward = vmc_getup_phi0_feedforward_slew(
+        (double)vmc_control.getup_phi0_feedforward_left,
+        left_phi0_feedforward,
+        rise_rate,
+        fall_rate);
+    right_phi0_feedforward = vmc_getup_phi0_feedforward_slew(
+        (double)vmc_control.getup_phi0_feedforward_right,
+        right_phi0_feedforward,
+        rise_rate,
+        fall_rate);
+    vmc_control.getup_phi0_feedforward_left =
+        (float)left_phi0_feedforward;
+    vmc_control.getup_phi0_feedforward_right =
+        (float)right_phi0_feedforward;
+  } else {
+    vmc_control.getup_phi0_feedforward_left = 0.0f;
+    vmc_control.getup_phi0_feedforward_right = 0.0f;
   }
   vmc_control.getup_target_phi0_left = (float)left_target_phi0;
   vmc_control.getup_target_phi0_right = (float)right_target_phi0;
