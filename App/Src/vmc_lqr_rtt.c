@@ -677,9 +677,9 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
     applied = 1U;
   }
-  /* Automatic stair climb.  Every detector and action parameter is runtime
-   * tunable so the impact thresholds can be characterised from the web page
-   * without a reflash. */
+  /* Manual stair climb action parameters.  Legacy detector keys remain
+   * accepted for client compatibility, but no detector value controls the
+   * rising-edge trigger. */
   if (vmc_lqr_rtt_parse_named_float(line, "stair_enable", &value) != 0U) {
     vmc_control.stair_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
@@ -689,12 +689,48 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_length", &value) != 0U) {
+    vmc_control.stair_lift_length =
+        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_theta", &value) != 0U) {
+    vmc_control.stair_lift_theta =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 3.1415927f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_retract_theta", &value) != 0U) {
+    vmc_control.stair_retract_theta =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 3.1415927f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_pose_length_tol", &value) != 0U) {
+    vmc_control.stair_pose_length_tol =
+        vmc_lqr_rtt_clamp_float(value, 0.005f, 0.15f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_pose_theta_tol", &value) != 0U) {
+    vmc_control.stair_pose_theta_tol =
+        vmc_lqr_rtt_clamp_float(value, 0.05f, 0.60f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_pose_confirm_ms", &value) != 0U) {
+    vmc_control.stair_pose_confirm_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 1000.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_phi0_target", &value) != 0U) {
     vmc_control.stair_phi0_target = vmc_lqr_rtt_clamp_float(value, 0.0f, 4.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_phi0_ramp_rate", &value) != 0U) {
     vmc_control.stair_phi0_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_phi0_ramp_rate",
+                                    &value) != 0U) {
+    vmc_control.stair_lift_phi0_ramp_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_phi0_kp", &value) != 0U) {
@@ -776,9 +812,19 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 3000.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_hold_ms", &value) != 0U) {
+    vmc_control.stair_lift_hold_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 3000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_recover_ms", &value) != 0U) {
+    vmc_control.stair_recover_ms =
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 3000.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_timeout_ms", &value) != 0U) {
     vmc_control.stair_timeout_ms =
-        (uint32_t)vmc_lqr_rtt_clamp_float(value, 100.0f, 5000.0f);
+        (uint32_t)vmc_lqr_rtt_clamp_float(value, 100.0f, 10000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_cooldown_ms", &value) != 0U) {
@@ -796,6 +842,11 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         vmc_lqr_rtt_clamp_float(value, 0.0f, 1000.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_length_ramp_rate", &value) != 0U) {
+    vmc_control.stair_length_ramp_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_max_force", &value) != 0U) {
     vmc_control.stair_max_force =
         vmc_lqr_rtt_clamp_float(value, 0.0f, VMC_LEG_FORCE_MAX_DEFAULT);
@@ -803,6 +854,20 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_support_force", &value) != 0U) {
     vmc_control.stair_support_force =
+        vmc_lqr_rtt_clamp_float(value, -VMC_LEG_SUPPORT_FORCE_MAX,
+                                VMC_LEG_SUPPORT_FORCE_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_support_force",
+                                    &value) != 0U) {
+    vmc_control.stair_lift_support_force =
+        vmc_lqr_rtt_clamp_float(value, -VMC_LEG_SUPPORT_FORCE_MAX,
+                                VMC_LEG_SUPPORT_FORCE_MAX);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "stair_retract_support_force",
+                                    &value) != 0U) {
+    vmc_control.stair_retract_support_force =
         vmc_lqr_rtt_clamp_float(value, -VMC_LEG_SUPPORT_FORCE_MAX,
                                 VMC_LEG_SUPPORT_FORCE_MAX);
     applied = 1U;
@@ -1845,12 +1910,11 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), vmc_balance.leg_sync_torque);
 
-  /* VMCVOFA fields 157..169: automatic stair-climb diagnostics.
+  /* VMCVOFA fields 157..169: manual stair-climb diagnostics.
    *
-   * These make the impact decision auditable: stage/abort show the state
-   * machine, ready/preimpact/impact show how far the trigger got, and the
-   * per-leg impact flags show whether only one side saw the step.  Speed and
-   * acceleration are the wheel-speed quantities the legacy fallback uses;
+   * Stage/abort and trigger/abort counts remain live.  The ready, preimpact,
+   * impact, speed and per-leg detector fields are retained for wire
+   * compatibility but stay zero because the action is manually triggered.
    * theta_ramped is the balance target the action is actually driving. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_control.stair_stage);

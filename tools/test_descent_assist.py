@@ -154,7 +154,7 @@ class IntegrationTest(unittest.TestCase):
     def test_descent_target_precedes_the_latched_short_stair_length(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
         extend_target = body.index("vmc_descent_target_length()")
-        stair_target = body.index("vmc_stair_retract_target_length()")
+        stair_target = body.index("vmc_stair_target_length()")
         self.assertLess(extend_target, stair_target)
         _has(body, "descent_override != 0U", "the descent target is not selected")
 

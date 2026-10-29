@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Regression tests for the automatic stair climb.
+"""Regression tests for the manual stair climb.
 
-Operator procedure: enable the stair feature on SBUS channel 7, select a long
-leg length on channel 9, and drive into a step below the body.  The wheels jam,
-the LQR keeps demanding torque, the legs are pushed back, and both per-leg
-impact tests agree.  The state machine then retracts the legs, ramps the
-balance theta target forward, holds, and stays on the short legs until the
-channel-9 knob is moved again.
+Operator procedure: drive the robot up to the step, then move SBUS channel 7
+from disabled to enabled.  The rising edge triggers one retract/roll/hold
+sequence; the switch must be returned to disabled before another sequence can
+start.  No wheel-speed, wheel-torque or leg-angle impact detector participates.
 
 These are source-level checks, in the same style as test_leg_sync.py: the
 firmware has no host-buildable control layer, so the shipped source is the
@@ -65,99 +63,129 @@ def _has(haystack: str, needle: str, why: str) -> None:
 
 
 class DefaultsTest(unittest.TestCase):
-    def test_retract_and_ready_lengths_are_inside_the_stroke(self) -> None:
+    def test_both_pose_lengths_are_inside_the_stroke(self) -> None:
         leg_min = _macro("VMC_LEG_LENGTH_MIN")
         leg_max = _macro("VMC_LEG_LENGTH_MAX")
+        lift = _macro("VMC_STAIR_LIFT_LENGTH_DEFAULT")
         retract = _macro("VMC_STAIR_RETRACT_LENGTH_DEFAULT")
-        ready = _macro("VMC_STAIR_READY_LENGTH_DEFAULT")
+        self.assertGreaterEqual(lift, leg_min)
+        self.assertLessEqual(lift, leg_max)
+        self.assertGreater(lift, retract)
         self.assertGreaterEqual(retract, leg_min)
-        self.assertLess(retract, ready)
-        self.assertLessEqual(ready, leg_max)
+        self.assertLessEqual(retract, leg_max)
 
-    def test_phi0_target_is_the_requested_2_5_rad_pose(self) -> None:
-        self.assertAlmostEqual(_macro("VMC_STAIR_PHI0_TARGET_DEFAULT"), 2.5)
+    def test_two_theta_poses_match_shanhai(self) -> None:
+        self.assertAlmostEqual(_macro("VMC_STAIR_LIFT_THETA_DEFAULT"), 1.70)
+        self.assertGreater(
+            _macro("VMC_STAIR_LIFT_THETA_DEFAULT"),
+            3.14159265 / 2.0,
+            "the lift angle is below the demonstrated peak",
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_RETRACT_THETA_DEFAULT"),
+            3.14159265 / 3.0,
+        )
+        self.assertGreater(
+            _macro("VMC_STAIR_POSE_LENGTH_TOL_DEFAULT"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_STAIR_POSE_THETA_TOL_DEFAULT"), 0.0
+        )
         self.assertGreater(_macro("VMC_STAIR_PHI0_RAMP_RATE_DEFAULT"), 0.0)
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT"),
+            _macro("VMC_STAIR_PHI0_RAMP_RATE_DEFAULT"),
+            msg="LIFT should use the normal phi0 ramp again",
+        )
         self.assertGreater(_macro("VMC_STAIR_PHI0_KP_DEFAULT"), 0.0)
         self.assertGreater(_macro("VMC_STAIR_PHI0_KD_DEFAULT"), 0.0)
 
-    def test_timing_and_impact_defaults_are_sane(self) -> None:
+    def test_action_timing_defaults_are_sane(self) -> None:
         for name in (
-            "VMC_STAIR_READY_CONFIRM_MS_DEFAULT",
-            "VMC_STAIR_SPEED_CONFIRM_MS_DEFAULT",
-            "VMC_STAIR_PREIMPACT_CONFIRM_MS_DEFAULT",
-            "VMC_STAIR_IMPACT_CONFIRM_MS_DEFAULT",
+            "VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT",
+            "VMC_STAIR_POSE_CONFIRM_MS_DEFAULT",
+            "VMC_STAIR_LIFT_HOLD_MS_DEFAULT",
             "VMC_STAIR_HOLD_MS_DEFAULT",
+            "VMC_STAIR_RECOVER_MS_DEFAULT",
             "VMC_STAIR_TIMEOUT_MS_DEFAULT",
+            "VMC_STAIR_COOLDOWN_MS_DEFAULT",
         ):
             with self.subTest(name=name):
                 self.assertGreater(_macro(name), 0.0)
-        self.assertGreater(_macro("VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT"), 0.0)
-        self.assertGreater(_macro("VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT"), 0.0)
+        self.assertGreater(_macro("VMC_STAIR_LENGTH_RAMP_RATE_DEFAULT"), 0.0)
+        ramp_time = (
+            _macro("VMC_STAIR_LIFT_LENGTH_DEFAULT")
+            - _macro("VMC_STAIR_RETRACT_LENGTH_DEFAULT")
+        ) / _macro("VMC_STAIR_LENGTH_RAMP_RATE_DEFAULT")
+        self.assertGreaterEqual(
+            _macro("VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT") / 1000.0,
+            ramp_time,
+            "the retract timeout expires before the length ramp finishes",
+        )
 
 
-class DetectionTest(unittest.TestCase):
-    def test_stair_channel_and_safety_gates_are_required(self) -> None:
+class ManualTriggerTest(unittest.TestCase):
+    def test_rising_edge_and_safety_gates_are_required(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_start_is_allowed")
         _has(body, "remote_control_stair_enabled()", "stair channel is not required")
-        _has(body, "vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH",
-             "the high leg-knob band is not required")
         _has(body, "vmc_getup_is_active()", "get-up is not excluded")
         _has(body, "vmc_jump_is_active_or_aborted()", "jump is not excluded")
         _has(body, "airborne_active", "airborne is not excluded")
         _has(body, "feedback_timeout_active", "feedback timeout is not excluded")
-
-    def test_impact_needs_both_torque_and_leg_angle_on_both_sides(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
-        for needle in (
+        _has(body, "remote_frame_ready", "stale or missing RC frames can trigger")
+        _has(body, "stair_switch_enabled", "the stair switch is not sampled")
+        _has(body, "remote_control_channel(RC_STAIR_ENABLE)",
+             "the physical switch level is not sampled")
+        _has(body, "trigger_edge", "the action is not rising-edge triggered")
+        _has(body, "vmc_stair_manual_armed = 1U",
+             "returning the switch to disabled does not re-arm the action")
+        _has(body, "vmc_stair_manual_armed = 0U",
+             "one switch edge can trigger more than one action")
+
+    def test_impact_detection_no_longer_controls_the_action(self) -> None:
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
+        for forbidden in (
             "left_wheel_torque_raw",
             "right_wheel_torque_raw",
             "motion.left_theta",
             "motion.right_theta",
-            "stair_left_impact",
-            "stair_right_impact",
+            "stair_ready_detected != 0U",
+            "stair_fast_detected != 0U",
+            "stair_impact_confirmed_ms",
         ):
-            with self.subTest(needle=needle):
-                _has(body, needle, "impact test is incomplete")
-        _has(body, "left_impact != 0U &&", "the left impact flag is not required")
-        _has(body, "right_impact != 0U", "the right impact flag is not required")
-
-    def test_impact_requires_the_preimpact_arm_and_forward_command(self) -> None:
-        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
-        _has(body, "vmc_stair_preimpact_armed != 0U", "the pre-impact arm is ignored")
-        _has(body, "forward_command != 0U", "a forward command is not required")
-
-    def test_zero_torque_threshold_falls_back_to_the_speed_drop_test(self) -> None:
-        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
-        _has(body, "impact_torque_threshold > 0.0f", "the A/B switch is missing")
-        _has(body, "impact_diff_threshold", "the legacy speed-drop fallback is missing")
-
-    def test_zero_preimpact_diff_disables_the_raw_accel_gate(self) -> None:
-        """Raw wheel-speed acceleration is too noisy at 450 Hz to gate on.
-
-        The first capture showed both torque+theta impact tests firing while
-        the pre-impact arm stayed at zero: quantization spikes in the raw
-        wheel-speed derivative almost never left 30 ms clean.  Zero disables
-        that gate and lets the already-confirmed wheel-speed window arm it;
-        a non-zero value restores the stricter check for A/B runs.
-        """
-        self.assertAlmostEqual(_macro("VMC_STAIR_PREIMPACT_DIFF_MAX_DEFAULT"), 0.0)
-        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
-        _has(body, "preimpact_accel_gate == 0U", "the zero-disables path is missing")
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(
+                    forbidden,
+                    body,
+                    "the manual trigger still depends on an impact detector",
+                )
 
 
 class StateMachineTest(unittest.TestCase):
-    def test_retract_exits_on_the_target_or_its_own_timeout(self) -> None:
+    def test_lift_and_retract_advance_only_after_pose_is_confirmed(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
+        _has(body, "VMC_STAIR_STAGE_LIFT", "LIFT is missing")
         _has(body, "VMC_STAIR_STAGE_RETRACT", "RETRACT is missing")
-        _has(body, "measured_leg_avg <= retract_length + VMC_STAIR_LENGTH_READY_TOL",
-             "RETRACT does not recognise the leg reaching the target")
-        _has(body, "stair_stage_ms >= retract_timeout_ms",
-             "RETRACT has no timeout fallback when the step blocks the stroke")
+        _has(body, "vmc_stair_pose_ready(target_length, target_theta)",
+             "the stage does not wait for the actual leg pose")
+        ready = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_pose_ready")
+        _has(ready, "vmc_rad_format", "pose checks are not wrap-safe")
+        _has(body, "stair_pose_confirm_elapsed_ms >= pose_confirm_ms",
+             "the pose is not debounced")
+        _has(body, "stair_lift_hold_elapsed_ms >= lift_hold_ms",
+             "LIFT does not hold the confirmed pose")
+        _has(body, "VMC_STAIR_STAGE_SETTLE",
+             "RETRACT does not hand off to settle")
 
-    def test_hold_uses_its_own_hold_time(self) -> None:
+    def test_settle_keeps_the_climb_pose_before_recovery(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_update")
-        _has(body, "VMC_STAIR_STAGE_HOLD", "HOLD is missing")
-        _has(body, "stair_stage_ms >= hold_ms", "HOLD does not use stair_hold_ms")
+        _has(body, "VMC_STAIR_STAGE_SETTLE", "SETTLE is missing")
+        _has(body, "stair_stage_ms >= hold_ms", "SETTLE does not use stair_hold_ms")
+        _has(body, "VMC_STAIR_STAGE_RECOVER",
+             "SETTLE does not hand off to a separate recovery stage")
+        _has(body, "stair_stage_ms >= recover_ms",
+             "RECOVER does not use stair_recover_ms")
 
     def test_finish_keeps_a_length_override_until_the_knob_moves(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_enter_stage")
@@ -169,15 +197,35 @@ class StateMachineTest(unittest.TestCase):
         _has(remote, "stair_length_override_remote_position",
              "the override does not remember the triggering knob position")
 
+    def test_stair_pose_does_not_auto_start_getup(self) -> None:
+        body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_getup_state")
+        _has(body, "pose_getup_allowed",
+             "pose-triggered get-up is not gated by the stair action")
+        self.assertGreaterEqual(
+            body.count("pose_getup_allowed != 0U"),
+            3,
+            "body fan, leg recovery or direct shrink can still steal LIFT",
+        )
+
+        abort = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_abort_reason")
+        _has(abort, "VMC_STAIR_ABORT_ATTITUDE",
+             "the stair action has no route for a real attitude failure")
+        _has(abort, "VMC_GETUP_START_PITCH_RAD",
+             "a real pitch fall cannot abort the stair action")
+        _has(abort, "VMC_GETUP_BODY_FAN_START_ROLL_RAD",
+             "a real roll fall cannot abort the stair action")
+
 
 class ControlIntegrationTest(unittest.TestCase):
-    def test_stair_owns_the_target_and_should_skip_the_ramp(self) -> None:
+    def test_stair_target_uses_a_dedicated_length_ramp(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
-        _has(body, "target_length = vmc_stair_retract_target_length();",
+        _has(body, "target_length = vmc_stair_target_length();",
              "the stair target is not selected")
         _has(body, "descent_override != 0U", "descent is missing from the direct-ramp gate")
-        _has(body, "stair_override != 0U",
-             "the stair target still runs through the normal ramp")
+        _has(body, "vmc_control.stair_length_ramp_rate",
+             "the stair target does not use its dedicated ramp")
+        _has(body, "ramped_target_length =",
+             "the stair target bypasses the common length ramp")
 
     def test_roll_compensation_follow_and_sync_are_disabled_during_stair(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
@@ -194,7 +242,8 @@ class ControlIntegrationTest(unittest.TestCase):
             "stair_kp_length",
             "stair_kd_length",
             "stair_max_force",
-            "stair_support_force",
+            "stair_lift_support_force",
+            "stair_retract_support_force",
         ):
             with self.subTest(needle=needle):
                 _has(body, needle, "the stair leg profile is incomplete")
@@ -211,15 +260,31 @@ class ControlIntegrationTest(unittest.TestCase):
              "the stair phi0 KP is not applied")
         _has(control, "vmc_control.stair_phi0_kd",
              "the stair phi0 KD is not applied")
-        _has(control, "VMC_STAIR_STAGE_HOLD",
-             "HOLD does not switch from the climbing pose to recovery")
+        _has(control, "vmc_control.stair_lift_theta",
+             "LIFT does not use the 90-degree theta target")
+        _has(control, "vmc_control.stair_lift_phi0_ramp_rate",
+             "LIFT does not use its faster phi0 ramp")
+        _has(control, "vmc_control.stair_retract_theta",
+             "RETRACT does not use the 60-degree theta target")
+        _has(control, "vmc_probe_state.body.pitch",
+             "theta is not converted back to an absolute phi0 target")
+        _has(control, "VMC_STAIR_STAGE_RECOVER",
+             "SETTLE has no separate rate-limited recovery stage")
         _has(control, "vmc_control.target_phi0",
-             "HOLD does not return phi0 to the normal standing target")
+             "RECOVER does not return phi0 to the normal standing target")
         leg_control = _body(
             SOURCE.read_text(encoding="utf-8"), "update_leg_length_control"
         )
         _has(leg_control, "vmc_stair_is_active() == 0U",
              "LQR Tp still overrides the stair phi0 PD")
+        _has(leg_control,
+             "vmc_rad_format((float)(target_phi0 - leg->phi0))",
+             "the stair phi0 error is not wrap-safe")
+        wheel_control = _body(
+            SOURCE.read_text(encoding="utf-8"), "vmc_wheel_control_update"
+        )
+        _has(wheel_control, "vmc_stair_blocks_wheel_output() == 0U",
+             "wheel output is not disabled during the leg-only climb")
 
     def test_state_machine_runs_before_balance_and_control(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_probe_task")
@@ -233,7 +298,15 @@ class RuntimeTuningTest(unittest.TestCase):
         source = RTT.read_text(encoding="utf-8")
         for key in (
             "stair_enable",
+            "stair_lift_length",
             "stair_retract_length",
+            "stair_lift_theta",
+            "stair_retract_theta",
+            "stair_pose_length_tol",
+            "stair_pose_theta_tol",
+            "stair_pose_confirm_ms",
+            "stair_lift_hold_ms",
+            "stair_lift_phi0_ramp_rate",
             "stair_ready_length",
             "stair_ready_confirm_ms",
             "stair_speed_confirm_ms",
@@ -247,8 +320,12 @@ class RuntimeTuningTest(unittest.TestCase):
             "stair_phi0_kd",
             "stair_retract_timeout_ms",
             "stair_hold_ms",
+            "stair_recover_ms",
             "stair_timeout_ms",
             "stair_cooldown_ms",
+            "stair_length_ramp_rate",
+            "stair_lift_support_force",
+            "stair_retract_support_force",
         ):
             with self.subTest(key=key):
                 _has(source, f'"{key}"', f"{key} is not accepted over RTT")
@@ -258,7 +335,72 @@ class RuntimeTuningTest(unittest.TestCase):
         main = WEB_MAIN.read_text(encoding="utf-8")
         server = SERVER.read_text(encoding="utf-8")
         _has(index, 'id="stairEnable"', "the stair enable input is missing")
+        _has(index, "手动上台阶", "the stair UI is not marked as manual")
+        _has(index, 'id="stairLengthRampRate"',
+             "the stair length ramp input is missing")
+        _has(index, 'id="stairRecoverMs"',
+             "the stair recovery time input is missing")
+        for new_id in (
+            "stairLiftLength",
+            "stairLiftTheta",
+            "stairRetractTheta",
+            "stairPoseLengthTol",
+            "stairPoseThetaTol",
+            "stairPoseConfirmMs",
+            "stairLiftHoldMs",
+            "stairLiftPhi0RampRate",
+            "stairLiftSupportForce",
+            "stairRetractSupportForce",
+        ):
+            with self.subTest(new_id=new_id):
+                _has(
+                    index,
+                    f'id="{new_id}"',
+                    "a two-stage stair tuning input is missing",
+                )
+        for obsolete_id in (
+            "stairSpeedThreshold",
+            "stairReadyLength",
+            "stairImpactConfirmMs",
+            "stairImpactTorqueThreshold",
+            "stairImpactThetaThreshold",
+            "stairPhi0Target",
+            "stairSupportForce",
+        ):
+            with self.subTest(obsolete_id=obsolete_id):
+                self.assertNotIn(
+                    obsolete_id,
+                    index,
+                    "an obsolete impact-detection control is still exposed",
+                )
+                self.assertNotIn(
+                    f'"{obsolete_id}"',
+                    main,
+                    "an obsolete impact-detection control is still mapped",
+                )
         _has(main, '"stair_enable"', "the page does not send stair_enable")
+        _has(main, '"stair_length_ramp_rate"',
+             "the page does not send the stair length ramp")
+        _has(main, '"stair_recover_ms"',
+             "the page does not send the stair recovery time")
+        for new_key in (
+            "stair_lift_length",
+            "stair_lift_theta",
+            "stair_retract_theta",
+            "stair_pose_length_tol",
+            "stair_pose_theta_tol",
+            "stair_pose_confirm_ms",
+            "stair_lift_hold_ms",
+            "stair_lift_phi0_ramp_rate",
+            "stair_lift_support_force",
+            "stair_retract_support_force",
+        ):
+            with self.subTest(new_key=new_key):
+                _has(
+                    main,
+                    f'"{new_key}"',
+                    "the page does not send a two-stage stair key",
+                )
         _has(server, '"stair_enable": ("VMC_STAIR_ENABLE_DEFAULT"',
              "the server does not import the stair default")
 

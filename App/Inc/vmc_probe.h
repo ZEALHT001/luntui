@@ -360,39 +360,42 @@ extern "C" {
 #define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
 
-/* Automatic stair climb (impact-triggered leg retraction).
+/* Manual stair climb (one-shot switch-triggered leg retraction).
  *
- * Operator procedure: enable stairs with SBUS channel 7 DOWN, select a long
- * leg-length setting with channel 9, and drive into a step whose top is below
- * the body.  The wheels jam against the step, the LQR keeps demanding wheel
- * torque, and the legs are pushed back.  When both per-leg impact tests agree,
- * the state machine retracts both legs to
- * stair_retract_length and drives the absolute leg angle phi0 to
- * stair_phi0_target, which rolls the body over the step.  It then holds that
- * pose and, on completion, stays on the short legs until the channel-9 knob is
- * moved.
+ * Operator procedure: stop the robot against the step, then move SBUS channel
+ * 7 from disabled to enabled.  A rising edge starts one action; holding the
+ * switch does not retrigger it, and the switch must be returned to disabled
+ * before another action can start.
  *
- * This is deliberately NOT a jump: the wheels stay in the balance loop, and
- * the only actuators that move are the two virtual legs.  Channel 7 must be
- * DOWN and the configured ready length still requires a long stance.
+ * The state machine follows Shanhai's two-stage pose with LIFT driving theta to
+ * 1.70 rad and holding it long enough to settle, then short legs and theta=60
+ * deg in RETRACT.
+ * SETTLE holds the climbing pose, and RECOVER returns to the normal standing
+ * pose over a bounded ramp.  Body-relative theta is converted to absolute
+ * phi0 every cycle.  Wheel output is disabled for the complete leg-only
+ * maneuver.  The short-leg lock remains until the channel-9 knob is moved.
  *
- * Impact test (both legs must agree):
- *     |left_wheel_torque_raw|  >= stair_impact_torque_threshold  AND
- *     |motion.left_theta|      >= stair_impact_theta_threshold
- *     ... and the same for the right leg.
- * `*_wheel_torque_raw` is the pre-clamp LQR wheel-torque command, which pins
- * when the wheel is blocked; motion.*_theta is the leg angle in the world
- * frame (body pitch removed).  Setting stair_impact_torque_threshold to 0
- * falls back to the older wheel-speed-drop test for A/B comparison.
- *
- * Every timing value is runtime tunable over RTT so the detector can be
- * characterised from the web page without a reflash. */
+ * This is deliberately NOT a jump.  Impact detection is no longer used; the
+ * operator positions the chassis and commands the action manually. */
 #define VMC_STAIR_ENABLE_DEFAULT                   1U
+#define VMC_STAIR_LIFT_LENGTH_DEFAULT              0.385f
+#define VMC_STAIR_LIFT_THETA_DEFAULT               1.7000000f
+#define VMC_STAIR_RETRACT_THETA_DEFAULT            1.0471976f
 #define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.170f
+#define VMC_STAIR_POSE_LENGTH_TOL_DEFAULT          0.060f
+#define VMC_STAIR_POSE_THETA_TOL_DEFAULT           0.300f
+#define VMC_STAIR_POSE_CONFIRM_MS_DEFAULT          100U
+#define VMC_STAIR_LIFT_SUPPORT_FORCE_DEFAULT       20.0f
+#define VMC_STAIR_RETRACT_SUPPORT_FORCE_DEFAULT    -14.0f
+/* Legacy serialized target retained for client compatibility. */
 #define VMC_STAIR_PHI0_TARGET_DEFAULT              2.500f
-#define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           4.0f
+#define VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT      2.5f
+#define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           2.5f
+#define VMC_STAIR_LIFT_HOLD_MS_DEFAULT             500U
 #define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
 #define VMC_STAIR_PHI0_KD_DEFAULT                  6.0f
+/* Legacy detector defaults.  These remain for RTT/recorder compatibility but
+ * do not participate in the manual trigger. */
 #define VMC_STAIR_SPEED_THRESHOLD_DEFAULT          1.0f
 #define VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT  0.2f
 #define VMC_STAIR_READY_LENGTH_DEFAULT             0.330f
@@ -404,9 +407,11 @@ extern "C" {
 #define VMC_STAIR_IMPACT_DIFF_THRESHOLD_DEFAULT    0.4f
 #define VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT  4.5f
 #define VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT   0.30f
-#define VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT       250U
-#define VMC_STAIR_HOLD_MS_DEFAULT                  300U
-#define VMC_STAIR_TIMEOUT_MS_DEFAULT               1500U
+#define VMC_STAIR_LENGTH_RAMP_RATE_DEFAULT         0.180f
+#define VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT       2000U
+#define VMC_STAIR_HOLD_MS_DEFAULT                  500U
+#define VMC_STAIR_RECOVER_MS_DEFAULT               500U
+#define VMC_STAIR_TIMEOUT_MS_DEFAULT               6000U
 #define VMC_STAIR_COOLDOWN_MS_DEFAULT              1200U
 #define VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT 50U
 #define VMC_STAIR_LENGTH_KP_DEFAULT                2000.0f
@@ -964,10 +969,12 @@ extern "C" {
 #define VMC_JUMP_ABORT_TIMEOUT     5U
 
 #define VMC_STAIR_STAGE_IDLE       0U
-#define VMC_STAIR_STAGE_RETRACT    1U
-#define VMC_STAIR_STAGE_HOLD       2U
+#define VMC_STAIR_STAGE_LIFT       1U
+#define VMC_STAIR_STAGE_RETRACT    2U
 #define VMC_STAIR_STAGE_FINISHED   3U
 #define VMC_STAIR_STAGE_ABORT      4U
+#define VMC_STAIR_STAGE_SETTLE     5U
+#define VMC_STAIR_STAGE_RECOVER    6U
 
 #define VMC_STAIR_ABORT_NONE       0U
 #define VMC_STAIR_ABORT_REMOTE     1U
@@ -976,6 +983,7 @@ extern "C" {
 #define VMC_STAIR_ABORT_JUMP       4U
 #define VMC_STAIR_ABORT_TIMEOUT    5U
 #define VMC_STAIR_ABORT_AIRBORNE   6U
+#define VMC_STAIR_ABORT_ATTITUDE   7U
 
 #define VMC_DESCENT_STAGE_IDLE     0U
 #define VMC_DESCENT_STAGE_EXTEND   1U
@@ -1353,8 +1361,8 @@ typedef struct {
   float jump_auto_dist_min_cm;  /* cm    */
   float jump_auto_dist_max_cm;  /* cm    */
   uint32_t jump_auto_confirm_ms;
-  /* Automatic stair climb.  See VMC_STAIR_ENABLE_DEFAULT for the operator
-   * procedure, the impact test and the abort conditions. */
+  /* Manual stair climb.  See VMC_STAIR_ENABLE_DEFAULT for the rising-edge
+   * trigger and the abort conditions. */
   uint8_t stair_enable;
   uint8_t stair_stage;
   uint8_t stair_abort_reason;
@@ -1364,6 +1372,7 @@ typedef struct {
    * climbing. */
   uint8_t stair_length_override_active;
   uint16_t stair_length_override_remote_position;
+  /* Legacy impact-detector telemetry.  Kept at zero for wire compatibility. */
   uint8_t stair_fast_detected;
   uint8_t stair_impact_detected;
   uint8_t stair_ready_detected;
@@ -1385,13 +1394,24 @@ typedef struct {
   uint32_t stair_preimpact_confirm_ms;
   uint32_t stair_impact_confirm_ms;
   uint32_t stair_retract_timeout_ms;
+  uint32_t stair_pose_confirm_ms;
+  uint32_t stair_pose_confirm_elapsed_ms;
+  uint32_t stair_lift_hold_ms;
+  uint32_t stair_lift_hold_elapsed_ms;
   uint32_t stair_hold_ms;
+  uint32_t stair_recover_ms;
   uint32_t stair_timeout_ms;
   uint32_t stair_cooldown_ms;
+  float stair_lift_length;
   float stair_retract_length;
+  float stair_lift_theta;
+  float stair_retract_theta;
+  float stair_pose_length_tol;
+  float stair_pose_theta_tol;
   float stair_theta_ramped;
   float stair_phi0_target;
   float stair_phi0_ramped;
+  float stair_lift_phi0_ramp_rate;
   float stair_phi0_ramp_rate;
   float stair_phi0_kp;
   float stair_phi0_kd;
@@ -1407,7 +1427,10 @@ typedef struct {
   float stair_accel;
   float stair_kp_length;
   float stair_kd_length;
+  float stair_length_ramp_rate;
   float stair_max_force;
+  float stair_lift_support_force;
+  float stair_retract_support_force;
   float stair_support_force;
   /* Automatic descent assist.  entry_length is captured when the airborne
    * gate starts the action; length_command is the rate-limited target shared

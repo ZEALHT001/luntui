@@ -23,7 +23,7 @@ extern "C" {
 
 /* New FS-i6S SBUS layout.  Indices match sbus_remote_data.normalized[].
  * 0/1 are left-stick chassis X/Y, 2/3 are right-stick vertical/horizontal,
- * 4 is master start-stop, 5 is spin, 6 is jump mode, 7 is stair enable,
+ * 4 is master start-stop, 5 is spin, 6 is jump mode, 7 is stair trigger,
  * 8 is speed scale and 9 is leg length.  With local SBUS, channel 3 is Roll. */
 #define RC_CHASSIS_X 0U
 #define RC_CHASSIS_Y 1U

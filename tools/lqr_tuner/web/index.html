@@ -408,7 +408,7 @@
           </label>
         </div>
 
-        <h3>自动上台阶（仅 S2 最高档）</h3>
+        <h3>手动上台阶（S2 关闭到开启触发一次）</h3>
         <div class="params">
           <label>
             上台阶使能 / stair_enable
@@ -416,15 +416,43 @@
           </label>
           <label>
             收腿目标 / stair_retract_length (m)
-            <input id="stairRetractLength" type="number" step="0.005" min="0.16" max="0.385" value="0.16" />
+            <input id="stairRetractLength" type="number" step="0.005" min="0.16" max="0.385" value="0.17" />
           </label>
           <label>
-            上台阶腿摆角 / stair_phi0_target (rad)
-            <input id="stairPhi0Target" type="number" step="0.01" min="0" max="4" value="2.5" />
+            抬腿长度 / stair_lift_length (m)
+            <input id="stairLiftLength" type="number" step="0.005" min="0.16" max="0.385" value="0.385" />
           </label>
           <label>
-            腿摆角斜坡 / stair_phi0_ramp_rate (rad/s)
-            <input id="stairPhi0RampRate" type="number" step="0.1" min="0" max="20" value="4" />
+            抬腿 theta / stair_lift_theta (rad)
+            <input id="stairLiftTheta" type="number" step="0.01" min="0" max="3.14" value="1.70" />
+          </label>
+          <label>
+            越阶 theta / stair_retract_theta (rad)
+            <input id="stairRetractTheta" type="number" step="0.01" min="0" max="3.14" value="1.0472" />
+          </label>
+          <label>
+            姿态腿长容差 / stair_pose_length_tol (m)
+            <input id="stairPoseLengthTol" type="number" step="0.005" min="0.005" max="0.15" value="0.06" />
+          </label>
+          <label>
+            姿态角度容差 / stair_pose_theta_tol (rad)
+            <input id="stairPoseThetaTol" type="number" step="0.01" min="0.05" max="0.60" value="0.30" />
+          </label>
+          <label>
+            姿态确认时间 / stair_pose_confirm_ms
+            <input id="stairPoseConfirmMs" type="number" step="10" min="1" max="1000" value="100" />
+          </label>
+          <label>
+            抬腿达到后保持 / stair_lift_hold_ms
+            <input id="stairLiftHoldMs" type="number" step="10" min="0" max="3000" value="500" />
+          </label>
+          <label>
+            抬腿 phi0 速度 / stair_lift_phi0_ramp_rate (rad/s)
+            <input id="stairLiftPhi0RampRate" type="number" step="0.1" min="0" max="20" value="2.5" />
+          </label>
+          <label>
+            越阶/回收 phi0 速度 / stair_phi0_ramp_rate (rad/s)
+            <input id="stairPhi0RampRate" type="number" step="0.1" min="0" max="20" value="2.5" />
           </label>
           <label>
             上台阶 phi0 KP / stair_phi0_kp
@@ -435,60 +463,24 @@
             <input id="stairPhi0Kd" type="number" step="0.1" min="0" max="50" value="6" />
           </label>
           <label>
-            高速阈值 / stair_speed_threshold (m/s)
-            <input id="stairSpeedThreshold" type="number" step="0.05" min="0.05" max="5" value="1.0" />
-          </label>
-          <label>
-            前进指令阈值 / stair_command_speed_threshold (m/s)
-            <input id="stairCommandSpeedThreshold" type="number" step="0.05" min="0" max="3" value="0.2" />
-          </label>
-          <label>
-            触发前腿长 / stair_ready_length (m)
-            <input id="stairReadyLength" type="number" step="0.005" min="0.16" max="0.385" value="0.33" />
-          </label>
-          <label>
-            触发前腿长确认 / stair_ready_confirm_ms
-            <input id="stairReadyConfirmMs" type="number" step="10" min="1" max="5000" value="200" />
-          </label>
-          <label>
-            高速确认 / stair_speed_confirm_ms
-            <input id="stairSpeedConfirmMs" type="number" step="5" min="1" max="1000" value="60" />
-          </label>
-          <label>
-            撞击前置确认 / stair_preimpact_confirm_ms
-            <input id="stairPreimpactConfirmMs" type="number" step="5" min="1" max="1000" value="30" />
-          </label>
-          <label>
-            撞击确认 / stair_impact_confirm_ms
-            <input id="stairImpactConfirmMs" type="number" step="1" min="1" max="200" value="8" />
-          </label>
-          <label>
-            撞击前轮速变化上限（0=关闭）/ stair_preimpact_diff_max (m/s2)
-            <input id="stairPreimpactDiffMax" type="number" step="0.05" min="0" max="5" value="0" />
-          </label>
-          <label>
-            撞击轮速下降阈值 / stair_impact_diff_threshold (m/s)
-            <input id="stairImpactDiffThreshold" type="number" step="0.05" min="0.05" max="10" value="0.4" />
-          </label>
-          <label>
-            撞击轮力矩阈值 / stair_impact_torque_threshold (N.m, 0=轮速判据)
-            <input id="stairImpactTorqueThreshold" type="number" step="0.1" min="0" max="20" value="4.5" />
-          </label>
-          <label>
-            撞击腿摆角阈值 / stair_impact_theta_threshold (rad)
-            <input id="stairImpactThetaThreshold" type="number" step="0.01" min="0" max="3.15" value="0.30" />
-          </label>
-          <label>
             收腿超时 / stair_retract_timeout_ms
-            <input id="stairRetractTimeoutMs" type="number" step="10" min="50" max="2000" value="250" />
+            <input id="stairRetractTimeoutMs" type="number" step="10" min="50" max="2000" value="2000" />
           </label>
           <label>
-            收腿后保持 / stair_hold_ms
-            <input id="stairHoldMs" type="number" step="10" min="1" max="3000" value="300" />
+            收腿目标速度 / stair_length_ramp_rate (m/s)
+            <input id="stairLengthRampRate" type="number" step="0.01" min="0" max="1" value="0.18" />
+          </label>
+          <label>
+            上台阶姿态保持 / stair_hold_ms
+            <input id="stairHoldMs" type="number" step="10" min="1" max="3000" value="500" />
+          </label>
+          <label>
+            姿态回收时间 / stair_recover_ms
+            <input id="stairRecoverMs" type="number" step="10" min="1" max="3000" value="500" />
           </label>
           <label>
             动作总超时 / stair_timeout_ms
-            <input id="stairTimeoutMs" type="number" step="50" min="100" max="5000" value="1500" />
+            <input id="stairTimeoutMs" type="number" step="50" min="100" max="10000" value="6000" />
           </label>
           <label>
             再触发冷却 / stair_cooldown_ms
@@ -507,8 +499,12 @@
             <input id="stairMaxForce" type="number" step="1" min="0" max="500" value="500" />
           </label>
           <label>
-            上台阶支撑力 / stair_support_force
-            <input id="stairSupportForce" type="number" step="1" min="-250" max="250" value="100" />
+            抬腿支撑力 / stair_lift_support_force
+            <input id="stairLiftSupportForce" type="number" step="1" min="-250" max="250" value="20" />
+          </label>
+          <label>
+            越阶支撑力 / stair_retract_support_force
+            <input id="stairRetractSupportForce" type="number" step="1" min="-250" max="250" value="-14" />
           </label>
         </div>
 
