@@ -18,7 +18,7 @@ extern "C" {
 /* Keep these endpoints in sync with VMC_LEG_KNOB_MIN_DEFAULT and
  * VMC_LEG_TARGET_LONG.  Startup accepts any knob position that maps below
  * 0.220 m, not only the -1 endpoint. */
-#define SBUS_REMOTE_LEG_LENGTH_MIN_M 0.170f
+#define SBUS_REMOTE_LEG_LENGTH_MIN_M 0.180f
 #define SBUS_REMOTE_LEG_LENGTH_MAX_M 0.360f
 #define SBUS_REMOTE_STARTUP_LEG_LENGTH_MAX_M 0.220f
 

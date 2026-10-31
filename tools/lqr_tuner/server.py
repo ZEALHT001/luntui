@@ -135,7 +135,7 @@ _BALANCE_PARAM_FALLBACK = {
     "jump_auto_confirm_ms": 20.0,
     "stair_enable": 1.0,
     "stair_lift_length": 0.385,
-    "stair_retract_length": 0.17,
+    "stair_retract_length": 0.18,
     "stair_lift_theta": 1.70,
     "stair_retract_theta": 1.0472,
     "stair_pose_length_tol": 0.06,
@@ -159,7 +159,6 @@ _BALANCE_PARAM_FALLBACK = {
     "stair_impact_theta_threshold": 0.30,
     "stair_length_ramp_rate": 0.18,
     "stair_retract_timeout_ms": 2000.0,
-    "stair_lift_hold_ms": 500.0,
     "stair_hold_ms": 500.0,
     "stair_recover_ms": 500.0,
     "stair_timeout_ms": 6000.0,
@@ -188,7 +187,7 @@ _BALANCE_PARAM_FALLBACK = {
     "roll_comp_enable": 1.0,
     "roll_target": 0.0,
     "roll_comp_gain": 0.10,
-    "roll_comp_limit": 0.1075,
+    "roll_comp_limit": 0.1025,
     "roll_comp_ramp_rate": 0.054,
     # Ground-following leg extension.  Off by default: the unloaded leg's
     # target chases outward so the wheel is pushed back to the ground instead
@@ -361,7 +360,6 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
         "float",
     ),
     "stair_retract_timeout_ms": ("VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT", "uint_value"),
-    "stair_lift_hold_ms": ("VMC_STAIR_LIFT_HOLD_MS_DEFAULT", "uint_value"),
     "stair_hold_ms": ("VMC_STAIR_HOLD_MS_DEFAULT", "uint_value"),
     "stair_recover_ms": ("VMC_STAIR_RECOVER_MS_DEFAULT", "uint_value"),
     "stair_timeout_ms": ("VMC_STAIR_TIMEOUT_MS_DEFAULT", "uint_value"),

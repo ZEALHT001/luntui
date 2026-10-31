@@ -85,7 +85,6 @@ const balanceParamIds = [
   ["stairPoseLengthTol", "stair_pose_length_tol"],
   ["stairPoseThetaTol", "stair_pose_theta_tol"],
   ["stairPoseConfirmMs", "stair_pose_confirm_ms"],
-  ["stairLiftHoldMs", "stair_lift_hold_ms"],
   ["stairLiftPhi0RampRate", "stair_lift_phi0_ramp_rate"],
   ["stairPhi0RampRate", "stair_phi0_ramp_rate"],
   ["stairPhi0Kp", "stair_phi0_kp"],

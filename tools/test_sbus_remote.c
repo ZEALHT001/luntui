@@ -210,7 +210,7 @@ static void test_leg_knob_below_22cm_is_accepted(void)
 
   sbus_remote_init();
   setup_safe_channels(channels);
-  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 650U;
+  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 550U;
   test_tick_ms = 0U;
   for (uint8_t i = 0U; i < 5U; i++) {
     feed_safe_frame(frame, channels, 0U);
@@ -231,7 +231,7 @@ static void test_leg_knob_at_or_above_22cm_is_rejected(void)
 
   sbus_remote_init();
   setup_safe_channels(channels);
-  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 660U;
+  channels[SBUS_REMOTE_LEG_LENGTH_CHANNEL] = 590U;
   test_tick_ms = 0U;
   feed_safe_frame(frame, channels, 0U);
   check(sbus_remote_data.startup_rejected == 1U,

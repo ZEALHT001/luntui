@@ -100,7 +100,7 @@ class RollCompLimitTest(unittest.TestCase):
         leg_max = _macro("VMC_LEG_LENGTH_MAX")
         expected = {
             "VMC_LEG_TARGET_SHORT": 0.000,
-            "VMC_LEG_TARGET_MID": 0.090,
+            "VMC_LEG_TARGET_MID": 0.080,
             "VMC_LEG_TARGET_LONG": 0.025,
         }
         for name, headroom in expected.items():
@@ -111,13 +111,12 @@ class RollCompLimitTest(unittest.TestCase):
                 )
 
     def test_min_keeps_a_margin_above_the_measured_stop(self) -> None:
-        """The software floor is 10 mm above the measured mechanical stop.
+        """The software floor avoids the low-length oscillation band.
 
-        It was 0.120, which let every length target be driven 40 mm past the
-        real end stop: a capture showed a target pinned at 0.120 while the leg
-        sat at 0.161 +-1 mm for 40 s.  The stop measures 0.160 m.
+        The mechanical stop measures 0.160 m.  The operating floor is 0.180 m
+        because 0.170 m produced low-length oscillation on the vehicle.
         """
-        self.assertAlmostEqual(_macro("VMC_LEG_LENGTH_MIN"), 0.170)
+        self.assertAlmostEqual(_macro("VMC_LEG_LENGTH_MIN"), 0.180)
 
     def test_no_preset_sits_below_the_mechanical_stop(self) -> None:
         """A preset under MIN would be clipped the instant it is applied."""

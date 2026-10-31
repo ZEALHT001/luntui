@@ -61,13 +61,14 @@ extern "C" {
  * far weaker than it is - the target was pinned at MIN while the leg was
  * pinned against metal.
  *
- * The software minimum is now 0.170, leaving 10 mm of safety margin above the
+ * The software minimum is now 0.180, avoiding the low-length oscillation
+ * region and leaving 20 mm of safety margin above the
  * measured 0.160 hard stop.  MAX stays 0.385.
  *
  * CONSEQUENCE - the headroom each preset leaves is much smaller than it
  * looked, especially downward.  See the table at
  * VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT below, which is the same arithmetic. */
-#define VMC_LEG_LENGTH_MIN         0.170f
+#define VMC_LEG_LENGTH_MIN         0.180f
 #define VMC_LEG_LENGTH_MAX         0.385f
 #define VMC_LEG_LENGTH_KP_DEFAULT  2000.0f
 #define VMC_LEG_LENGTH_KD_DEFAULT  100.0f
@@ -216,17 +217,17 @@ extern "C" {
 /* SBUS channel 9 is a continuous leg-length knob.  Its -1 endpoint maps to
  * VMC_LEG_KNOB_MIN_DEFAULT, midpoint is the linear midpoint, and +1 maps to
  * LONG.  Units are metres;
- * VMC_LEG_LENGTH_MIN/MAX (0.170/0.385) still clamp the result.
+ * VMC_LEG_LENGTH_MIN/MAX (0.180/0.385) still clamp the result.
  *
  * SHORT is also the length the self-righting sequence stands up on
  * (VMC_GETUP_STAND_LENGTH), so changing it moves the recovery pose too.
  *
  * SHORT sits at the software minimum; LONG leaves only 25 mm before
  * the maximum stroke. */
-#define VMC_LEG_TARGET_SHORT      0.170f
+#define VMC_LEG_TARGET_SHORT      0.180f
 #define VMC_LEG_TARGET_MID        0.260f
 #define VMC_LEG_TARGET_LONG       0.360f
-#define VMC_LEG_KNOB_MIN_DEFAULT  0.170f
+#define VMC_LEG_KNOB_MIN_DEFAULT  0.180f
 #define VMC_LEG_GEAR_LOW          0U
 #define VMC_LEG_GEAR_MID          1U
 #define VMC_LEG_GEAR_HIGH         2U
@@ -251,7 +252,7 @@ extern "C" {
  * the leg moved 1 mm against a target 20 mm away, i.e. the phase is a 180 ms
  * pause rather than a crouch. Changing this number therefore has no effect
  * until COMPRESS is given the jump gains with no extension feedforward. */
-#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.17f
+#define VMC_JUMP_COMPRESS_LENGTH_DEFAULT 0.18f
 #define VMC_JUMP_EXTEND_LENGTH_DEFAULT   0.38f
 #define VMC_JUMP_RETRACT_LENGTH_DEFAULT  0.18f
 #define VMC_JUMP_LAND_LENGTH_DEFAULT     0.23f
@@ -367,9 +368,9 @@ extern "C" {
  * switch does not retrigger it, and the switch must be returned to disabled
  * before another action can start.
  *
- * The state machine follows Shanhai's two-stage pose with LIFT driving theta to
- * 1.70 rad and holding it long enough to settle, then short legs and theta=60
- * deg in RETRACT.
+ * The state machine follows Shanhai's two-stage pose with LIFT driving to the
+ * 0.385 m software stroke limit and theta=1.70 rad, then short legs and
+ * theta=60 deg in RETRACT.
  * SETTLE holds the climbing pose, and RECOVER returns to the normal standing
  * pose over a bounded ramp.  Body-relative theta is converted to absolute
  * phi0 every cycle.  Wheel output is disabled for the complete leg-only
@@ -381,7 +382,8 @@ extern "C" {
 #define VMC_STAIR_LIFT_LENGTH_DEFAULT              0.385f
 #define VMC_STAIR_LIFT_THETA_DEFAULT               1.7000000f
 #define VMC_STAIR_RETRACT_THETA_DEFAULT            1.0471976f
-#define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.170f
+#define VMC_STAIR_RETRACT_LENGTH_MIN               0.180f
+#define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.180f
 #define VMC_STAIR_POSE_LENGTH_TOL_DEFAULT          0.060f
 #define VMC_STAIR_POSE_THETA_TOL_DEFAULT           0.300f
 #define VMC_STAIR_POSE_CONFIRM_MS_DEFAULT          100U
@@ -391,7 +393,6 @@ extern "C" {
 #define VMC_STAIR_PHI0_TARGET_DEFAULT              2.500f
 #define VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT      2.5f
 #define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           2.5f
-#define VMC_STAIR_LIFT_HOLD_MS_DEFAULT             500U
 #define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
 #define VMC_STAIR_PHI0_KD_DEFAULT                  6.0f
 /* Legacy detector defaults.  These remain for RTT/recorder compatibility but
@@ -413,7 +414,9 @@ extern "C" {
 #define VMC_STAIR_RECOVER_MS_DEFAULT               500U
 #define VMC_STAIR_TIMEOUT_MS_DEFAULT               6000U
 #define VMC_STAIR_COOLDOWN_MS_DEFAULT              1200U
-#define VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT 50U
+#define VMC_STAIR_RELEASE_RAMP_MS_DEFAULT          500U
+#define VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT 250U
+#define VMC_STAIR_LENGTH_UNLOCK_DELTA_DEFAULT      80U
 #define VMC_STAIR_LENGTH_KP_DEFAULT                2000.0f
 #define VMC_STAIR_LENGTH_KD_DEFAULT                100.0f
 #define VMC_STAIR_FORCE_MAX_DEFAULT                500.0f
@@ -473,29 +476,29 @@ extern "C" {
  * so the largest offset that can NEVER be clipped is half the travel:
  *
  *     (VMC_LEG_LENGTH_MAX - VMC_LEG_LENGTH_MIN) / 2
- *         = (0.385 - 0.170) / 2 = 0.1075 m
+ *         = (0.385 - 0.180) / 2 = 0.1025 m
  *
  * That is only reachable when the preset sits exactly at the travel centre
- * (0.2775 m).  Every real preset is off-centre, so the binding limit is the
+ * (0.2825 m).  Every real preset is off-centre, so the binding limit is the
  * SMALLER of the two headrooms, which is not always the retract side:
  *
  *     preset   retract   extend   symmetric ceiling
- *     SHORT     0 mm     215 mm    0 mm
- *     MID      90 mm     125 mm   90 mm
- *     LONG    190 mm      25 mm   25 mm
+ *     SHORT     0 mm     205 mm    0 mm
+ *     MID      80 mm     125 mm   80 mm
+ *     LONG    180 mm      25 mm   25 mm
  *
  * SHORT and LONG are both limit-bound, just on opposite sides: SHORT cannot
  * retract and LONG cannot extend.  An offset larger than the ceiling is not
  * rejected, it is silently clipped per leg, and while it is being clipped the
  * pair stops levelling and starts raising the machine instead - so this is the
  * physical limit, not a tuning preference.  With the gain at 0.4 the clamp
- * engages past 0.1075 / 0.4 = 0.269 rad (15.4 deg) of roll, where it used to
+ * engages past 0.1025 / 0.4 = 0.256 rad (14.7 deg) of roll, where it used to
  * saturate at 0.08 / 0.4 = 0.200 rad (11.5 deg).
  *
  * Plain literals on purpose: the LQR tuner and its tests read these tokens as
  * numbers and cannot evaluate macro arithmetic. */
-#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.1075f
-#define VMC_ROLL_LENGTH_COMP_LIMIT_MAX     0.1075f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT 0.1025f
+#define VMC_ROLL_LENGTH_COMP_LIMIT_MAX     0.1025f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
 #define VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT 0.054f
 /* Fallback control period in seconds, used before the first measurement and
@@ -1396,8 +1399,6 @@ typedef struct {
   uint32_t stair_retract_timeout_ms;
   uint32_t stair_pose_confirm_ms;
   uint32_t stair_pose_confirm_elapsed_ms;
-  uint32_t stair_lift_hold_ms;
-  uint32_t stair_lift_hold_elapsed_ms;
   uint32_t stair_hold_ms;
   uint32_t stair_recover_ms;
   uint32_t stair_timeout_ms;

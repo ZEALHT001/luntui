@@ -68,11 +68,14 @@ class DefaultsTest(unittest.TestCase):
         leg_max = _macro("VMC_LEG_LENGTH_MAX")
         lift = _macro("VMC_STAIR_LIFT_LENGTH_DEFAULT")
         retract = _macro("VMC_STAIR_RETRACT_LENGTH_DEFAULT")
+        retract_min = _macro("VMC_STAIR_RETRACT_LENGTH_MIN")
         self.assertGreaterEqual(lift, leg_min)
         self.assertLessEqual(lift, leg_max)
         self.assertGreater(lift, retract)
         self.assertGreaterEqual(retract, leg_min)
         self.assertLessEqual(retract, leg_max)
+        self.assertAlmostEqual(retract_min, 0.18)
+        self.assertGreaterEqual(retract, retract_min)
 
     def test_two_theta_poses_match_shanhai(self) -> None:
         self.assertAlmostEqual(_macro("VMC_STAIR_LIFT_THETA_DEFAULT"), 1.70)
@@ -104,9 +107,9 @@ class DefaultsTest(unittest.TestCase):
         for name in (
             "VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT",
             "VMC_STAIR_POSE_CONFIRM_MS_DEFAULT",
-            "VMC_STAIR_LIFT_HOLD_MS_DEFAULT",
             "VMC_STAIR_HOLD_MS_DEFAULT",
             "VMC_STAIR_RECOVER_MS_DEFAULT",
+            "VMC_STAIR_RELEASE_RAMP_MS_DEFAULT",
             "VMC_STAIR_TIMEOUT_MS_DEFAULT",
             "VMC_STAIR_COOLDOWN_MS_DEFAULT",
         ):
@@ -173,8 +176,11 @@ class StateMachineTest(unittest.TestCase):
         _has(ready, "vmc_rad_format", "pose checks are not wrap-safe")
         _has(body, "stair_pose_confirm_elapsed_ms >= pose_confirm_ms",
              "the pose is not debounced")
-        _has(body, "stair_lift_hold_elapsed_ms >= lift_hold_ms",
-             "LIFT does not hold the confirmed pose")
+        self.assertNotIn(
+            "stair_lift_hold",
+            body,
+            "LIFT still has an independent hold timer",
+        )
         _has(body, "VMC_STAIR_STAGE_SETTLE",
              "RETRACT does not hand off to settle")
 
@@ -196,6 +202,25 @@ class StateMachineTest(unittest.TestCase):
         _has(remote, "vmc_stair_is_active()", "an active action can release the lock")
         _has(remote, "stair_length_override_remote_position",
              "the override does not remember the triggering knob position")
+        _has(remote, "VMC_STAIR_LENGTH_UNLOCK_DELTA_DEFAULT",
+             "small knob noise can release the short-leg lock")
+        _has(remote, "VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT",
+             "the stair lock release is not debounced")
+
+    def test_finish_blends_wheels_and_lqr_back_in(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        release = _body(source, "vmc_stair_release_scale")
+        _has(release, "VMC_STAIR_STAGE_FINISHED",
+             "the release ramp is not tied to the finished stage")
+        _has(release, "VMC_STAIR_RELEASE_RAMP_MS_DEFAULT",
+             "the post-stair release is not rate-limited")
+
+        leg_control = _body(source, "update_leg_length_control")
+        _has(leg_control, "vmc_stair_release_scale()",
+             "LQR Tp returns without blending")
+        wheel_control = _body(source, "vmc_wheel_control_update")
+        _has(wheel_control, "vmc_stair_release_scale()",
+             "wheel current returns without blending")
 
     def test_stair_pose_does_not_auto_start_getup(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_getup_state")
@@ -226,6 +251,9 @@ class ControlIntegrationTest(unittest.TestCase):
              "the stair target does not use its dedicated ramp")
         _has(body, "ramped_target_length =",
              "the stair target bypasses the common length ramp")
+        target = _body(SOURCE.read_text(encoding="utf-8"), "vmc_stair_target_length")
+        _has(target, "VMC_STAIR_RETRACT_LENGTH_MIN",
+             "the short-leg lock can be configured below 0.18 m")
 
     def test_roll_compensation_follow_and_sync_are_disabled_during_stair(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
@@ -305,7 +333,6 @@ class RuntimeTuningTest(unittest.TestCase):
             "stair_pose_length_tol",
             "stair_pose_theta_tol",
             "stair_pose_confirm_ms",
-            "stair_lift_hold_ms",
             "stair_lift_phi0_ramp_rate",
             "stair_ready_length",
             "stair_ready_confirm_ms",
@@ -347,7 +374,6 @@ class RuntimeTuningTest(unittest.TestCase):
             "stairPoseLengthTol",
             "stairPoseThetaTol",
             "stairPoseConfirmMs",
-            "stairLiftHoldMs",
             "stairLiftPhi0RampRate",
             "stairLiftSupportForce",
             "stairRetractSupportForce",
@@ -366,6 +392,7 @@ class RuntimeTuningTest(unittest.TestCase):
             "stairImpactThetaThreshold",
             "stairPhi0Target",
             "stairSupportForce",
+            "stairLiftHoldMs",
         ):
             with self.subTest(obsolete_id=obsolete_id):
                 self.assertNotIn(
@@ -390,7 +417,6 @@ class RuntimeTuningTest(unittest.TestCase):
             "stair_pose_length_tol",
             "stair_pose_theta_tol",
             "stair_pose_confirm_ms",
-            "stair_lift_hold_ms",
             "stair_lift_phi0_ramp_rate",
             "stair_lift_support_force",
             "stair_retract_support_force",

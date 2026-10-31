@@ -80,6 +80,7 @@ static double vmc_jump_stage_target_length(void);
 static void vmc_jump_update(void);
 static uint8_t vmc_stair_is_active(void);
 static uint8_t vmc_stair_overrides_target(void);
+static double vmc_stair_release_scale(void);
 static double vmc_stair_target_length(void);
 static void vmc_stair_update(void);
 static uint8_t vmc_descent_is_active(void);
@@ -1056,7 +1057,8 @@ static void vmc_update_remote_target_length(void)
     /* Never release the stair length lock while the automatic action is
      * running.  A transient switch value or a remote-source handover during
      * RETRACT/HOLD must not restore the long-leg target. */
-    if (vmc_stair_is_active() != 0U || knob_delta <= 20U) {
+    if (vmc_stair_is_active() != 0U ||
+        knob_delta <= VMC_STAIR_LENGTH_UNLOCK_DELTA_DEFAULT) {
       vmc_stair_length_pending_remote_position = 0U;
       vmc_stair_length_pending_since_ms = 0U;
       vmc_control.target_length = (float)vmc_stair_target_length();
@@ -1652,6 +1654,19 @@ static uint8_t vmc_stair_blocks_wheel_output(void)
   return vmc_stair_is_active();
 }
 
+static double vmc_stair_release_scale(void)
+{
+  if (vmc_control.stair_stage != VMC_STAIR_STAGE_FINISHED ||
+      vmc_control.stair_last_finish_ms == 0U) {
+    return 1.0;
+  }
+  return clamp_double(
+      (double)(HAL_GetTick() - vmc_control.stair_last_finish_ms) /
+          (double)VMC_STAIR_RELEASE_RAMP_MS_DEFAULT,
+      0.0,
+      1.0);
+}
+
 static double vmc_stair_target_length(void)
 {
   const double target =
@@ -1659,8 +1674,13 @@ static double vmc_stair_target_length(void)
           ? (double)vmc_control.stair_lift_length
           : (double)vmc_control.stair_retract_length;
 
+  const double target_min =
+      (vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
+          ? (double)VMC_LEG_LENGTH_MIN
+          : (double)VMC_STAIR_RETRACT_LENGTH_MIN;
+
   return clamp_double(target,
-                      VMC_LEG_LENGTH_MIN,
+                      target_min,
                       VMC_LEG_LENGTH_MAX);
 }
 
@@ -1735,7 +1755,6 @@ static void vmc_stair_enter_stage(uint8_t stage, uint32_t now)
   vmc_control.stair_stage_start_ms = now;
   vmc_control.stair_stage_ms = 0U;
   vmc_control.stair_pose_confirm_elapsed_ms = 0U;
-  vmc_control.stair_lift_hold_elapsed_ms = 0U;
   if (stage == VMC_STAIR_STAGE_LIFT) {
     vmc_control.stair_start_ms = now;
     vmc_control.stair_theta_ramped = vmc_balance.pitch_offset;
@@ -1851,8 +1870,6 @@ static void vmc_stair_update(void)
         clamp_u32(vmc_control.stair_recover_ms, 1U, 3000U);
     const uint32_t pose_confirm_ms =
         clamp_u32(vmc_control.stair_pose_confirm_ms, 1U, 1000U);
-    const uint32_t lift_hold_ms =
-        clamp_u32(vmc_control.stair_lift_hold_ms, 0U, 3000U);
     const uint32_t dt_ms =
         (uint32_t)(vmc_loop_dt() * 1000.0 + 0.5);
 
@@ -1880,21 +1897,10 @@ static void vmc_stair_update(void)
         if (vmc_control.stair_pose_confirm_elapsed_ms < pose_confirm_ms) {
           vmc_control.stair_pose_confirm_elapsed_ms += dt_ms;
         }
-        if (lifting != 0U &&
-            vmc_control.stair_pose_confirm_elapsed_ms >= pose_confirm_ms) {
-          if (vmc_control.stair_lift_hold_elapsed_ms < lift_hold_ms) {
-            vmc_control.stair_lift_hold_elapsed_ms += dt_ms;
-          }
-        }
       } else {
         vmc_control.stair_pose_confirm_elapsed_ms = 0U;
-        vmc_control.stair_lift_hold_elapsed_ms = 0U;
       }
-      if ((lifting != 0U &&
-           vmc_control.stair_pose_confirm_elapsed_ms >= pose_confirm_ms &&
-           vmc_control.stair_lift_hold_elapsed_ms >= lift_hold_ms) ||
-          (lifting == 0U &&
-           vmc_control.stair_pose_confirm_elapsed_ms >= pose_confirm_ms)) {
+      if (vmc_control.stair_pose_confirm_elapsed_ms >= pose_confirm_ms) {
         vmc_stair_enter_stage(
             lifting != 0U ? VMC_STAIR_STAGE_RETRACT
                           : VMC_STAIR_STAGE_SETTLE,
@@ -5113,8 +5119,6 @@ void vmc_control_init(void)
       VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT;
   vmc_control.stair_pose_confirm_ms = VMC_STAIR_POSE_CONFIRM_MS_DEFAULT;
   vmc_control.stair_pose_confirm_elapsed_ms = 0U;
-  vmc_control.stair_lift_hold_ms = VMC_STAIR_LIFT_HOLD_MS_DEFAULT;
-  vmc_control.stair_lift_hold_elapsed_ms = 0U;
   vmc_control.stair_hold_ms = VMC_STAIR_HOLD_MS_DEFAULT;
   vmc_control.stair_recover_ms = VMC_STAIR_RECOVER_MS_DEFAULT;
   vmc_control.stair_timeout_ms = VMC_STAIR_TIMEOUT_MS_DEFAULT;
@@ -5368,7 +5372,8 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
       clamp_double(phi0_pid_output + phi0_torque_feedforward,
                    -max_phi0_torque,
                    max_phi0_torque);
-  const double lqr_release_scale = vmc_getup_ready_release_scale();
+  const double lqr_release_scale =
+      vmc_getup_ready_release_scale() * vmc_stair_release_scale();
   const uint8_t use_lqr_tp =
       (vmc_balance.tp_output_enable != 0U &&
        vmc_getup_is_active() == 0U &&
@@ -6260,7 +6265,8 @@ void vmc_wheel_control_update(void)
   int16_t right_current = 0;
   int16_t left_send_current = 0;
   int16_t right_send_current = 0;
-  const double release_scale = vmc_getup_ready_release_scale();
+  const double release_scale =
+      vmc_getup_ready_release_scale() * vmc_stair_release_scale();
 
   if (max_current < 0) {
     max_current = (int16_t)-max_current;

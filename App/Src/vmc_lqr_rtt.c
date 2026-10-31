@@ -686,7 +686,8 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_retract_length", &value) != 0U) {
     vmc_control.stair_retract_length =
-        vmc_lqr_rtt_clamp_float(value, VMC_LEG_LENGTH_MIN, VMC_LEG_LENGTH_MAX);
+        vmc_lqr_rtt_clamp_float(value, VMC_STAIR_RETRACT_LENGTH_MIN,
+                                VMC_LEG_LENGTH_MAX);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_length", &value) != 0U) {
@@ -810,11 +811,6 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "stair_hold_ms", &value) != 0U) {
     vmc_control.stair_hold_ms =
         (uint32_t)vmc_lqr_rtt_clamp_float(value, 1.0f, 3000.0f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "stair_lift_hold_ms", &value) != 0U) {
-    vmc_control.stair_lift_hold_ms =
-        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 3000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "stair_recover_ms", &value) != 0U) {

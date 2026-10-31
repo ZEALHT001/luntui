@@ -13,7 +13,7 @@ they are indistinguishable from the measured leg lengths alone:
   1. NOT RESPONDING   the offset stays near zero, so nothing is commanded.
   2. CANCELLED        the offset is non-zero but both targets moved together,
                       so the differential never reached the legs.
-  3. CLIPPED          one target is pinned at VMC_LEG_LENGTH_MIN (0.170 m) or
+  3. CLIPPED          one target is pinned at VMC_LEG_LENGTH_MIN (0.180 m) or
                       MAX (0.385 m).  At short leg lengths the retract side
                       runs out of stroke first, so the pair stops levelling and
                       starts raising the machine instead.
@@ -62,9 +62,9 @@ import sys
 from pathlib import Path
 
 # Mirror of VMC_LEG_LENGTH_MIN/MAX in App/Inc/vmc_probe.h.  The measured
-# mechanical stop is 0.160 m; the software floor keeps a 10 mm safety margin at
-# 0.170 m.
-LEG_LENGTH_MIN = 0.170
+# mechanical stop is 0.160 m; the software floor keeps a 20 mm safety margin at
+# 0.180 m.
+LEG_LENGTH_MIN = 0.180
 LEG_LENGTH_MAX = 0.385
 # A target this close to the limit is treated as pinned.  The logger quantises
 # to 1 mm, so half a millimetre of slack is generous.
