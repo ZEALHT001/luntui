@@ -957,9 +957,10 @@ extern "C" {
 #define VMC_GETUP_RELEASE_RAMP_MS         300U
 #define VMC_GETUP_TIMEOUT_MS              10000U
 /* Shallow folded fall (pitch below the full-fall threshold).  This path does
- * not reuse TURN/SHRINK: it first extends to 0.20 m while moving theta to
- * +30 deg, then retracts to the 0.18 m hardware floor with theta back at zero.
- * Shanhai asks for 0.15 m, but this chassis must not go below 0.18 m. */
+ * not reuse TURN/SHRINK.  It first extends to 0.20 m while an LQR theta row
+ * drives the virtual legs directly to vertical (theta = 0), then retracts to
+ * the 0.18 m hardware floor and reuses UPRIGHT/READY.  Shanhai asks for
+ * 0.15 m after alignment, but this chassis must not go below 0.18 m. */
 #define VMC_GETUP_PARTIAL_PITCH_MIN_RAD       0.080f
 #define VMC_GETUP_PARTIAL_ROLL_MAX_RAD        0.350f
 #define VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX    0.230f
@@ -967,11 +968,11 @@ extern "C" {
 #define VMC_GETUP_PARTIAL_ENTRY_THETA_MAX_RAD 1.550f
 #define VMC_GETUP_PARTIAL_RAISE_LENGTH         0.200f
 #define VMC_GETUP_PARTIAL_LOWER_LENGTH         0.180f
-#define VMC_GETUP_PARTIAL_RAISE_THETA_RAD      0.5235988f
+#define VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD   0.0f
 #define VMC_GETUP_PARTIAL_LOWER_THETA_RAD      0.0f
-#define VMC_GETUP_PARTIAL_PHI0_RATE_RADPS      1.000f
 #define VMC_GETUP_PARTIAL_LENGTH_TOL           0.025f
-#define VMC_GETUP_PARTIAL_THETA_TOL_RAD        0.120f
+#define VMC_GETUP_PARTIAL_THETA_TOL_RAD        0.250f
+#define VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS     0.350f
 #define VMC_GETUP_PARTIAL_CONFIRM_MS           120U
 #define VMC_GETUP_PARTIAL_TIMEOUT_MS           5000U
 

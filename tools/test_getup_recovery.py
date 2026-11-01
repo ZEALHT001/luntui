@@ -238,8 +238,8 @@ class ProfileTest(unittest.TestCase):
             _macro("VMC_GETUP_PARTIAL_RAISE_LENGTH"), 0.200
         )
         self.assertAlmostEqual(
-            _macro("VMC_GETUP_PARTIAL_RAISE_THETA_RAD"),
-            3.14159265 / 6.0,
+            _macro("VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD"),
+            0.0,
         )
         self.assertAlmostEqual(
             _macro("VMC_GETUP_PARTIAL_LOWER_THETA_RAD"), 0.0
@@ -248,16 +248,70 @@ class ProfileTest(unittest.TestCase):
             _macro("VMC_GETUP_PARTIAL_LOWER_LENGTH"),
             _macro("VMC_LEG_TARGET_SHORT"),
         )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_THETA_TOL_RAD"), 0.250
+        )
         self.assertLess(
             _macro("VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX"),
             _macro("VMC_GETUP_SAFE_LENGTH_MAX") + 0.02,
             "the shallow-fold detector accepts an ordinary extended stance",
         )
         self.assertGreater(
-            _macro("VMC_GETUP_PARTIAL_PHI0_RATE_RADPS"), 0.0
+            _macro("VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS"), 0.0
         )
         self.assertGreater(
             _macro("VMC_GETUP_PARTIAL_CONFIRM_MS"), 0.0
+        )
+
+    def test_shallow_fold_uses_lqr_theta_torque_instead_of_position_pd(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        signal = _body(source, "vmc_getup_lqr_signal_theta")
+        for needle in (
+            "apply_soft_deadband",
+            "k[1] * theta_error",
+            "k[3] * d_theta",
+            "VMC_GETUP_PHI0_TORQUE_MAX",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    signal,
+                    needle,
+                    "the shallow-fold LQR theta signal is incomplete",
+                )
+
+        control = _body(source, "vmc_control_update")
+        for needle in (
+            "vmc_getup_lqr_signal_theta",
+            "vmc_probe_state.lqr.left_k",
+            "vmc_probe_state.lqr.right_k",
+            "vmc_balance.left_lqr_d_theta_limited",
+            "vmc_balance.right_lqr_d_theta_limited",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    control,
+                    needle,
+                    "FOLDED_RAISE does not drive theta through LQR torque",
+                )
+
+        gain_start = control.index(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {",
+            control.index("max_phi0_torque = clamp_double"),
+        )
+        gain_end = control.index(
+            "} else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {",
+            gain_start,
+        )
+        folded_gain = control[gain_start:gain_end]
+        _has(
+            folded_gain,
+            "kp_phi0 = 0.0;",
+            "FOLDED_RAISE still contributes a position-PD term",
+        )
+        _has(
+            folded_gain,
+            "kd_phi0 = 0.0;",
+            "FOLDED_RAISE still contributes a velocity-PD term",
         )
 
 
@@ -608,7 +662,7 @@ class StateMachineTest(unittest.TestCase):
         raise_stage = state[raise_start:lower_start]
         for needle in (
             "VMC_GETUP_PARTIAL_RAISE_LENGTH",
-            "VMC_GETUP_PARTIAL_RAISE_THETA_RAD",
+            "VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD",
             "vmc_getup_partial_pose_ready",
             "VMC_GETUP_STATE_FOLDED_LOWER",
         ):
@@ -618,6 +672,13 @@ class StateMachineTest(unittest.TestCase):
                     needle,
                     "FOLDED_RAISE can advance before reaching its pose",
                 )
+
+        ready = _body(source, "vmc_getup_partial_pose_ready")
+        _has(
+            ready,
+            "VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS",
+            "FOLDED_RAISE can advance while theta is still moving",
+        )
 
         lower_end = state.index(
             "if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER)",
@@ -640,9 +701,9 @@ class StateMachineTest(unittest.TestCase):
         for needle in (
             "VMC_GETUP_PARTIAL_RAISE_LENGTH",
             "VMC_GETUP_PARTIAL_LOWER_LENGTH",
-            "VMC_GETUP_PARTIAL_RAISE_THETA_RAD",
+            "VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD",
             "VMC_GETUP_PARTIAL_LOWER_THETA_RAD",
-            "VMC_GETUP_PARTIAL_PHI0_RATE_RADPS",
+            "vmc_getup_lqr_signal_theta",
             "vmc_angle_nearest_to",
         ):
             with self.subTest(needle=needle):

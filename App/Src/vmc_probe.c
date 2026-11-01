@@ -1131,6 +1131,23 @@ static double vmc_getup_phi0_feedforward_slew(double previous,
   return vmc_step_towards(previous, target, rate * vmc_loop_dt());
 }
 
+/* Shanhai's LQR_Clc_SignalTheta() uses only the theta and theta-rate rows of
+ * the standing LQR.  Reproduce that torque signal in this controller's theta
+ * convention, whose sign is opposite to Shanhai's. */
+static double vmc_getup_lqr_signal_theta(
+    volatile const double k[12],
+    double theta,
+    double d_theta)
+{
+  const double theta_error =
+      apply_soft_deadband(theta, (double)vmc_balance.theta_deadband);
+
+  return clamp_double(
+      -(k[1] * theta_error + k[3] * d_theta),
+      -(double)VMC_GETUP_PHI0_TORQUE_MAX,
+      (double)VMC_GETUP_PHI0_TORQUE_MAX);
+}
+
 static float vmc_average_joint_torque_abs(void)
 {
   return (fabsf(vmc_probe_state.joint_left_ahead.torque) +
@@ -2441,7 +2458,11 @@ static uint8_t vmc_getup_partial_pose_ready(double target_length,
               VMC_GETUP_PARTIAL_THETA_TOL_RAD &&
           fabs(vmc_rad_format((float)(
               vmc_probe_state.motion.right_theta - target_theta))) <=
-              VMC_GETUP_PARTIAL_THETA_TOL_RAD)
+              VMC_GETUP_PARTIAL_THETA_TOL_RAD &&
+          fabs(vmc_probe_state.motion.left_d_theta) <
+              VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS &&
+          fabs(vmc_probe_state.motion.right_d_theta) <
+              VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS)
              ? 1U
              : 0U;
 }
@@ -3043,7 +3064,7 @@ static void vmc_update_getup_state(void)
   if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
     if (vmc_getup_partial_pose_ready(
             VMC_GETUP_PARTIAL_RAISE_LENGTH,
-            VMC_GETUP_PARTIAL_RAISE_THETA_RAD) != 0U) {
+            VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD) != 0U) {
       if (vmc_control.getup_confirm_ms < VMC_GETUP_PARTIAL_CONFIRM_MS) {
         vmc_control.getup_confirm_ms += dt_ms;
       }
@@ -5974,29 +5995,16 @@ void vmc_control_update(void)
                  VMC_GETUP_STATE_FOLDED_LOWER) {
     const double target_theta =
         (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE)
-            ? (double)VMC_GETUP_PARTIAL_RAISE_THETA_RAD
+            ? (double)VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD
             : (double)VMC_GETUP_PARTIAL_LOWER_THETA_RAD;
     const double target_absolute =
         (double)VMC_PHI0_VERTICAL_RAD +
         (double)vmc_probe_state.body.pitch + target_theta;
-    const double left_raw_target = vmc_angle_nearest_to(
-        target_absolute, vmc_control.getup_upright_phi0_left);
-    const double right_raw_target = vmc_angle_nearest_to(
-        target_absolute, vmc_control.getup_upright_phi0_right);
-    const double folded_phi0_step =
-        clamp_double(VMC_GETUP_PARTIAL_PHI0_RATE_RADPS, 0.0, 5.0) *
-        vmc_loop_dt();
 
-    vmc_control.getup_upright_phi0_left = (float)vmc_step_towards(
-        vmc_control.getup_upright_phi0_left,
-        left_raw_target,
-        folded_phi0_step);
-    vmc_control.getup_upright_phi0_right = (float)vmc_step_towards(
-        vmc_control.getup_upright_phi0_right,
-        right_raw_target,
-        folded_phi0_step);
-    left_target_phi0 = vmc_control.getup_upright_phi0_left;
-    right_target_phi0 = vmc_control.getup_upright_phi0_right;
+    left_target_phi0 = vmc_angle_nearest_to(
+        target_absolute, vmc_probe_state.left_leg.phi0);
+    right_target_phi0 = vmc_angle_nearest_to(
+        target_absolute, vmc_probe_state.right_leg.phi0);
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT) {
     const double left_raw_target = vmc_angle_nearest_to(
         (double)VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch,
@@ -6045,7 +6053,16 @@ void vmc_control_update(void)
   }
   left_phi0_feedforward = 0.0;
   right_phi0_feedforward = 0.0;
-  if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
+  if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
+    left_phi0_feedforward = vmc_getup_lqr_signal_theta(
+        vmc_probe_state.lqr.left_k,
+        vmc_probe_state.motion.left_theta,
+        vmc_balance.left_lqr_d_theta_limited);
+    right_phi0_feedforward = vmc_getup_lqr_signal_theta(
+        vmc_probe_state.lqr.right_k,
+        vmc_probe_state.motion.right_theta,
+        vmc_balance.right_lqr_d_theta_limited);
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
     const double fan_speed_target =
         (double)vmc_control.getup_turn_direction *
         (double)VMC_GETUP_BODY_FAN_SPEED_RADPS;
@@ -6130,7 +6147,12 @@ void vmc_control_update(void)
   kp_phi0 = clamp_double(vmc_control.kp_phi0, 0.0, 500.0);
   kd_phi0 = clamp_double(vmc_control.kd_phi0, 0.0, 50.0);
   if (getup_force_profile != 0U) {
-    if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
+    if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
+      max_phi0_torque =
+          clamp_double(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
+      kp_phi0 = 0.0;
+      kd_phi0 = 0.0;
+    } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
       max_phi0_torque = clamp_double(
           VMC_GETUP_BODY_FAN_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
       kp_phi0 = clamp_double(VMC_GETUP_BODY_FAN_PHI0_KP, 0.0, 500.0);
