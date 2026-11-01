@@ -289,7 +289,7 @@ class ProfileTest(unittest.TestCase):
                 )
 
 class StateMachineTest(unittest.TestCase):
-    def test_every_entry_requires_a_safe_knob_length(self) -> None:
+    def test_every_entry_requires_safe_knob_and_measured_lengths(self) -> None:
         self.assertAlmostEqual(_macro("VMC_GETUP_SAFE_LENGTH_MAX"), 0.220)
         source = SOURCE.read_text(encoding="utf-8")
         ready = _body(source, "vmc_getup_safe_length_ready")
@@ -297,6 +297,8 @@ class StateMachineTest(unittest.TestCase):
         self.assertIn("remote_control_source != RC_SOURCE_SBUS", ready)
         self.assertIn("RC_LOST_TIMEOUT_MS", ready)
         self.assertIn("vmc_remote_leg_length_target()", ready)
+        self.assertIn("vmc_probe_state.left_leg.length <=", ready)
+        self.assertIn("vmc_probe_state.right_leg.length <=", ready)
 
         brace = _body(source, "vmc_getup_enter_brace")
         self.assertIn("vmc_getup_safe_length_ready() == 0U", brace)

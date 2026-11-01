@@ -72,6 +72,7 @@ static void vmc_update_remote_target_length(void);
 static double vmc_remote_leg_length_target(void);
 static uint8_t vmc_remote_leg_length_gear(void);
 static uint8_t vmc_getup_safe_length_ready(void);
+static uint8_t vmc_manual_prepose_exit_length_ready(void);
 static uint8_t vmc_jump_is_active(void);
 static uint8_t vmc_jump_is_active_or_aborted(void);
 static uint8_t vmc_jump_blocks_wheel_output(void);
@@ -112,6 +113,7 @@ static void vmc_update_airborne_state(void);
 static double vmc_loop_dt(void);
 static void vmc_update_lqr_gain(void);
 static uint8_t vmc_safety_allows_output(void);
+static uint8_t vmc_manual_prepose_allows_wheel_output(void);
 static int16_t vmc_update_yaw_hold_current(void);
 static int16_t vmc_update_gimbal_follow_current(void);
 static void vmc_balance_apply_wheel_output(void);
@@ -1082,9 +1084,9 @@ static uint8_t vmc_remote_leg_length_gear(void)
   return VMC_LEG_GEAR_LOW;
 }
 
-/* Every get-up trigger goes through this check before entering BRACE.  Use the
- * knob's mapped target rather than the temporary short-leg override: the
- * operator must actually bring channel 9 down to the safe range. */
+/* Every get-up trigger goes through this check before entering BRACE.  The
+ * knob mapping alone is not enough in manual pre-positioning because CH9 is
+ * relative there: both measured legs must also already be short. */
 static uint8_t vmc_getup_safe_length_ready(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -1096,7 +1098,21 @@ static uint8_t vmc_getup_safe_length_ready(void)
   }
 
   return (vmc_remote_leg_length_target() <=
-          (double)VMC_GETUP_SAFE_LENGTH_MAX)
+              (double)VMC_GETUP_SAFE_LENGTH_MAX &&
+          vmc_probe_state.left_leg.length <=
+              (double)VMC_GETUP_SAFE_LENGTH_MAX &&
+          vmc_probe_state.right_leg.length <=
+              (double)VMC_GETUP_SAFE_LENGTH_MAX)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_manual_prepose_exit_length_ready(void)
+{
+  return (vmc_probe_state.left_leg.length <=
+              (double)VMC_GETUP_SAFE_LENGTH_MAX &&
+          vmc_probe_state.right_leg.length <=
+              (double)VMC_GETUP_SAFE_LENGTH_MAX)
              ? 1U
              : 0U;
 }
@@ -1349,6 +1365,8 @@ static uint8_t vmc_jump_start_is_allowed(void)
 
   return (vmc_control.jump_enable != 0U &&
           vmc_control.enabled != 0U &&
+          vmc_control.manual_prepose_active == 0U &&
+          vmc_control.manual_prepose_exit_length_check_active == 0U &&
           imu_ready != 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_getup_is_active() == 0U &&
@@ -1451,6 +1469,16 @@ static void vmc_jump_update(void)
     }
   }
   vmc_jump_last_update_ms = now;
+
+  if (vmc_control.manual_prepose_active != 0U ||
+      vmc_control.manual_prepose_exit_length_check_active != 0U) {
+    vmc_control.jump_armed = 0U;
+    vmc_jump_auto_hold_ms = 0U;
+    if (vmc_jump_is_active() != 0U) {
+      vmc_jump_finish(VMC_JUMP_STAGE_ABORT, VMC_JUMP_ABORT_REMOTE, now);
+    }
+    return;
+  }
 
   if (vmc_control.jump_stage_start_ms != 0U) {
     vmc_control.jump_stage_ms = now - vmc_control.jump_stage_start_ms;
@@ -1666,6 +1694,8 @@ static uint8_t vmc_stair_start_is_allowed(void)
 {
   return (vmc_control.stair_enable != 0U &&
           vmc_control.enabled != 0U &&
+          vmc_control.manual_prepose_active == 0U &&
+          vmc_control.manual_prepose_exit_length_check_active == 0U &&
           vmc_balance.wheel_output_enable != 0U &&
           vmc_fall_rearm_required == 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
@@ -1890,6 +1920,19 @@ static void vmc_stair_update(void)
   uint8_t right_leg_changed = 0U;
   uint8_t impact_now;
   uint8_t start_allowed;
+
+  if (vmc_control.manual_prepose_active != 0U ||
+      vmc_control.manual_prepose_exit_length_check_active != 0U) {
+    if (vmc_stair_is_active() != 0U) {
+      vmc_stair_finish(VMC_STAIR_STAGE_ABORT, VMC_STAIR_ABORT_REMOTE, now);
+    }
+    vmc_stair_auto_armed = 0U;
+    vmc_stair_reset_detector();
+    vmc_control.stair_ready_ms = 0U;
+    vmc_control.stair_ready_detected = 0U;
+    vmc_control.stair_impact_detected = 0U;
+    return;
+  }
 
   if (vmc_control.stair_stage_start_ms != 0U) {
     vmc_control.stair_stage_ms = now - vmc_control.stair_stage_start_ms;
@@ -2621,6 +2664,52 @@ static void vmc_update_getup_state(void)
 
   vmc_getup_fully_fallen = fully_fallen;
 
+  if (vmc_control.manual_prepose_active != 0U) {
+    /* Manual pre-positioning deliberately owns the joints and wheel command.
+     * Keep the get-up machine out of the way until CH7 is returned to OFF. */
+    vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
+    vmc_control.getup_turn_direction = 0;
+    vmc_control.getup_body_flip_direction = 0;
+    vmc_control.getup_left_direction = 0;
+    vmc_control.getup_right_direction = 0;
+    vmc_control.getup_left_done = 0U;
+    vmc_control.getup_right_done = 0U;
+    vmc_control.getup_lqr_release_pending = 0U;
+    vmc_control.getup_partial_active = 0U;
+    vmc_getup_reset_balance_on_ready = 0U;
+    vmc_control.getup_state_ms = 0U;
+    vmc_control.getup_confirm_ms = 0U;
+    vmc_control.getup_left_confirm_ms = 0U;
+    vmc_control.getup_right_confirm_ms = 0U;
+    vmc_fall_prev_fully_fallen = fully_fallen;
+    vmc_fall_monitor_armed = 0U;
+    return;
+  }
+
+  if (vmc_control.manual_prepose_exit_length_check_active != 0U) {
+    if (vmc_manual_prepose_exit_length_ready() != 0U) {
+      vmc_control.manual_prepose_exit_length_check_active = 0U;
+    } else {
+      vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
+      vmc_control.getup_turn_direction = 0;
+      vmc_control.getup_body_flip_direction = 0;
+      vmc_control.getup_left_direction = 0;
+      vmc_control.getup_right_direction = 0;
+      vmc_control.getup_left_done = 0U;
+      vmc_control.getup_right_done = 0U;
+      vmc_control.getup_lqr_release_pending = 0U;
+      vmc_control.getup_partial_active = 0U;
+      vmc_getup_reset_balance_on_ready = 0U;
+      vmc_control.getup_state_ms = 0U;
+      vmc_control.getup_confirm_ms = 0U;
+      vmc_control.getup_left_confirm_ms = 0U;
+      vmc_control.getup_right_confirm_ms = 0U;
+      vmc_fall_prev_fully_fallen = fully_fallen;
+      vmc_fall_monitor_armed = 0U;
+      return;
+    }
+  }
+
   if (remote_control.s[1] == RC_SW_DOWN) {
     vmc_fall_rearm_required = 0U;
     vmc_fall_rearm_armed = 1U;
@@ -3227,6 +3316,117 @@ static void vmc_update_remote_roll_target(void)
   vmc_balance.roll_remote_active = active;
 }
 
+static void vmc_update_manual_prepose_mode(void)
+{
+  const uint32_t now = HAL_GetTick();
+  const uint8_t remote_ready =
+      (remote_control.valid != 0U &&
+       remote_control.rx_count != 0U &&
+       remote_control_source == RC_SOURCE_SBUS &&
+       (now - remote_control.last_update_ms) <= RC_LOST_TIMEOUT_MS)
+          ? 1U
+          : 0U;
+  const uint8_t enabled = remote_control_is_enabled();
+  const uint8_t stair_on =
+      (remote_ready != 0U &&
+       remote_control_channel(RC_STAIR_ENABLE) > RC_SWITCH_ON_THRESHOLD)
+          ? 1U
+          : 0U;
+
+  if (remote_ready == 0U) {
+    vmc_control.manual_prepose_armed = 0U;
+    vmc_control.manual_prepose_active = 0U;
+    return;
+  }
+  if (enabled == 0U) {
+    vmc_control.manual_prepose_active = 0U;
+    vmc_control.manual_prepose_armed = stair_on;
+    return;
+  }
+
+  if (vmc_control.manual_prepose_active == 0U) {
+    if (vmc_control.manual_prepose_armed != 0U && stair_on != 0U) {
+      vmc_control.manual_prepose_active = 1U;
+      vmc_control.manual_prepose_armed = 0U;
+      vmc_control.manual_prepose_exit_length_check_active = 0U;
+      vmc_control.manual_prepose_phi0_left =
+          vmc_probe_state.left_leg.phi0;
+      vmc_control.manual_prepose_phi0_right =
+          vmc_probe_state.right_leg.phi0;
+      vmc_control.manual_prepose_knob_position =
+          remote_control_leg_length_position();
+      vmc_control.manual_prepose_base_length_left = (float)clamp_double(
+          vmc_probe_state.left_leg.length,
+          VMC_MANUAL_PREPOSE_LENGTH_MIN,
+          VMC_MANUAL_PREPOSE_LENGTH_MAX);
+      vmc_control.manual_prepose_base_length_right = (float)clamp_double(
+          vmc_probe_state.right_leg.length,
+          VMC_MANUAL_PREPOSE_LENGTH_MIN,
+          VMC_MANUAL_PREPOSE_LENGTH_MAX);
+      vmc_control.manual_prepose_length_left =
+          vmc_control.manual_prepose_base_length_left;
+      vmc_control.manual_prepose_length_right =
+          vmc_control.manual_prepose_base_length_right;
+    } else if (stair_on == 0U) {
+      vmc_control.manual_prepose_armed = 0U;
+    }
+  }
+
+  if (vmc_control.manual_prepose_active == 0U) {
+    return;
+  }
+  if (stair_on == 0U) {
+    vmc_control.manual_prepose_exit_length_check_active = 1U;
+    vmc_control.manual_prepose_active = 0U;
+    return;
+  }
+
+  {
+    const double knob_position = clamp_double(
+        (double)remote_control_leg_length_position(), -1.0, 1.0);
+    const double knob_delta =
+        knob_position - (double)vmc_control.manual_prepose_knob_position;
+    const double length_delta =
+        knob_delta * 0.5 *
+        ((double)VMC_MANUAL_PREPOSE_LENGTH_MAX -
+         (double)VMC_MANUAL_PREPOSE_LENGTH_MIN);
+
+    vmc_control.manual_prepose_length_left = (float)clamp_double(
+        (double)vmc_control.manual_prepose_base_length_left + length_delta,
+        VMC_MANUAL_PREPOSE_LENGTH_MIN,
+        VMC_MANUAL_PREPOSE_LENGTH_MAX);
+    vmc_control.manual_prepose_length_right = (float)clamp_double(
+        (double)vmc_control.manual_prepose_base_length_right + length_delta,
+        VMC_MANUAL_PREPOSE_LENGTH_MIN,
+        VMC_MANUAL_PREPOSE_LENGTH_MAX);
+  }
+
+  {
+    float input = remote_control_channel(RC_GIMBAL_X);
+    const float deadband =
+        (float)VMC_RC_CH_DEADBAND / (float)RC_CHANNAL_ERROR_VALUE;
+    const double step =
+        clamp_double(VMC_MANUAL_PREPOSE_PHI0_RATE_RADPS, 0.0, 3.0) *
+        (double)input * vmc_loop_dt();
+
+    if (fabsf(input) <= deadband) {
+      input = 0.0f;
+    }
+    if (input != 0.0f) {
+      /* Positive channel 2 is stick-forward. Increasing phi0 rotates the
+       * virtual leg forward (counter-clockwise in the leg convention). */
+      vmc_control.manual_prepose_phi0_left = (float)clamp_double(
+          (double)vmc_control.manual_prepose_phi0_left + step,
+          VMC_MANUAL_PREPOSE_PHI0_MIN_RAD,
+          VMC_MANUAL_PREPOSE_PHI0_MAX_RAD);
+      vmc_control.manual_prepose_phi0_right = (float)clamp_double(
+          (double)vmc_control.manual_prepose_phi0_right + step,
+          VMC_MANUAL_PREPOSE_PHI0_MIN_RAD,
+          VMC_MANUAL_PREPOSE_PHI0_MAX_RAD);
+    }
+  }
+}
+
 static double vmc_spin_phase_lead_rad(double spin_rate)
 {
   const double omega = clamp_double(spin_rate, 0.0, 9.0);
@@ -3271,6 +3471,7 @@ static double vmc_spin_projection_gain(double phase_error, double phase_lead,
 static void vmc_update_remote_mode(void)
 {
   int16_t forward_current;
+  int16_t manual_turn_current;
   double turn_input;
   double speed_target_max;
   double yaw_rate_max;
@@ -3306,10 +3507,12 @@ static void vmc_update_remote_mode(void)
   uint8_t follow_requested = 0U;
 
   vmc_update_remote_roll_target();
+  vmc_update_manual_prepose_mode();
   vmc_wheel_control.manual_left_current = 0;
   vmc_wheel_control.manual_right_current = 0;
   vmc_wheel_control.manual_forward_current = 0;
   vmc_wheel_control.manual_turn_current = 0;
+  manual_turn_current = 0;
   vmc_balance.spin_mode_enabled = spin_enabled;
   vmc_balance.spin_line_input_forward = spin_forward_input;
   vmc_balance.spin_line_input_lateral = spin_left_input;
@@ -3389,7 +3592,11 @@ static void vmc_update_remote_mode(void)
      * have their own channels and are additionally gated by this master
      * enable. */
     vmc_balance.wheel_output_enable =
-        (vmc_getup_fully_fallen == 0U && vmc_getup_is_active() == 0U) ? 1U : 0U;
+        (vmc_control.manual_prepose_active != 0U ||
+         (vmc_control.manual_prepose_exit_length_check_active == 0U &&
+          vmc_getup_fully_fallen == 0U && vmc_getup_is_active() == 0U))
+            ? 1U
+            : 0U;
   } else {
     vmc_control.enabled = 0U;
     vmc_balance.wheel_output_enable = 0U;
@@ -3436,21 +3643,39 @@ static void vmc_update_remote_mode(void)
     vmc_balance.spin_line_gate = 1.0f;
   }
 
-  forward_current =
-      (spin_enabled != 0U)
-          ? rc_channel_to_current(
-                (int16_t)(spin_input_magnitude * RC_CHANNAL_ERROR_VALUE),
-                VMC_RC_WHEEL_FWD_CURRENT_MAX)
-          : rc_channel_to_current(
-                (int16_t)(remote_control_channel(RC_CHASSIS_Y) *
-                          RC_CHANNAL_ERROR_VALUE),
-                VMC_RC_WHEEL_FWD_CURRENT_MAX);
-  forward_current = (int16_t)((double)forward_current * forward_speed_scale *
-                              (double)vmc_balance.spin_line_gate);
+  if (vmc_control.manual_prepose_active != 0U) {
+    /* Manual pre-positioning uses the left vertical stick as a direct
+     * forward/reverse wheel command. There is no yaw, spin-line projection or
+     * balance-loop contribution in this path. */
+    forward_current = rc_channel_to_current(
+        (int16_t)(-remote_control_channel(RC_CHASSIS_Y) *
+                  RC_CHANNAL_ERROR_VALUE),
+        VMC_RC_WHEEL_FWD_CURRENT_MAX);
+    /* Channel 0 positive is stick-right. Differential wheel current with
+     * positive turn commanding the left wheel forward and right wheel reverse
+     * rotates the chassis clockwise from the driver's view. */
+    manual_turn_current = rc_channel_to_current(
+        (int16_t)(remote_control_channel(RC_CHASSIS_X) *
+                  RC_CHANNAL_ERROR_VALUE),
+        VMC_RC_WHEEL_TURN_CURRENT_MAX);
+  } else {
+    forward_current =
+        (spin_enabled != 0U)
+            ? rc_channel_to_current(
+                  (int16_t)(spin_input_magnitude * RC_CHANNAL_ERROR_VALUE),
+                  VMC_RC_WHEEL_FWD_CURRENT_MAX)
+            : rc_channel_to_current(
+                  (int16_t)(remote_control_channel(RC_CHASSIS_Y) *
+                            RC_CHANNAL_ERROR_VALUE),
+                  VMC_RC_WHEEL_FWD_CURRENT_MAX);
+    forward_current = (int16_t)((double)forward_current * forward_speed_scale *
+                                (double)vmc_balance.spin_line_gate);
+  }
   turn_input = rc_channel_to_unit(
       (int16_t)(-remote_control_channel(RC_CHASSIS_X) *
                 RC_CHANNAL_ERROR_VALUE));
   vmc_wheel_control.manual_forward_current = forward_current;
+  vmc_wheel_control.manual_turn_current = manual_turn_current;
 
   if (remote_control_source == RC_SOURCE_CBOARD &&
       vmc_balance.gimbal_follow_enable != 0U &&
@@ -3477,6 +3702,7 @@ static void vmc_update_remote_mode(void)
   }
 
   if (vmc_balance.gimbal_follow_active == 0U &&
+      vmc_control.manual_prepose_active == 0U &&
       vmc_balance.yaw_hold_enable != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_probe_state.body.imu_valid != 0U &&
@@ -3500,7 +3726,11 @@ static void vmc_update_remote_mode(void)
     }
   }
 
-  if (vmc_balance.speed_control_enable != 0U) {
+  if (vmc_control.manual_prepose_active != 0U) {
+    vmc_balance.speed_target = 0.0f;
+    vmc_balance.speed_target_ramped = 0.0f;
+    vmc_balance.speed_stop_hold_active = 0U;
+  } else if (vmc_balance.speed_control_enable != 0U) {
     speed_target_max = clamp_double(vmc_balance.speed_target_max, 0.0, 3.0);
     vmc_balance.speed_target =
         (float)((-(double)forward_current * speed_target_max) /
@@ -3806,6 +4036,20 @@ static uint8_t vmc_safety_allows_output(void)
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_probe_state.airborne_active == 0U &&
           vmc_jump_blocks_wheel_output() == 0U &&
+          remote_control_allows_joint_enable() != 0U)
+             ? 1U
+             : 0U;
+}
+
+static uint8_t vmc_manual_prepose_allows_wheel_output(void)
+{
+  /* Manual pre-positioning intentionally bypasses airborne detection: the
+   * operator may be lying on one side with both legs unloaded while moving the
+   * chassis away from an obstacle. Remote, feedback and fall-rearm protection
+   * still apply. */
+  return (vmc_control.manual_prepose_active != 0U &&
+          vmc_fall_rearm_required == 0U &&
+          vmc_probe_state.feedback_timeout_active == 0U &&
           remote_control_allows_joint_enable() != 0U)
              ? 1U
              : 0U;
@@ -4314,6 +4558,7 @@ void vmc_balance_update(void)
   if (vmc_balance.disturbance_observer_enable != 0U &&
       vmc_balance.speed_control_enable != 0U &&
       vmc_control.enabled != 0U &&
+      vmc_control.manual_prepose_active == 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_probe_state.feedback_timeout_active == 0U &&
       vmc_getup_is_active() == 0U) {
@@ -4855,7 +5100,26 @@ static void vmc_balance_apply_wheel_output(void)
 
   vmc_wheel_control.max_current = vmc_balance.wheel_current_limit;
 
-  if (vmc_balance.enabled != 0U &&
+  if (vmc_control.manual_prepose_active != 0U &&
+      vmc_balance.enabled != 0U &&
+      vmc_balance.wheel_output_user_enable != 0U &&
+      vmc_manual_prepose_allows_wheel_output() != 0U) {
+    vmc_wheel_control.enabled = 1U;
+    vmc_wheel_control.yaw_hold_current = 0;
+    vmc_wheel_control.gimbal_follow_current = 0;
+    vmc_balance.yaw_hold_active = 0U;
+    vmc_balance.gimbal_follow_active = 0U;
+    vmc_wheel_control.left_current =
+        clamp_i16((int16_t)(vmc_wheel_control.manual_forward_current +
+                            vmc_wheel_control.manual_turn_current),
+                  -vmc_wheel_control.max_current,
+                  vmc_wheel_control.max_current);
+    vmc_wheel_control.right_current =
+        clamp_i16((int16_t)(vmc_wheel_control.manual_forward_current -
+                            vmc_wheel_control.manual_turn_current),
+                  -vmc_wheel_control.max_current,
+                  vmc_wheel_control.max_current);
+  } else if (vmc_balance.enabled != 0U &&
       vmc_balance.wheel_output_enable != 0U &&
       vmc_balance.wheel_output_user_enable != 0U &&
       vmc_getup_is_active() == 0U &&
@@ -5327,6 +5591,16 @@ void vmc_control_init(void)
   vmc_control.getup_leg_align_complete = 0U;
   vmc_control.getup_partial_armed = 1U;
   vmc_control.getup_partial_active = 0U;
+  vmc_control.manual_prepose_armed = 0U;
+  vmc_control.manual_prepose_active = 0U;
+  vmc_control.manual_prepose_exit_length_check_active = 0U;
+  vmc_control.manual_prepose_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.manual_prepose_phi0_right = VMC_LEG_PHI0_TARGET_DEFAULT;
+  vmc_control.manual_prepose_knob_position = 0.0f;
+  vmc_control.manual_prepose_base_length_left = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.manual_prepose_base_length_right = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.manual_prepose_length_left = VMC_LEG_LENGTH_DEFAULT;
+  vmc_control.manual_prepose_length_right = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.getup_left_confirm_ms = 0U;
   vmc_control.getup_right_confirm_ms = 0U;
   vmc_control.getup_left_hold_length = VMC_LEG_LENGTH_DEFAULT;
@@ -5414,6 +5688,11 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
                                       double airborne_posture_tp)
 {
   double joint_torque[2];
+  const uint8_t manual_pd_hold =
+      (vmc_control.manual_prepose_active != 0U ||
+       vmc_control.manual_prepose_exit_length_check_active != 0U)
+          ? 1U
+          : 0U;
   const double length_error = target_length - leg->length;
   const double p_output = kp_length * length_error;
   const double d_output = -kd_length * leg->d_length;
@@ -5421,7 +5700,8 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
   const double support_output = VMC_LEG_SUPPORT_FORCE_DIRECTION * support_force;
   const double force = clamp_double(pid_output + support_output, -max_force, max_force);
   const double phi0_error =
-      (vmc_stair_is_active() != 0U)
+      (vmc_stair_is_active() != 0U ||
+       manual_pd_hold != 0U)
           ? (double)vmc_rad_format((float)(target_phi0 - leg->phi0))
           : target_phi0 - leg->phi0;
   const double phi0_p_output = kp_phi0 * phi0_error;
@@ -5434,6 +5714,7 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
                    max_phi0_torque);
   const uint8_t use_lqr_tp =
       (vmc_balance.tp_output_enable != 0U &&
+       manual_pd_hold == 0U &&
        vmc_getup_is_active() == 0U &&
        vmc_stair_is_active() == 0U &&
        (vmc_jump_is_active_or_aborted() == 0U ||
@@ -5449,8 +5730,12 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
                  : (double)vmc_balance.right_tp_cmd)
                 * vmc_stair_release_scale()
           : 0.0;
+  if (manual_pd_hold != 0U) {
+    leg_sync_torque = 0.0;
+  }
   const double phi0_torque_total =
-      (airborne_posture != 0U)
+      (airborne_posture != 0U &&
+       manual_pd_hold == 0U)
           ? clamp_double(airborne_posture_tp,
                          -max_phi0_torque,
                          max_phi0_torque)
@@ -5591,7 +5876,12 @@ void vmc_control_update(void)
   target_length = clamp_double(vmc_control.target_length,
                                VMC_LEG_LENGTH_MIN,
                                VMC_LEG_LENGTH_MAX);
-  if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE ||
+  if (vmc_control.manual_prepose_active != 0U) {
+    target_length =
+        ((double)vmc_control.manual_prepose_length_left +
+         (double)vmc_control.manual_prepose_length_right) *
+        0.5;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
@@ -5615,7 +5905,9 @@ void vmc_control_update(void)
     target_length = vmc_stair_target_length();
   }
   vmc_control.jump_target_length = (float)target_length;
-  if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE ||
+  if (vmc_control.manual_prepose_active != 0U) {
+    ramped_target_length = target_length;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
@@ -5647,6 +5939,8 @@ void vmc_control_update(void)
   roll_error = (double)vmc_probe_state.body.roll - (double)vmc_control.roll_target;
   roll_comp_desired =
       (vmc_control.roll_comp_enable != 0U &&
+       vmc_control.manual_prepose_active == 0U &&
+       vmc_control.manual_prepose_exit_length_check_active == 0U &&
        vmc_getup_is_active() == 0U &&
        jump_override == 0U &&
        stair_override == 0U &&
@@ -5678,7 +5972,9 @@ void vmc_control_update(void)
     const double normal_left_target_length = left_target_length;
     const double normal_right_target_length = right_target_length;
     const uint8_t airborne_control_allowed =
-        (vmc_getup_is_active() == 0U &&
+        (vmc_control.manual_prepose_active == 0U &&
+         vmc_control.manual_prepose_exit_length_check_active == 0U &&
+         vmc_getup_is_active() == 0U &&
          vmc_jump_is_active_or_aborted() == 0U &&
          vmc_stair_is_active() == 0U &&
          stair_override == 0U &&
@@ -5740,6 +6036,13 @@ void vmc_control_update(void)
     }
   }
 
+  if (vmc_control.manual_prepose_active != 0U) {
+    left_target_length =
+        (double)vmc_control.manual_prepose_length_left;
+    right_target_length =
+        (double)vmc_control.manual_prepose_length_right;
+  }
+
   if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     /* Keep each leg at its own captured length.  A completed leg must not be
      * passive: with zero force it can extend under the spring/gravity while
@@ -5792,7 +6095,11 @@ void vmc_control_update(void)
   }
   left_target_phi0 = vmc_control.target_phi0;
   right_target_phi0 = vmc_control.target_phi0;
-  if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE) {
+  if (vmc_control.manual_prepose_active != 0U ||
+      vmc_control.manual_prepose_exit_length_check_active != 0U) {
+    left_target_phi0 = vmc_control.manual_prepose_phi0_left;
+    right_target_phi0 = vmc_control.manual_prepose_phi0_right;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE) {
     left_target_phi0 = vmc_probe_state.left_leg.phi0;
     right_target_phi0 = vmc_probe_state.right_leg.phi0;
   } else if (vmc_control.getup_state ==
@@ -5946,7 +6253,8 @@ void vmc_control_update(void)
     left_target_phi0 = vmc_control.getup_upright_phi0_left;
     right_target_phi0 = vmc_control.getup_upright_phi0_right;
   }
-  if (vmc_stair_is_active() != 0U) {
+  if (vmc_control.manual_prepose_active == 0U &&
+      vmc_stair_is_active() != 0U) {
     const double stair_phi0_ramp_rate =
         (vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
             ? clamp_double(vmc_control.stair_lift_phi0_ramp_rate, 0.0, 20.0)
@@ -6088,7 +6396,8 @@ void vmc_control_update(void)
           0.0,
           50.0);
     }
-  } else if (vmc_stair_is_active() != 0U) {
+  } else if (vmc_control.manual_prepose_active == 0U &&
+             vmc_stair_is_active() != 0U) {
     kp_phi0 = clamp_double(vmc_control.stair_phi0_kp, 0.0, 500.0);
     kd_phi0 = clamp_double(vmc_control.stair_phi0_kd, 0.0, 50.0);
   }
@@ -6197,7 +6506,11 @@ void vmc_wheel_control_update(void)
   int16_t right_current = 0;
   int16_t left_send_current = 0;
   int16_t right_send_current = 0;
-  const double release_scale = vmc_stair_release_scale();
+  double release_scale = vmc_stair_release_scale();
+
+  if (vmc_control.manual_prepose_active != 0U) {
+    release_scale = 1.0;
+  }
 
   if (max_current < 0) {
     max_current = (int16_t)-max_current;
@@ -6211,8 +6524,16 @@ void vmc_wheel_control_update(void)
    * single lifted leg stops spinning while the other keeps the machine
    * balanced. */
   {
-    const uint8_t output_ready =
+    const uint8_t manual_output_ready =
         (vmc_wheel_control.enabled != 0U &&
+         vmc_balance.wheel_output_enable != 0U &&
+         vmc_balance.wheel_output_user_enable != 0U &&
+         vmc_manual_prepose_allows_wheel_output() != 0U)
+            ? 1U
+            : 0U;
+    const uint8_t automatic_output_ready =
+        (vmc_wheel_control.enabled != 0U &&
+         vmc_control.manual_prepose_active == 0U &&
          vmc_balance.wheel_output_enable != 0U &&
          vmc_balance.wheel_output_user_enable != 0U &&
          vmc_probe_state.airborne_active == 0U &&
@@ -6222,15 +6543,19 @@ void vmc_wheel_control_update(void)
          remote_control_allows_joint_enable() != 0U)
             ? 1U
             : 0U;
+    const uint8_t output_ready =
+        (manual_output_ready != 0U || automatic_output_ready != 0U) ? 1U : 0U;
 
     if (output_ready != 0U &&
-        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U) {
+        (manual_output_ready != 0U ||
+         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U)) {
       left_current = clamp_i16(vmc_wheel_control.left_current,
                                (int16_t)-max_current,
                                max_current);
     }
     if (output_ready != 0U &&
-        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U) {
+        (manual_output_ready != 0U ||
+         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U)) {
       right_current = clamp_i16(vmc_wheel_control.right_current,
                                 (int16_t)-max_current,
                                 max_current);

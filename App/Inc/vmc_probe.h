@@ -1117,6 +1117,15 @@ extern "C" {
 #define VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT 1.8f
 #define VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT 0.0f
 #define VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT 9.0f
+/* Manual pre-positioning is entered only when CH7 is already on before CH4
+ * enables the controller. The right vertical stick moves both virtual legs at
+ * this rate. CH9 offsets both captured lengths relative to its entry position,
+ * preserving the initial left/right length difference within the safe range. */
+#define VMC_MANUAL_PREPOSE_PHI0_RATE_RADPS 1.0f
+#define VMC_MANUAL_PREPOSE_PHI0_MIN_RAD    -6.2831853f
+#define VMC_MANUAL_PREPOSE_PHI0_MAX_RAD    6.2831853f
+#define VMC_MANUAL_PREPOSE_LENGTH_MIN      0.180f
+#define VMC_MANUAL_PREPOSE_LENGTH_MAX      0.380f
 #define VMC_SPIN_PROJECTION_POWER_DEFAULT 5.0f
 #define VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT -75.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
@@ -1324,6 +1333,16 @@ typedef struct {
   uint8_t getup_leg_align_complete;
   uint8_t getup_partial_armed;
   uint8_t getup_partial_active;
+  uint8_t manual_prepose_armed;
+  uint8_t manual_prepose_active;
+  uint8_t manual_prepose_exit_length_check_active;
+  float manual_prepose_phi0_left;
+  float manual_prepose_phi0_right;
+  float manual_prepose_knob_position;
+  float manual_prepose_base_length_left;
+  float manual_prepose_base_length_right;
+  float manual_prepose_length_left;
+  float manual_prepose_length_right;
   uint32_t getup_left_confirm_ms;
   uint32_t getup_right_confirm_ms;
   float getup_left_hold_length;
