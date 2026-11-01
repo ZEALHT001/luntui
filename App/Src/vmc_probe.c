@@ -90,7 +90,6 @@ static uint8_t vmc_getup_upright_ready(void);
 static uint8_t vmc_getup_partial_folded_is_required(double pitch);
 static uint8_t vmc_getup_partial_pose_ready(double target_length,
                                             double target_theta);
-static double vmc_getup_ready_release_scale(void);
 static int8_t vmc_getup_body_mode(double pitch);
 static int8_t vmc_getup_body_align_direction(double phi4, int8_t body_mode);
 static uint8_t vmc_getup_body_fan_is_required(void);
@@ -2467,17 +2466,6 @@ static uint8_t vmc_getup_partial_pose_ready(double target_length,
              : 0U;
 }
 
-static double vmc_getup_ready_release_scale(void)
-{
-  if (vmc_control.getup_state != VMC_GETUP_STATE_READY) {
-    return 1.0;
-  }
-  return clamp_double(
-      (double)vmc_control.getup_state_ms / (double)VMC_GETUP_RELEASE_RAMP_MS,
-      0.0,
-      1.0);
-}
-
 static uint8_t vmc_getup_enter_brace(int8_t turn_direction)
 {
   if (vmc_getup_safe_length_ready() == 0U) {
@@ -2763,11 +2751,6 @@ static void vmc_update_getup_state(void)
       return;
     }
   }
-  if (vmc_control.getup_state == VMC_GETUP_STATE_READY &&
-      vmc_control.getup_state_ms < VMC_GETUP_RELEASE_RAMP_MS) {
-    vmc_control.getup_state_ms += dt_ms;
-  }
-
   if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
        vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
       fully_fallen != 0U) {
@@ -3263,6 +3246,7 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_lqr_release_pending = 0U;
       vmc_control.getup_state_ms = 0U;
       vmc_control.getup_confirm_ms = 0U;
+      vmc_balance.wheel_output_enable = 1U;
     }
   }
 }
@@ -5501,8 +5485,6 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
       clamp_double(phi0_pid_output + phi0_torque_feedforward,
                    -max_phi0_torque,
                    max_phi0_torque);
-  const double lqr_release_scale =
-      vmc_getup_ready_release_scale() * vmc_stair_release_scale();
   const uint8_t use_lqr_tp =
       (vmc_balance.tp_output_enable != 0U &&
        vmc_getup_is_active() == 0U &&
@@ -5512,14 +5494,13 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
           ? 1U
           : 0U;
   const double phi0_torque =
-      (use_lqr_tp != 0U) ? phi0_torque_raw * (1.0 - lqr_release_scale)
-                         : phi0_torque_raw;
+      (use_lqr_tp != 0U) ? 0.0 : phi0_torque_raw;
   const double lqr_tp_torque =
       (use_lqr_tp != 0U)
           ? ((leg == &vmc_probe_state.left_leg)
                  ? (double)vmc_balance.left_tp_cmd
                  : (double)vmc_balance.right_tp_cmd)
-                * lqr_release_scale
+                * vmc_stair_release_scale()
           : 0.0;
   const double phi0_torque_total =
       (airborne_posture != 0U)
@@ -6285,8 +6266,7 @@ void vmc_wheel_control_update(void)
   int16_t right_current = 0;
   int16_t left_send_current = 0;
   int16_t right_send_current = 0;
-  const double release_scale =
-      vmc_getup_ready_release_scale() * vmc_stair_release_scale();
+  const double release_scale = vmc_stair_release_scale();
 
   if (max_current < 0) {
     max_current = (int16_t)-max_current;

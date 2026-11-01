@@ -954,7 +954,6 @@ extern "C" {
 #define VMC_GETUP_SHRINK_THETA_TARGET_RAD 0.800f
 #define VMC_GETUP_SHRINK_THETA_RATE_RADPS 0.500f
 #define VMC_GETUP_READY_CONFIRM_MS        250U
-#define VMC_GETUP_RELEASE_RAMP_MS         300U
 #define VMC_GETUP_TIMEOUT_MS              10000U
 /* Shallow folded fall (pitch below the full-fall threshold).  This path does
  * not reuse TURN/SHRINK.  It first extends to 0.20 m while an LQR theta row

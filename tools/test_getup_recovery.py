@@ -81,7 +81,6 @@ class ProfileTest(unittest.TestCase):
             "VMC_GETUP_POSE_CONFIRM_MS",
             "VMC_GETUP_LENGTH_CONFIRM_MS",
             "VMC_GETUP_READY_CONFIRM_MS",
-            "VMC_GETUP_RELEASE_RAMP_MS",
             "VMC_GETUP_TIMEOUT_MS",
         ):
             with self.subTest(name=name):
@@ -864,19 +863,29 @@ class ControlIntegrationTest(unittest.TestCase):
         _has(body, "VMC_GETUP_BODY_FAN_SYNC_SUPPORT_FORCE",
              "the synchronization stage does not unload ground pressure")
 
-    def test_ready_blends_lqr_joint_and_wheel_output(self) -> None:
+    def test_ready_hard_switches_to_lqr_joint_and_wheel_output(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
         leg_control = _body(source, "update_leg_length_control")
-        _has(leg_control, "vmc_getup_ready_release_scale()",
-             "the LQR joint output is not blended in")
-        _has(leg_control, "phi0_torque_raw * (1.0 - lqr_release_scale)",
-             "the get-up PD output does not fade out")
-        _has(leg_control, "* lqr_release_scale",
-             "the LQR joint output does not fade in")
+        _has(leg_control, "(use_lqr_tp != 0U) ? 0.0 : phi0_torque_raw",
+             "the get-up joint PD is not hard-disabled at READY")
+        _has(leg_control, "vmc_balance.left_tp_cmd",
+             "the normal LQR joint torque is not used directly")
+        self.assertNotIn(
+            "vmc_getup_ready_release_scale",
+            leg_control,
+            "READY still blends the LQR joint output",
+        )
         wheel_control = _body(source, "vmc_wheel_control_update")
-        _has(wheel_control, "vmc_getup_ready_release_scale()",
-             "wheel current is not blended in")
-        _has(wheel_control, "release_scale", "the wheel current scale is unused")
+        _has(wheel_control, "release_scale = vmc_stair_release_scale()",
+             "the wheel path still contains the get-up release ramp")
+        self.assertNotIn(
+            "vmc_getup_ready_release_scale",
+            wheel_control,
+            "READY still ramps wheel current",
+        )
+        state = _body(source, "vmc_update_getup_state")
+        _has(state, "wheel_output_enable = 1U",
+             "READY does not enable normal wheel output immediately")
 
     def test_board_comms_inhibits_gimbal_for_all_new_stages(self) -> None:
         body = BOARD_COMM.read_text(encoding="utf-8")
