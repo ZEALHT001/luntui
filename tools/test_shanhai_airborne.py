@@ -137,6 +137,21 @@ class ForceObserverTest(unittest.TestCase):
             "airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U", body
         )
 
+    def test_landing_restores_wheel_without_release_delay(self) -> None:
+        body = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                              "vmc_update_airborne_state")
+        self.assertIn("if (side_fn[side] >= release_threshold)", body)
+        self.assertNotIn("side_release_ms", body)
+        self.assertNotIn(
+            "airborne_side_release_candidate_ms[side] +=", body
+        )
+        self.assertNotIn(
+            "airborneSideReleaseMs", WEB_MAIN.read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "airborneSideReleaseMs", WEB_INDEX.read_text(encoding="utf-8")
+        )
+
     def test_fast_telemetry_exposes_left_and_right_fn(self) -> None:
         source = RTT_C.read_text(encoding="utf-8")
         self.assertIn(
@@ -144,6 +159,26 @@ class ForceObserverTest(unittest.TestCase):
         )
         self.assertIn(
             "airborne_side_torque[VMC_AIRBORNE_SIDE_RIGHT]", source
+        )
+
+    def test_unloaded_tp_keeps_only_angle_terms(self) -> None:
+        control = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                                 "vmc_control_update")
+        update = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                                "update_leg_length_control")
+        self.assertIn("-(vmc_balance.left_tp_theta_term +", control)
+        self.assertIn("vmc_balance.left_tp_dtheta_term);", control)
+        self.assertIn("airborne_posture != 0U", update)
+        self.assertIn("clamp_double(airborne_posture_tp", update)
+
+    def test_leg_sync_is_inert_when_either_side_is_unloaded(self) -> None:
+        body = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                              "vmc_balance_update")
+        self.assertIn(
+            "airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U", body
+        )
+        self.assertIn(
+            "airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U", body
         )
 
     def test_leg_target_is_not_rewritten_when_unloaded(self) -> None:

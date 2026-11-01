@@ -3823,7 +3823,6 @@ static void vmc_update_airborne_state(void)
   const float release_threshold =
       force_threshold * VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT;
   uint32_t confirm_ms = vmc_balance.airborne_confirm_ms;
-  uint32_t release_ms = vmc_balance.airborne_release_ms;
   float side_fn[VMC_AIRBORNE_SIDE_COUNT];
   uint8_t side_fn_valid[VMC_AIRBORNE_SIDE_COUNT];
   const uint8_t detector_ready =
@@ -3848,10 +3847,6 @@ static void vmc_update_airborne_state(void)
   if (confirm_ms > 10000U) {
     confirm_ms = 10000U;
   }
-  if (release_ms > 10000U) {
-    release_ms = 10000U;
-  }
-
   vmc_probe_state.airborne_wheel_speed = wheel_speed;
   vmc_probe_state.airborne_joint_torque = joint_torque;
   vmc_probe_state.airborne_joint_torque_min = joint_torque_min;
@@ -3865,10 +3860,6 @@ static void vmc_update_airborne_state(void)
         (vmc_balance.airborne_side_confirm_ms > 10000U)
             ? 10000U
             : vmc_balance.airborne_side_confirm_ms;
-    const uint32_t side_release_ms =
-        (vmc_balance.airborne_side_release_ms > 10000U)
-            ? 10000U
-            : vmc_balance.airborne_side_release_ms;
     const uint8_t side_ready =
         (detector_ready != 0U &&
          vmc_balance.airborne_side_enable != 0U &&
@@ -3892,20 +3883,11 @@ static void vmc_update_airborne_state(void)
 
       if (vmc_probe_state.airborne_side_active[side] != 0U) {
         if (side_fn[side] >= release_threshold) {
-          if (vmc_probe_state.airborne_side_release_candidate_ms[side] <
-              side_release_ms) {
-            vmc_probe_state.airborne_side_release_candidate_ms[side] += dt_ms;
-          }
-          if (vmc_probe_state.airborne_side_release_candidate_ms[side] >=
-              side_release_ms) {
-            vmc_probe_state.airborne_side_active[side] = 0U;
-            vmc_probe_state.airborne_side_candidate[side] = 0U;
-            vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
-            vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
-          }
-        } else {
-          vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+          vmc_probe_state.airborne_side_active[side] = 0U;
+          vmc_probe_state.airborne_side_candidate[side] = 0U;
+          vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
         }
+        vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
         continue;
       }
 
@@ -3949,7 +3931,6 @@ static void vmc_update_airborne_state(void)
     uint8_t side;
     uint8_t all_candidate = 1U;
     uint32_t candidate_min = confirm_ms;
-    uint32_t release_min = release_ms;
 
     vmc_probe_state.airborne_active = 1U;
     for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
@@ -3962,17 +3943,12 @@ static void vmc_update_airborne_state(void)
       if (vmc_probe_state.airborne_side_candidate_ms[side] < candidate_min) {
         candidate_min = vmc_probe_state.airborne_side_candidate_ms[side];
       }
-      if (vmc_probe_state.airborne_side_release_candidate_ms[side] <
-          release_min) {
-        release_min =
-            vmc_probe_state.airborne_side_release_candidate_ms[side];
-      }
+      vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
     }
     vmc_probe_state.airborne_candidate = all_candidate;
     vmc_probe_state.airborne_candidate_ms =
         (all_candidate != 0U) ? candidate_min : 0U;
-    vmc_probe_state.airborne_release_candidate_ms =
-        (vmc_probe_state.airborne_active != 0U) ? release_min : 0U;
+    vmc_probe_state.airborne_release_candidate_ms = 0U;
   }
 }
 
@@ -4518,7 +4494,9 @@ void vmc_balance_update(void)
        vmc_control.stair_length_override_active == 0U &&
        vmc_getup_is_active() == 0U &&
        vmc_stair_is_active() == 0U &&
-       vmc_jump_is_active_or_aborted() == 0U)
+       vmc_jump_is_active_or_aborted() == 0U &&
+       vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U &&
+       vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U)
           ? 1U
           : 0U;
   const double leg_sync_error =
@@ -5305,7 +5283,9 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
                                       double leg_sync_torque,
                                       double ahead_direction,
                                       double back_direction,
-                                      double phi0_torque_feedforward)
+                                      double phi0_torque_feedforward,
+                                      uint8_t airborne_posture,
+                                      double airborne_posture_tp)
 {
   double joint_torque[2];
   const double length_error = target_length - leg->length;
@@ -5347,9 +5327,13 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
                 * lqr_release_scale
           : 0.0;
   const double phi0_torque_total =
-      clamp_double(phi0_torque + lqr_tp_torque + leg_sync_torque,
-                   -max_phi0_torque,
-                   max_phi0_torque);
+      (airborne_posture != 0U)
+          ? clamp_double(airborne_posture_tp,
+                         -max_phi0_torque,
+                         max_phi0_torque)
+          : clamp_double(phi0_torque + lqr_tp_torque + leg_sync_torque,
+                         -max_phi0_torque,
+                         max_phi0_torque);
 
   leg->length_error = length_error;
   leg->length_p_output = p_output;
@@ -5422,6 +5406,10 @@ void vmc_control_update(void)
   uint8_t getup_force_profile;
   uint8_t getup_fan_profile;
   uint8_t getup_sync_torque_profile;
+  uint8_t left_airborne_posture;
+  uint8_t right_airborne_posture;
+  double left_airborne_tp;
+  double right_airborne_tp;
 
   vmc_update_remote_target_length();
   vmc_update_getup_state();
@@ -5955,6 +5943,36 @@ void vmc_control_update(void)
     }
   }
 
+  /* Shanhai isolates virtual-leg posture while a side is unloaded:
+   * Tp = Ktheta*theta + Kdtheta*dtheta, with no x/dx/pitch/dpitch terms.
+   * Do this only in normal drive; jump, stair and get-up own Tp themselves. */
+  {
+    const uint8_t airborne_posture_allowed =
+        (vmc_getup_is_active() == 0U &&
+         vmc_jump_is_active_or_aborted() == 0U &&
+         vmc_stair_is_active() == 0U &&
+         stair_override == 0U &&
+         vmc_control.stair_length_override_active == 0U)
+            ? 1U
+            : 0U;
+    left_airborne_posture =
+        (airborne_posture_allowed != 0U &&
+         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] != 0U)
+            ? 1U
+            : 0U;
+    right_airborne_posture =
+        (airborne_posture_allowed != 0U &&
+         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] != 0U)
+            ? 1U
+            : 0U;
+    left_airborne_tp =
+        -(vmc_balance.left_tp_theta_term +
+          vmc_balance.left_tp_dtheta_term);
+    right_airborne_tp =
+        -(vmc_balance.right_tp_theta_term +
+          vmc_balance.right_tp_dtheta_term);
+  }
+
   update_leg_length_control(&vmc_probe_state.left_leg,
                             left_target_length,
                             kp_length,
@@ -5968,7 +5986,9 @@ void vmc_control_update(void)
                             -vmc_balance.leg_sync_torque,
                             VMC_DIR_LEFT_AHEAD,
                             VMC_DIR_LEFT_BACK,
-                            left_phi0_feedforward);
+                            left_phi0_feedforward,
+                            left_airborne_posture,
+                            left_airborne_tp);
   update_leg_length_control(&vmc_probe_state.right_leg,
                             right_target_length,
                             kp_length,
@@ -5982,7 +6002,9 @@ void vmc_control_update(void)
                             vmc_balance.leg_sync_torque,
                             VMC_DIR_RIGHT_AHEAD,
                             VMC_DIR_RIGHT_BACK,
-                            right_phi0_feedforward);
+                            right_phi0_feedforward,
+                            right_airborne_posture,
+                            right_airborne_tp);
 }
 
 void vmc_wheel_control_update(void)

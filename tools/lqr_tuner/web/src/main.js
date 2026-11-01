@@ -21,7 +21,6 @@ const balanceParamIds = [
   ["airborneJointTorqueThreshold", "airborne_joint_torque_threshold"],
   ["airborneSideEnable", "airborne_side_enable"],
   ["airborneSideConfirmMs", "airborne_side_confirm_ms"],
-  ["airborneSideReleaseMs", "airborne_side_release_ms"],
   ["tpLimit", "tp_limit"],
   ["tpPhiGain", "tp_phi_gain"],
   ["tpXGain", "tp_x_gain"],

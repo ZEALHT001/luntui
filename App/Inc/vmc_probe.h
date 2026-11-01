@@ -441,9 +441,9 @@ extern "C" {
  *   FN  = P + m_w*g + m_w*ddz
  *
  * FN below the threshold means that wheel is unloaded.  Only that wheel's
- * torque is cut.  Its joints keep running and its length target remains the
- * channel-9 command; there is no automatic air length and no leg-follow
- * extension. */
+ * torque is cut.  Its joints keep running with Tp reduced to the theta/dtheta
+ * posture terms, while its length target remains the channel-9 command; there
+ * is no automatic air length and no leg-follow extension. */
 #define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
 /* Vehicle calibration (2026-11-01):
  *   grounded FN p01/median: left 72.8/79.7 N, right 65.4/67.8 N
@@ -460,9 +460,9 @@ extern "C" {
 #define VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT 200U
 #define VMC_AIRBORNE_PITCH_REFERENCE_NONE (-999.0f)
 /* Shanhai's contact test is per side.  A short confirmation rejects feedback
- * spikes; release needs the load to recover above a hysteresis band so a
- * wheel cannot chatter at the threshold.  These are the parameters shown in
- * the tuner and used by the firmware. */
+ * spikes.  Release uses a small hysteresis band but no time delay: once FN
+ * reaches the release threshold, wheel output returns in the same control
+ * cycle. */
 #define VMC_AIRBORNE_SIDE_ENABLE_DEFAULT 1U
 #define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 20U
 #define VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT 100U
