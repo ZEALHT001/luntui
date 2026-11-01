@@ -288,10 +288,10 @@ class MovingJumpTest(unittest.TestCase):
         wide = _function_body(source, "vmc_jump_is_active_or_aborted")
         self.assertIn("vmc_jump_is_active()", wide)
         # Consumers that need the wide gate: the airborne detector, the
-        # leg-torque (Tp) path, anti-splay, both stair start/abort gates, and
-        # both descent start/abort gates.
+        # leg-torque (Tp) path, anti-splay, both stair start/abort gates,
+        # and the automatic stair arm gate.
         # Each must stay out of the way while a jump owns the legs or wheels.
-        self.assertEqual(source.count("vmc_jump_is_active_or_aborted()"), 7)
+        self.assertEqual(source.count("vmc_jump_is_active_or_aborted()"), 6)
 
     def test_an_aborted_jump_still_returns_the_wheels(self) -> None:
         """An aborted jump must not leave the wheels dead.

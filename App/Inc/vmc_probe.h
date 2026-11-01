@@ -361,26 +361,33 @@ extern "C" {
 #define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
 
-/* Manual stair climb (one-shot switch-triggered leg retraction).
+/* Automatic stair climb (one-shot switch-and-leg-response trigger).
  *
- * Operator procedure: stop the robot against the step, then move SBUS channel
- * 7 from disabled to enabled.  A rising edge starts one action; holding the
- * switch does not retrigger it, and the switch must be returned to disabled
- * before another action can start.
+ * Operator procedure: move SBUS channel 7 from disabled to enabled, select the
+ * highest channel-9 leg-length gear, and drive into the step.  Once both legs
+ * have settled at the long ready length, a simultaneous change in both leg
+ * angles with joint load starts one action.  The switch must be returned to
+ * disabled before another action can arm; holding it cannot retrigger.
  *
- * The state machine follows Shanhai's two-stage pose with LIFT driving to the
- * 0.385 m software stroke limit and theta=1.70 rad, then short legs and
- * theta=60 deg in RETRACT.
- * SETTLE holds the climbing pose, and RECOVER returns to the normal standing
- * pose over a bounded ramp.  Body-relative theta is converted to absolute
- * phi0 every cycle.  Wheel output is disabled for the complete leg-only
- * maneuver.  The short-leg lock remains until the channel-9 knob is moved.
+ * LIFT uses the measured rear-leg pose: legs at 0.248 m and body-relative
+ * theta=90 deg (1.5708 rad).  RETRACT then settles to the final short-leg
+ * theta=60 deg pose.
+ * SETTLE holds the climbing pose, then the stair action explicitly hands the
+ * chassis to the normal get-up sequence (BRACE -> SHRINK -> UPRIGHT -> READY).
+ * This mirrors Shanhai's Chassis_Reset followed by StandFromGround instead of
+ * returning a still-tilted chassis directly to the normal LQR.  Body-relative
+ * theta is converted to absolute phi0 every cycle.  Wheel output is disabled
+ * until get-up releases it.  The short-leg lock remains until the channel-9
+ * knob is moved.
  *
- * This is deliberately NOT a jump.  Impact detection is no longer used; the
- * operator positions the chassis and commands the action manually. */
+ * This is deliberately NOT a jump.  The detector first confirms commanded
+ * motion, then uses the previous detector logic: a confirmed pre-impact
+ * window, a two-wheel LQR torque spike, and both absolute leg angles above
+ * threshold.  Wheel-speed drop remains the fallback when torque detection is
+ * disabled. */
 #define VMC_STAIR_ENABLE_DEFAULT                   1U
-#define VMC_STAIR_LIFT_LENGTH_DEFAULT              0.385f
-#define VMC_STAIR_LIFT_THETA_DEFAULT               1.7000000f
+#define VMC_STAIR_LIFT_LENGTH_DEFAULT              0.248f
+#define VMC_STAIR_LIFT_THETA_DEFAULT               1.5707963f
 #define VMC_STAIR_RETRACT_THETA_DEFAULT            1.0471976f
 #define VMC_STAIR_RETRACT_LENGTH_MIN               0.180f
 #define VMC_STAIR_RETRACT_LENGTH_DEFAULT           0.180f
@@ -395,8 +402,7 @@ extern "C" {
 #define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           2.5f
 #define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
 #define VMC_STAIR_PHI0_KD_DEFAULT                  6.0f
-/* Legacy detector defaults.  These remain for RTT/recorder compatibility but
- * do not participate in the manual trigger. */
+/* Automatic trigger defaults. */
 #define VMC_STAIR_SPEED_THRESHOLD_DEFAULT          1.0f
 #define VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT  0.2f
 #define VMC_STAIR_READY_LENGTH_DEFAULT             0.330f
@@ -411,55 +417,19 @@ extern "C" {
 #define VMC_STAIR_LENGTH_RAMP_RATE_DEFAULT         0.180f
 #define VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT       2000U
 #define VMC_STAIR_HOLD_MS_DEFAULT                  500U
+/* Kept for RTT/tuner compatibility.  The former RECOVER stage was removed
+ * because it drove the legs back toward level while the chassis was still
+ * supported by the step, then released the wheels directly into the old LQR
+ * position target. */
 #define VMC_STAIR_RECOVER_MS_DEFAULT               500U
 #define VMC_STAIR_TIMEOUT_MS_DEFAULT               6000U
 #define VMC_STAIR_COOLDOWN_MS_DEFAULT              1200U
 #define VMC_STAIR_RELEASE_RAMP_MS_DEFAULT          500U
-#define VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT 250U
-#define VMC_STAIR_LENGTH_UNLOCK_DELTA_DEFAULT      80U
 #define VMC_STAIR_LENGTH_KP_DEFAULT                2000.0f
 #define VMC_STAIR_LENGTH_KD_DEFAULT                100.0f
 #define VMC_STAIR_FORCE_MAX_DEFAULT                500.0f
 #define VMC_STAIR_SUPPORT_FORCE_DEFAULT            100.0f
 #define VMC_STAIR_LENGTH_READY_TOL                 0.015f
-
-/* Automatic descent assist.
- *
- * After a stair climb the short-leg latch deliberately remains active until
- * the channel-9 knob moves again.  Driving off the platform in that state used
- * to fall through
- * to the generic airborne detector: the wheels stayed cut for its 500 ms
- * release hysteresis, so balance only returned after the body had already
- * tipped.  This state machine owns the same manoeuvre explicitly.
- *
- * EXTEND ramps the legs toward a landing-ready length while the wheels remain
- * gated.  A short confirmation on measured joint load marks touchdown, after
- * which CUSHION restores the pre-drop length and the wheels are enabled in the
- * same control cycle.  The target is rate-limited in software, so the measured
- * leg length never snaps between the two poses.
- *
- * The entry path is limited to channel 7 enabled and either the post-stair
- * short-leg lock or channel 9 at/above the old long-leg target.  A non-zero
- * travel speed is also needed
- * unless the stair lock is present, which keeps a bench lift from starting the
- * action. */
-#define VMC_DESCENT_ENABLE_DEFAULT                  1U
-#define VMC_DESCENT_EXTEND_LENGTH_DEFAULT           0.280f
-#define VMC_DESCENT_MIN_EXTEND_DELTA                0.020f
-#define VMC_DESCENT_EXTEND_RATE_DEFAULT             0.35f
-#define VMC_DESCENT_RETURN_RATE_DEFAULT             0.60f
-#define VMC_DESCENT_LENGTH_KP_DEFAULT               2000.0f
-#define VMC_DESCENT_LENGTH_KD_DEFAULT               120.0f
-#define VMC_DESCENT_FORCE_MAX_DEFAULT               300.0f
-#define VMC_DESCENT_SUPPORT_FORCE_DEFAULT           0.0f
-#define VMC_DESCENT_START_SPEED_DEFAULT             0.20f
-#define VMC_DESCENT_START_CONFIRM_MS_DEFAULT        40U
-#define VMC_DESCENT_CONTACT_TORQUE_DEFAULT          4.0f
-#define VMC_DESCENT_CONTACT_CONFIRM_MS_DEFAULT      20U
-#define VMC_DESCENT_AIR_TIMEOUT_MS_DEFAULT          1000U
-#define VMC_DESCENT_CUSHION_TIMEOUT_MS_DEFAULT      240U
-#define VMC_DESCENT_COOLDOWN_MS_DEFAULT             800U
-#define VMC_DESCENT_LENGTH_READY_TOL                0.015f
 
 #define VMC_ROLL_COMP_ENABLE_DEFAULT 1U
 #define VMC_ROLL_TARGET_DEFAULT 0.0f
@@ -988,21 +958,10 @@ extern "C" {
 #define VMC_STAIR_ABORT_AIRBORNE   6U
 #define VMC_STAIR_ABORT_ATTITUDE   7U
 
-#define VMC_DESCENT_STAGE_IDLE     0U
-#define VMC_DESCENT_STAGE_EXTEND   1U
-#define VMC_DESCENT_STAGE_CUSHION  2U
-#define VMC_DESCENT_STAGE_FINISHED 3U
-#define VMC_DESCENT_STAGE_ABORT    4U
-
-#define VMC_DESCENT_ABORT_NONE     0U
-#define VMC_DESCENT_ABORT_REMOTE   1U
-#define VMC_DESCENT_ABORT_FEEDBACK 2U
-#define VMC_DESCENT_ABORT_GETUP    3U
-#define VMC_DESCENT_ABORT_JUMP     4U
-#define VMC_DESCENT_ABORT_STAIR    5U
-#define VMC_DESCENT_ABORT_TIMEOUT  6U
-
 #define VMC_GETUP_START_PITCH_RAD  0.80f
+/* Every get-up entry requires the operator's channel-9 leg-length target to be
+ * at or below this value before the sequence is allowed to start. */
+#define VMC_GETUP_SAFE_LENGTH_MAX  0.220f
 #define VMC_GETUP_TURN_LENGTH      0.300f
 #define VMC_GETUP_STAND_LENGTH     VMC_LEG_TARGET_SHORT
 /* Keep the posture loop deliberately slow and weak while the chassis is on
@@ -1364,17 +1323,15 @@ typedef struct {
   float jump_auto_dist_min_cm;  /* cm    */
   float jump_auto_dist_max_cm;  /* cm    */
   uint32_t jump_auto_confirm_ms;
-  /* Manual stair climb.  See VMC_STAIR_ENABLE_DEFAULT for the rising-edge
-   * trigger and the abort conditions. */
+  /* Automatic stair climb.  See VMC_STAIR_ENABLE_DEFAULT for the one-shot
+   * arm, loaded two-leg change trigger, and abort conditions. */
   uint8_t stair_enable;
   uint8_t stair_stage;
   uint8_t stair_abort_reason;
-  /* Latched after a trigger: keep the legs at stair_retract_length until the
-   * channel-9 knob has moved to a different, stable position.  This is what
-   * stops the long-leg target from snapping back while the machine is still
-   * climbing. */
+  /* Latched after a trigger: keep the legs at stair_retract_length while the
+   * physical stair switch remains enabled.  Returning that switch to disabled
+   * releases the lock and restores the current channel-9 knob target. */
   uint8_t stair_length_override_active;
-  uint16_t stair_length_override_remote_position;
   /* Legacy impact-detector telemetry.  Kept at zero for wire compatibility. */
   uint8_t stair_fast_detected;
   uint8_t stair_impact_detected;
@@ -1433,38 +1390,6 @@ typedef struct {
   float stair_lift_support_force;
   float stair_retract_support_force;
   float stair_support_force;
-  /* Automatic descent assist.  entry_length is captured when the airborne
-   * gate starts the action; length_command is the rate-limited target shared
-   * by both legs. */
-  uint8_t descent_enable;
-  uint8_t descent_stage;
-  uint8_t descent_abort_reason;
-  uint8_t descent_contact_detected;
-  uint32_t descent_stage_start_ms;
-  uint32_t descent_start_ms;
-  uint32_t descent_last_finish_ms;
-  uint32_t descent_stage_ms;
-  uint32_t descent_contact_ms;
-  uint32_t descent_trigger_count;
-  uint32_t descent_abort_count;
-  uint32_t descent_start_confirm_ms;
-  uint32_t descent_contact_confirm_ms;
-  uint32_t descent_air_timeout_ms;
-  uint32_t descent_cushion_timeout_ms;
-  uint32_t descent_cooldown_ms;
-  float descent_extend_length;
-  float descent_extend_rate;
-  float descent_return_rate;
-  float descent_kp_length;
-  float descent_kd_length;
-  float descent_max_force;
-  float descent_support_force;
-  float descent_start_speed;
-  float descent_contact_torque;
-  float descent_entry_length;
-  float descent_extend_target;
-  float descent_length_command;
-  float descent_contact_torque_measured;
   float ramped_target_length;
   float length_ramp_rate;
   float kp_length;

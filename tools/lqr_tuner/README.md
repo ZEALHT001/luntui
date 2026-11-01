@@ -138,15 +138,7 @@ diagnostics below:
 | 174 | remote source | `0` none, `3` local SBUS |
 | 175 | master switch, synthesized from SBUS channel 4 | `1` up, `3` mid, `2` down |
 | 176 | leg knob, synthesized from SBUS channel 9 | `1` high, `3` middle, `2` low |
-| 177 | automatic descent stage | `0` idle, `1` air extend, `2` cushion, `3` finished, `4` abort |
-| 178 | descent abort reason | `0` none, `1` remote, `2` feedback, `3` get-up, `4` jump, `5` stair, `6` timeout |
-| 179 | touchdown detected | `0` or `1` |
-| 180 | measured length at lift-off | metres |
-| 181 | airborne extension target | metres |
-| 182 | rate-limited descent target | metres, applied to both legs |
-| 183 | joint-load measurement at touchdown | N.m, average absolute joint torque |
-| 184 | time from entry to touchdown | ms |
-| 185..186 | descent trigger / abort counts | count |
+| 177..186 | reserved compatibility fields | always `0` |
 
 Fields 157..173 publish the automatic stair climb: stage and abort reason show
 the state machine, ready/pre-impact/impact show how far the trigger progressed,
@@ -156,11 +148,9 @@ Fields 174..176 (schema 21) identify which remote produced the frame and the
 synthesized master/leg-switch positions, so a REMOTE abort can be separated
 from a channel-4 stop command or a source handover.
 
-Fields 177..186 (schema 22) publish automatic platform descent.  Stage `1`
-extends the legs while both wheels remain gated.  Once field 179 is set, stage
-`2` has already restored wheel output and is ramping field 182 back to field
-180.  The measured touchdown torque and elapsed time make it possible to tell a
-real contact from the air timeout or an aborted manoeuvre.
+Fields 177..186 are retained only to preserve the historical recorder layout.
+The former automatic platform descent feature has been removed and these
+fields are now always zero.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of
@@ -168,8 +158,7 @@ two separately-reported channels cannot separate "the legs never diverged" from
 "they diverged and the loop never fired".  Field 155 is the error the loop acts
 on and field 156 the differential torque it applied; both are zero while the
 feature is disabled, while the measured legs have not reached the long preset,
-or while the get-up, jump,
-stair, or descent state machines own the legs.  The measured-length gate avoids
+or while the get-up, jump, or stair state machines own the legs.  The measured-length gate avoids
 running the loop during the preset ramp and during the latched short-leg state
 after a stair climb.
 

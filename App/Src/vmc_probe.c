@@ -31,10 +31,10 @@ static uint8_t vmc_yaw_unwrap_initialized;
 static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
 static uint32_t vmc_jump_auto_hold_ms;
-static uint32_t vmc_descent_last_update_ms;
-static uint8_t vmc_stair_manual_armed;
-static uint16_t vmc_stair_length_pending_remote_position;
-static uint32_t vmc_stair_length_pending_since_ms;
+static uint8_t vmc_stair_auto_armed;
+static uint8_t vmc_stair_preimpact_armed;
+static double vmc_stair_preimpact_speed_ref;
+static uint8_t vmc_getup_reset_balance_on_ready;
 static uint8_t vmc_jump_manual_latched;
 static uint8_t vmc_spin_mode_last;
 /* Gravity-compensation sign calibration; see VMC_GRAVITY_SIGN_ALPHA. */
@@ -71,6 +71,7 @@ static uint8_t vmc_feedback_timeout_source(void);
 static void vmc_update_remote_target_length(void);
 static double vmc_remote_leg_length_target(void);
 static uint8_t vmc_remote_leg_length_gear(void);
+static uint8_t vmc_getup_safe_length_ready(void);
 static uint8_t vmc_jump_is_active(void);
 static uint8_t vmc_jump_is_active_or_aborted(void);
 static uint8_t vmc_jump_blocks_wheel_output(void);
@@ -83,11 +84,6 @@ static uint8_t vmc_stair_overrides_target(void);
 static double vmc_stair_release_scale(void);
 static double vmc_stair_target_length(void);
 static void vmc_stair_update(void);
-static uint8_t vmc_descent_is_active(void);
-static uint8_t vmc_descent_overrides_target(void);
-static uint8_t vmc_descent_blocks_wheel_output(void);
-static double vmc_descent_target_length(void);
-static void vmc_descent_update(void);
 static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
 static uint8_t vmc_getup_upright_ready(void);
@@ -100,7 +96,7 @@ static void vmc_getup_body_fan_sync_targets(double *left_target,
                                             double *right_target);
 static uint8_t vmc_getup_direct_shrink_is_required(void);
 static uint8_t vmc_getup_next_precondition_state(void);
-static void vmc_getup_enter_brace(int8_t turn_direction);
+static uint8_t vmc_getup_enter_brace(int8_t turn_direction);
 static void vmc_getup_enter_stage(uint8_t state);
 static void vmc_getup_abort(void);
 static void vmc_update_getup_state(void);
@@ -1039,8 +1035,6 @@ static uint8_t vmc_feedback_timeout_source(void)
 static void vmc_update_remote_target_length(void)
 {
   const uint32_t now = HAL_GetTick();
-  const uint16_t knob_raw =
-      sbus_remote_data.channels[RC_LEG_LENGTH];
 
   if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
       (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
@@ -1048,41 +1042,17 @@ static void vmc_update_remote_target_length(void)
   }
 
   if (vmc_control.stair_length_override_active != 0U) {
-    const uint16_t saved_knob_raw =
-        vmc_control.stair_length_override_remote_position;
-    const uint16_t knob_delta =
-        (knob_raw >= saved_knob_raw) ? (uint16_t)(knob_raw - saved_knob_raw)
-                                     : (uint16_t)(saved_knob_raw - knob_raw);
-
-    /* Never release the stair length lock while the automatic action is
-     * running.  A transient switch value or a remote-source handover during
-     * RETRACT/HOLD must not restore the long-leg target. */
+    /* Keep the stair pose at 18 cm for the entire enabled-switch interval.
+     * This covers LIFT/RETRACT/SETTLE, the following get-up, and normal
+     * standing after READY. */
     if (vmc_stair_is_active() != 0U ||
-        knob_delta <= VMC_STAIR_LENGTH_UNLOCK_DELTA_DEFAULT) {
-      vmc_stair_length_pending_remote_position = 0U;
-      vmc_stair_length_pending_since_ms = 0U;
+        remote_control_stair_enabled() != 0U) {
       vmc_control.target_length = (float)vmc_stair_target_length();
       return;
     }
 
-    /* Require the new switch position to remain stable before releasing the
-     * lock.  This prevents a one-frame source switch/glitch from restoring the
-     * pre-stair long-leg target. */
-    if (vmc_stair_length_pending_remote_position != knob_raw) {
-      vmc_stair_length_pending_remote_position = knob_raw;
-      vmc_stair_length_pending_since_ms = now;
-      vmc_control.target_length = (float)vmc_stair_target_length();
-      return;
-    }
-    if ((now - vmc_stair_length_pending_since_ms) <
-        VMC_STAIR_REMOTE_SWITCH_CONFIRM_MS_DEFAULT) {
-      vmc_control.target_length = (float)vmc_stair_target_length();
-      return;
-    }
+    /* The physical stair switch is back in its disabled position. */
     vmc_control.stair_length_override_active = 0U;
-    vmc_control.stair_length_override_remote_position = 0U;
-    vmc_stair_length_pending_remote_position = 0U;
-    vmc_stair_length_pending_since_ms = 0U;
   }
 
   vmc_control.target_length = (float)vmc_remote_leg_length_target();
@@ -1110,6 +1080,25 @@ static uint8_t vmc_remote_leg_length_gear(void)
     return VMC_LEG_GEAR_MID;
   }
   return VMC_LEG_GEAR_LOW;
+}
+
+/* Every get-up trigger goes through this check before entering BRACE.  Use the
+ * knob's mapped target rather than the temporary short-leg override: the
+ * operator must actually bring channel 9 down to the safe range. */
+static uint8_t vmc_getup_safe_length_ready(void)
+{
+  const uint32_t now = HAL_GetTick();
+
+  if (remote_control.valid == 0U || remote_control.rx_count == 0U ||
+      remote_control_source != RC_SOURCE_SBUS ||
+      (now - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS) {
+    return 0U;
+  }
+
+  return (vmc_remote_leg_length_target() <=
+          (double)VMC_GETUP_SAFE_LENGTH_MAX)
+             ? 1U
+             : 0U;
 }
 
 static double vmc_step_towards(double current, double target, double step)
@@ -1373,7 +1362,6 @@ static uint8_t vmc_jump_start_is_allowed(void)
           imu_ready != 0U &&
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_getup_is_active() == 0U &&
-          vmc_descent_is_active() == 0U &&
           vmc_fall_rearm_required == 0U &&
           fabsf(vmc_probe_state.body.pitch) <= attitude_limit &&
           fabsf(vmc_probe_state.body.roll) <= attitude_limit)
@@ -1694,8 +1682,8 @@ static uint8_t vmc_stair_start_is_allowed(void)
           vmc_probe_state.airborne_active == 0U &&
           vmc_getup_is_active() == 0U &&
           vmc_jump_is_active_or_aborted() == 0U &&
-          vmc_descent_is_active() == 0U &&
           remote_control_stair_enabled() != 0U &&
+          vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH &&
           vmc_probe_state.body.imu_valid != 0U &&
           vmc_probe_state.body.imu_connected != 0U &&
           remote_control_allows_joint_enable() != 0U)
@@ -1762,12 +1750,20 @@ static void vmc_stair_enter_stage(uint8_t stage, uint32_t now)
         (float)((vmc_probe_state.left_leg.phi0 +
                  vmc_probe_state.right_leg.phi0) * 0.5);
     vmc_control.stair_length_override_active = 1U;
-    vmc_control.stair_length_override_remote_position =
-        sbus_remote_data.channels[RC_LEG_LENGTH];
-    vmc_stair_length_pending_remote_position = 0U;
-    vmc_stair_length_pending_since_ms = 0U;
     vmc_control.target_length = (float)vmc_stair_target_length();
   }
+}
+
+static void vmc_stair_reset_detector(void)
+{
+  vmc_stair_preimpact_armed = 0U;
+  vmc_stair_preimpact_speed_ref = 0.0;
+  vmc_control.stair_speed_ms = 0U;
+  vmc_control.stair_preimpact_ms = 0U;
+  vmc_control.stair_impact_ms = 0U;
+  vmc_control.stair_preimpact_armed = 0U;
+  vmc_control.stair_left_impact = 0U;
+  vmc_control.stair_right_impact = 0U;
 }
 
 static void vmc_stair_finish(uint8_t stage, uint8_t reason, uint32_t now)
@@ -1779,7 +1775,68 @@ static void vmc_stair_finish(uint8_t stage, uint8_t reason, uint32_t now)
     vmc_control.stair_abort_reason = VMC_STAIR_ABORT_NONE;
   }
   vmc_control.stair_last_finish_ms = now;
+  vmc_stair_auto_armed = 0U;
+  vmc_stair_reset_detector();
+  vmc_control.stair_ready_ms = 0U;
+  vmc_control.stair_ready_detected = 0U;
+  vmc_control.stair_impact_detected = 0U;
   vmc_stair_enter_stage(stage, now);
+}
+
+/* A stair finish is a controller handoff, not a return to the old balance
+ * controller.  Drop every position/velocity integral that was accumulated
+ * against the pre-step ground frame, then let get-up own the legs until it has
+ * rebuilt a quiet stand pose. */
+static void vmc_stair_reset_balance_for_getup(void)
+{
+  vmc_body_motion_kf_reset();
+  body_motion_kf_slip_initialized = 0U;
+  vmc_speed_dx_prev = 0.0;
+  vmc_speed_accel_lpf = 0.0;
+  vmc_speed_accel_initialized = 0U;
+  vmc_dpitch_lpf = 0.0;
+  vmc_lqr_d_theta_lpf = 0.0;
+  vmc_lqr_left_d_theta_lpf = 0.0;
+  vmc_lqr_right_d_theta_lpf = 0.0;
+
+  vmc_balance.wheel_output_enable = 0U;
+  vmc_balance.safety_allows_output = 0U;
+  vmc_balance.x_offset = 0.0f;
+  vmc_balance.speed_target = 0.0f;
+  vmc_balance.speed_target_ramped = 0.0f;
+  vmc_balance.speed_stop_hold_active = 0U;
+  vmc_balance.speed_pitch_offset = 0.0f;
+  vmc_balance.disturbance_observer_output = 0.0f;
+  vmc_balance.disturbance_observer_residual = 0.0f;
+  vmc_balance.disturbance_observer_neutral_time = 0.0f;
+  vmc_balance.disturbance_observer_active = 0U;
+  vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+  vmc_balance.yaw_hold_active = 0U;
+  vmc_balance.gimbal_follow_active = 0U;
+  vmc_control.roll_target = 0.0f;
+  vmc_balance.roll_remote_input = 0.0f;
+  vmc_balance.roll_remote_active = 0U;
+  vmc_wheel_control.yaw_hold_current = 0;
+  vmc_wheel_control.gimbal_follow_current = 0;
+  vmc_wheel_control.left_current = 0;
+  vmc_wheel_control.right_current = 0;
+}
+
+static void vmc_stair_handoff_to_getup(uint32_t now)
+{
+  const int8_t turn_direction =
+      (vmc_probe_state.body.pitch < 0.0) ? 1 : -1;
+
+  if (vmc_getup_safe_length_ready() == 0U) {
+    return;
+  }
+  vmc_stair_finish(VMC_STAIR_STAGE_FINISHED, VMC_STAIR_ABORT_NONE, now);
+  vmc_stair_reset_balance_for_getup();
+  /* Reset once more as get-up reaches READY.  The KF necessarily runs while
+   * the legs retract and swing upright, so its handoff-time zero is not the
+   * horizontal position that should be held after the chassis is standing. */
+  vmc_getup_reset_balance_on_ready = 1U;
+  (void)vmc_getup_enter_brace(turn_direction);
 }
 
 static void vmc_stair_update(void)
@@ -1795,10 +1852,53 @@ static void vmc_stair_update(void)
           ? 1U
           : 0U;
   const uint8_t stair_switch_enabled =
-      (remote_control_channel(RC_STAIR_ENABLE) > RC_SWITCH_ON_THRESHOLD)
+      (remote_frame_ready != 0U &&
+       remote_control_channel(RC_STAIR_ENABLE) > RC_SWITCH_ON_THRESHOLD)
           ? 1U
           : 0U;
-  uint8_t trigger_edge = 0U;
+  const uint32_t ready_confirm_ms =
+      clamp_u32(vmc_control.stair_ready_confirm_ms, 1U, 5000U);
+  const uint32_t speed_confirm_ms =
+      clamp_u32(vmc_control.stair_speed_confirm_ms, 1U, 1000U);
+  const uint32_t preimpact_confirm_ms =
+      clamp_u32(vmc_control.stair_preimpact_confirm_ms, 1U, 1000U);
+  const uint32_t impact_confirm_ms =
+      clamp_u32(vmc_control.stair_impact_confirm_ms, 1U, 200U);
+  const uint32_t dt_ms =
+      (uint32_t)(vmc_loop_dt() * 1000.0 + 0.5);
+  const double ready_length =
+      clamp_double(vmc_control.stair_ready_length,
+                   VMC_LEG_LENGTH_MIN,
+                   VMC_LEG_LENGTH_MAX);
+  const float impact_torque_threshold =
+      clamp_float(vmc_control.stair_impact_torque_threshold, 0.0f, 54.0f);
+  const float impact_theta_threshold =
+      clamp_float(vmc_control.stair_impact_theta_threshold, 0.0f, 3.15f);
+  const float speed_threshold =
+      clamp_float(vmc_control.stair_speed_threshold, 0.05f, 5.0f);
+  const float command_speed_threshold =
+      clamp_float(vmc_control.stair_command_speed_threshold, 0.0f, 3.0f);
+  const float impact_speed_drop_threshold =
+      clamp_float(vmc_control.stair_impact_diff_threshold, 0.05f, 10.0f);
+  const double wheel_speed_abs =
+      fabs(vmc_probe_state.motion.wheel_dx);
+  const uint8_t drive_command =
+      (fabs(vmc_balance.speed_target) >= command_speed_threshold) ? 1U : 0U;
+  const uint8_t speed_now =
+      (drive_command != 0U &&
+       wheel_speed_abs >= (double)speed_threshold)
+          ? 1U
+          : 0U;
+  const uint8_t high_gear =
+      (vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH) ? 1U : 0U;
+  const uint8_t ready_now =
+      (vmc_probe_state.left_leg.length >= ready_length &&
+       vmc_probe_state.right_leg.length >= ready_length)
+          ? 1U
+          : 0U;
+  uint8_t left_leg_changed = 0U;
+  uint8_t right_leg_changed = 0U;
+  uint8_t impact_now;
   uint8_t start_allowed;
 
   if (vmc_control.stair_stage_start_ms != 0U) {
@@ -1807,36 +1907,49 @@ static void vmc_stair_update(void)
     vmc_control.stair_stage_ms = 0U;
   }
 
-  /* Manual trigger only.  One disabled-to-enabled transition of channel 7
-   * fires one stair action; holding the switch does not retrigger it. */
-  if (remote_frame_ready == 0U) {
-    vmc_stair_manual_armed = 0U;
+  /* Channel 7 arms one automatic action.  It no longer fires on its own rising
+   * edge: the highest gear and the loaded, two-leg angle response must follow.
+   * A completed action consumes the arm, so leaving the switch on cannot
+   * retrigger it. */
+  if (remote_frame_ready == 0U || vmc_control.stair_enable == 0U) {
+    vmc_stair_auto_armed = 0U;
+    vmc_stair_reset_detector();
   } else if (stair_switch_enabled == 0U) {
-    vmc_stair_manual_armed = 1U;
-  } else if (vmc_stair_manual_armed != 0U) {
-    vmc_stair_manual_armed = 0U;
-    trigger_edge = 1U;
+    vmc_stair_auto_armed = 1U;
+    vmc_stair_reset_detector();
+  } else if (vmc_stair_is_active() != 0U ||
+             vmc_getup_is_active() != 0U ||
+             vmc_jump_is_active_or_aborted() != 0U) {
+    vmc_stair_auto_armed = 0U;
+    vmc_stair_reset_detector();
   }
 
-  /* Keep the legacy detector telemetry fields at zero.  The channels remain
-   * in the wire format for recorder compatibility, but no impact detection
-   * participates in the manual trigger anymore. */
-  vmc_control.stair_fast_detected = 0U;
-  vmc_control.stair_impact_detected = 0U;
-  vmc_control.stair_ready_detected = 0U;
-  vmc_control.stair_preimpact_armed = 0U;
-  vmc_control.stair_left_impact = 0U;
-  vmc_control.stair_right_impact = 0U;
-  vmc_control.stair_ready_ms = 0U;
-  vmc_control.stair_speed_ms = 0U;
-  vmc_control.stair_preimpact_ms = 0U;
-  vmc_control.stair_impact_ms = 0U;
-  vmc_control.stair_speed_abs = 0.0f;
+  if (ready_now != 0U && high_gear != 0U) {
+    if (vmc_control.stair_ready_ms < ready_confirm_ms) {
+      vmc_control.stair_ready_ms += dt_ms;
+      if (vmc_control.stair_ready_ms > ready_confirm_ms) {
+        vmc_control.stair_ready_ms = ready_confirm_ms;
+      }
+    }
+  } else {
+    vmc_control.stair_ready_ms = 0U;
+  }
+  vmc_control.stair_ready_detected =
+      (vmc_control.stair_ready_ms >= ready_confirm_ms) ? 1U : 0U;
+  vmc_control.stair_left_impact = left_leg_changed;
+  vmc_control.stair_right_impact = right_leg_changed;
+  vmc_control.stair_speed_abs = (float)wheel_speed_abs;
   vmc_control.stair_speed_diff = 0.0f;
   vmc_control.stair_accel = 0.0f;
+  vmc_control.stair_fast_detected =
+      (vmc_control.stair_speed_ms >= speed_confirm_ms) ? 1U : 0U;
+  vmc_control.stair_preimpact_armed = vmc_stair_preimpact_armed;
 
   if (vmc_control.stair_stage == VMC_STAIR_STAGE_FINISHED ||
       vmc_control.stair_stage == VMC_STAIR_STAGE_ABORT) {
+    vmc_stair_auto_armed = 0U;
+    vmc_control.stair_impact_ms = 0U;
+    vmc_control.stair_impact_detected = 0U;
     if ((now - vmc_control.stair_last_finish_ms) >= cooldown_ms) {
       vmc_control.stair_stage = VMC_STAIR_STAGE_IDLE;
       vmc_control.stair_stage_start_ms = 0U;
@@ -1851,9 +1964,101 @@ static void vmc_stair_update(void)
       return;
     }
     start_allowed = vmc_stair_start_is_allowed();
-    if (trigger_edge != 0U && start_allowed != 0U) {
+    if (vmc_stair_auto_armed == 0U || start_allowed == 0U ||
+        vmc_control.stair_ready_detected == 0U ||
+        high_gear == 0U || drive_command == 0U) {
+      vmc_stair_reset_detector();
+    } else if (vmc_stair_preimpact_armed == 0U) {
+      if (speed_now != 0U) {
+        if (vmc_control.stair_speed_ms < speed_confirm_ms) {
+          vmc_control.stair_speed_ms += dt_ms;
+          if (vmc_control.stair_speed_ms > speed_confirm_ms) {
+            vmc_control.stair_speed_ms = speed_confirm_ms;
+          }
+        }
+      } else {
+        vmc_control.stair_speed_ms = 0U;
+      }
+
+      if (vmc_control.stair_speed_ms >= speed_confirm_ms) {
+        if (vmc_control.stair_preimpact_ms < preimpact_confirm_ms) {
+          vmc_control.stair_preimpact_ms += dt_ms;
+          if (vmc_control.stair_preimpact_ms > preimpact_confirm_ms) {
+            vmc_control.stair_preimpact_ms = preimpact_confirm_ms;
+          }
+        }
+      } else {
+        vmc_control.stair_preimpact_ms = 0U;
+      }
+
+      if (vmc_control.stair_preimpact_ms >= preimpact_confirm_ms) {
+        vmc_stair_preimpact_armed = 1U;
+        vmc_stair_preimpact_speed_ref = wheel_speed_abs;
+      }
+    }
+
+    if (vmc_stair_preimpact_armed != 0U) {
+      const double left_theta = vmc_probe_state.motion.left_theta;
+      const double right_theta = vmc_probe_state.motion.right_theta;
+      const double wheel_speed_drop =
+          vmc_stair_preimpact_speed_ref - wheel_speed_abs;
+
+      vmc_control.stair_speed_diff = (float)wheel_speed_drop;
+      left_leg_changed =
+          (fabs(left_theta) >= (double)impact_theta_threshold)
+              ? 1U
+              : 0U;
+      right_leg_changed =
+          (fabs(right_theta) >= (double)impact_theta_threshold)
+              ? 1U
+              : 0U;
+      vmc_control.stair_left_impact = left_leg_changed;
+      vmc_control.stair_right_impact = right_leg_changed;
+    }
+
+    if (impact_torque_threshold > 0.0f &&
+        impact_theta_threshold > 0.0f) {
+      left_leg_changed =
+          (fabs((double)vmc_balance.left_wheel_torque_raw) >=
+               (double)impact_torque_threshold)
+              ? left_leg_changed
+              : 0U;
+      right_leg_changed =
+          (fabs((double)vmc_balance.right_wheel_torque_raw) >=
+               (double)impact_torque_threshold)
+              ? right_leg_changed
+              : 0U;
+      impact_now =
+          (vmc_stair_preimpact_armed != 0U &&
+           left_leg_changed != 0U &&
+           right_leg_changed != 0U)
+              ? 1U
+              : 0U;
+    } else {
+      impact_now =
+          (vmc_stair_preimpact_armed != 0U &&
+           vmc_control.stair_speed_diff >= impact_speed_drop_threshold)
+              ? 1U
+              : 0U;
+    }
+    vmc_control.stair_left_impact = left_leg_changed;
+    vmc_control.stair_right_impact = right_leg_changed;
+    if (impact_now != 0U) {
+      if (vmc_control.stair_impact_ms < impact_confirm_ms) {
+        vmc_control.stair_impact_ms += dt_ms;
+        if (vmc_control.stair_impact_ms > impact_confirm_ms) {
+          vmc_control.stair_impact_ms = impact_confirm_ms;
+        }
+      }
+    } else {
+      vmc_control.stair_impact_ms = 0U;
+    }
+    vmc_control.stair_impact_detected =
+        (vmc_control.stair_impact_ms >= impact_confirm_ms) ? 1U : 0U;
+    if (vmc_control.stair_impact_detected != 0U) {
       vmc_control.stair_trigger_count++;
       vmc_control.stair_abort_reason = VMC_STAIR_ABORT_NONE;
+      vmc_stair_auto_armed = 0U;
       vmc_stair_enter_stage(VMC_STAIR_STAGE_LIFT, now);
     }
     return;
@@ -1866,8 +2071,6 @@ static void vmc_stair_update(void)
     const uint32_t retract_timeout_ms =
         clamp_u32(vmc_control.stair_retract_timeout_ms, 50U, 2000U);
     const uint32_t hold_ms = clamp_u32(vmc_control.stair_hold_ms, 1U, 3000U);
-    const uint32_t recover_ms =
-        clamp_u32(vmc_control.stair_recover_ms, 1U, 3000U);
     const uint32_t pose_confirm_ms =
         clamp_u32(vmc_control.stair_pose_confirm_ms, 1U, 1000U);
     const uint32_t dt_ms =
@@ -1877,7 +2080,10 @@ static void vmc_stair_update(void)
       vmc_stair_finish(VMC_STAIR_STAGE_ABORT, abort_reason, now);
       return;
     }
-    if ((now - vmc_control.stair_start_ms) >= total_timeout_ms) {
+    if ((now - vmc_control.stair_start_ms) >= total_timeout_ms &&
+        !(vmc_control.stair_stage == VMC_STAIR_STAGE_SETTLE &&
+          vmc_control.stair_stage_ms >= hold_ms &&
+          vmc_getup_safe_length_ready() == 0U)) {
       vmc_stair_finish(VMC_STAIR_STAGE_ABORT, VMC_STAIR_ABORT_TIMEOUT, now);
       return;
     }
@@ -1912,258 +2118,10 @@ static void vmc_stair_update(void)
       }
     } else if (vmc_control.stair_stage == VMC_STAIR_STAGE_SETTLE) {
       if (vmc_control.stair_stage_ms >= hold_ms) {
-        vmc_stair_enter_stage(VMC_STAIR_STAGE_RECOVER, now);
-      }
-    } else if (vmc_control.stair_stage == VMC_STAIR_STAGE_RECOVER) {
-      if (vmc_control.stair_stage_ms >= recover_ms) {
-        vmc_stair_finish(VMC_STAIR_STAGE_FINISHED,
-                         VMC_STAIR_ABORT_NONE,
-                         now);
+        vmc_stair_handoff_to_getup(now);
       }
     } else {
       vmc_stair_finish(VMC_STAIR_STAGE_ABORT, VMC_STAIR_ABORT_TIMEOUT, now);
-    }
-  }
-}
-
-static uint8_t vmc_descent_is_active(void)
-{
-  return (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND ||
-          vmc_control.descent_stage == VMC_DESCENT_STAGE_CUSHION)
-             ? 1U
-             : 0U;
-}
-
-static uint8_t vmc_descent_overrides_target(void)
-{
-  return vmc_descent_is_active();
-}
-
-static uint8_t vmc_descent_blocks_wheel_output(void)
-{
-  return (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND) ? 1U : 0U;
-}
-
-static double vmc_descent_target_length(void)
-{
-  return clamp_double(vmc_control.descent_length_command,
-                      VMC_LEG_LENGTH_MIN,
-                      VMC_LEG_LENGTH_MAX);
-}
-
-static uint8_t vmc_descent_start_is_allowed(void)
-{
-  const double start_speed =
-      clamp_double(vmc_control.descent_start_speed, 0.0, 2.0);
-  const uint32_t start_confirm_ms =
-      clamp_u32(vmc_control.descent_start_confirm_ms, 1U, 500U);
-  const uint8_t flight_detected =
-      (vmc_probe_state.airborne_active != 0U ||
-       (vmc_probe_state.airborne_candidate != 0U &&
-        vmc_probe_state.airborne_candidate_ms >= start_confirm_ms))
-          ? 1U
-          : 0U;
-  const uint8_t long_stance =
-      (vmc_control.stair_length_override_active != 0U ||
-       vmc_remote_leg_length_gear() == VMC_LEG_GEAR_HIGH)
-          ? 1U
-          : 0U;
-  const uint8_t travelling =
-      (fabs(vmc_probe_state.motion.kf_dx) >= start_speed) ? 1U : 0U;
-
-  return (vmc_control.descent_enable != 0U &&
-          vmc_control.enabled != 0U &&
-          vmc_balance.wheel_output_enable != 0U &&
-          vmc_fall_rearm_required == 0U &&
-          vmc_probe_state.feedback_timeout_active == 0U &&
-          vmc_getup_is_active() == 0U &&
-          vmc_jump_is_active_or_aborted() == 0U &&
-          vmc_stair_is_active() == 0U &&
-          remote_control_stair_enabled() != 0U &&
-          remote_control_allows_joint_enable() != 0U &&
-          long_stance != 0U && flight_detected != 0U &&
-          (vmc_control.stair_length_override_active != 0U ||
-           travelling != 0U))
-             ? 1U
-             : 0U;
-}
-
-static uint8_t vmc_descent_abort_reason(void)
-{
-  if (vmc_control.descent_enable == 0U ||
-      remote_control.valid == 0U || remote_control.rx_count == 0U ||
-      (HAL_GetTick() - remote_control.last_update_ms) > RC_LOST_TIMEOUT_MS ||
-      remote_control_allows_joint_enable() == 0U) {
-    return VMC_DESCENT_ABORT_REMOTE;
-  }
-  if (vmc_probe_state.feedback_timeout_active != 0U) {
-    return VMC_DESCENT_ABORT_FEEDBACK;
-  }
-  if (vmc_getup_is_active() != 0U || vmc_fall_rearm_required != 0U) {
-    return VMC_DESCENT_ABORT_GETUP;
-  }
-  if (vmc_jump_is_active_or_aborted() != 0U) {
-    return VMC_DESCENT_ABORT_JUMP;
-  }
-  if (vmc_stair_is_active() != 0U) {
-    return VMC_DESCENT_ABORT_STAIR;
-  }
-  return VMC_DESCENT_ABORT_NONE;
-}
-
-static void vmc_descent_enter_stage(uint8_t stage, uint32_t now)
-{
-  vmc_control.descent_stage = stage;
-  vmc_control.descent_stage_start_ms = now;
-  vmc_control.descent_stage_ms = 0U;
-}
-
-static void vmc_descent_finish(uint8_t stage, uint8_t reason, uint32_t now)
-{
-  if (stage == VMC_DESCENT_STAGE_ABORT) {
-    vmc_control.descent_abort_count++;
-    vmc_control.descent_abort_reason = reason;
-  } else {
-    vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
-  }
-  vmc_control.descent_last_finish_ms = now;
-  vmc_control.descent_length_command = vmc_control.descent_entry_length;
-  vmc_descent_enter_stage(stage, now);
-}
-
-static void vmc_descent_update(void)
-{
-  const uint32_t now = HAL_GetTick();
-  uint32_t dt_ms = 1U;
-
-  if (vmc_descent_last_update_ms != 0U) {
-    dt_ms = now - vmc_descent_last_update_ms;
-    if (dt_ms == 0U) {
-      dt_ms = 1U;
-    } else if (dt_ms > 100U) {
-      dt_ms = 100U;
-    }
-  }
-  vmc_descent_last_update_ms = now;
-
-  if (vmc_control.descent_stage_start_ms != 0U) {
-    vmc_control.descent_stage_ms = now - vmc_control.descent_stage_start_ms;
-  } else {
-    vmc_control.descent_stage_ms = 0U;
-  }
-
-  if (vmc_control.descent_stage == VMC_DESCENT_STAGE_FINISHED ||
-      vmc_control.descent_stage == VMC_DESCENT_STAGE_ABORT) {
-    const uint32_t cooldown_ms =
-        clamp_u32(vmc_control.descent_cooldown_ms, 0U, 5000U);
-    if ((now - vmc_control.descent_last_finish_ms) >= cooldown_ms) {
-      vmc_control.descent_stage = VMC_DESCENT_STAGE_IDLE;
-      vmc_control.descent_stage_start_ms = 0U;
-      vmc_control.descent_stage_ms = 0U;
-      vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
-    }
-    return;
-  }
-
-  if (vmc_control.descent_stage == VMC_DESCENT_STAGE_IDLE) {
-    if (vmc_descent_start_is_allowed() != 0U) {
-      const double leg_length_avg =
-          (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) *
-          0.5;
-      const double configured_extend = clamp_double(
-          vmc_control.descent_extend_length,
-          VMC_LEG_LENGTH_MIN,
-          VMC_LEG_LENGTH_MAX);
-
-      vmc_control.descent_trigger_count++;
-      vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
-      vmc_control.descent_contact_detected = 0U;
-      vmc_control.descent_contact_confirm_ms = 0U;
-      vmc_control.descent_contact_ms = 0U;
-      vmc_control.descent_contact_torque_measured = 0.0f;
-      vmc_control.descent_entry_length = (float)leg_length_avg;
-      vmc_control.descent_extend_target = (float)clamp_double(
-          fmax(configured_extend,
-               leg_length_avg + (double)VMC_DESCENT_MIN_EXTEND_DELTA),
-          VMC_LEG_LENGTH_MIN,
-          VMC_LEG_LENGTH_MAX);
-      vmc_control.descent_length_command = (float)leg_length_avg;
-      vmc_control.descent_start_ms = now;
-      vmc_descent_enter_stage(VMC_DESCENT_STAGE_EXTEND, now);
-    }
-    return;
-  }
-
-  {
-    const uint8_t abort_reason = vmc_descent_abort_reason();
-    const uint32_t air_timeout_ms =
-        clamp_u32(vmc_control.descent_air_timeout_ms, 100U, 5000U);
-    const uint32_t cushion_timeout_ms =
-        clamp_u32(vmc_control.descent_cushion_timeout_ms, 20U, 1000U);
-    const float contact_torque_threshold =
-        clamp_float(vmc_control.descent_contact_torque, 0.1f, 54.0f);
-    const uint32_t contact_confirm_ms =
-        clamp_u32(vmc_control.descent_contact_confirm_ms, 1U, 200U);
-    const double extend_step =
-        clamp_double(vmc_control.descent_extend_rate, 0.0, 2.0) *
-        vmc_loop_dt();
-    const double return_step =
-        clamp_double(vmc_control.descent_return_rate, 0.0, 2.0) *
-        vmc_loop_dt();
-
-    if (abort_reason != VMC_DESCENT_ABORT_NONE) {
-      vmc_descent_finish(VMC_DESCENT_STAGE_ABORT, abort_reason, now);
-      return;
-    }
-
-    if (vmc_control.descent_stage == VMC_DESCENT_STAGE_EXTEND) {
-      const double contact_torque = vmc_average_joint_torque_abs();
-      vmc_control.descent_length_command = (float)vmc_step_towards(
-          vmc_control.descent_length_command,
-          vmc_control.descent_extend_target,
-          extend_step);
-
-      if (contact_torque >= (double)contact_torque_threshold) {
-        if (vmc_control.descent_contact_confirm_ms < contact_confirm_ms) {
-          vmc_control.descent_contact_confirm_ms += dt_ms;
-        }
-      } else {
-        vmc_control.descent_contact_confirm_ms = 0U;
-      }
-
-      if (vmc_control.descent_contact_confirm_ms >= contact_confirm_ms) {
-        vmc_control.descent_contact_detected = 1U;
-        vmc_control.descent_contact_ms = now - vmc_control.descent_start_ms;
-        vmc_control.descent_contact_torque_measured = (float)contact_torque;
-        vmc_descent_enter_stage(VMC_DESCENT_STAGE_CUSHION, now);
-      } else if (vmc_control.descent_stage_ms >= air_timeout_ms) {
-        vmc_descent_finish(VMC_DESCENT_STAGE_ABORT,
-                           VMC_DESCENT_ABORT_TIMEOUT,
-                           now);
-      }
-    } else if (vmc_control.descent_stage == VMC_DESCENT_STAGE_CUSHION) {
-      const double measured_leg_avg =
-          (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) *
-          0.5;
-      vmc_control.descent_length_command = (float)vmc_step_towards(
-          vmc_control.descent_length_command,
-          vmc_control.descent_entry_length,
-          return_step);
-
-      if ((fabs(vmc_control.descent_length_command -
-                vmc_control.descent_entry_length) <= 0.0005 &&
-           measured_leg_avg <=
-               (double)vmc_control.descent_entry_length +
-                   (double)VMC_DESCENT_LENGTH_READY_TOL) ||
-          vmc_control.descent_stage_ms >= cushion_timeout_ms) {
-        vmc_descent_finish(VMC_DESCENT_STAGE_FINISHED,
-                           VMC_DESCENT_ABORT_NONE,
-                           now);
-      }
-    } else {
-      vmc_descent_finish(VMC_DESCENT_STAGE_ABORT,
-                         VMC_DESCENT_ABORT_TIMEOUT,
-                         now);
     }
   }
 }
@@ -2461,8 +2419,11 @@ static double vmc_getup_ready_release_scale(void)
       1.0);
 }
 
-static void vmc_getup_enter_brace(int8_t turn_direction)
+static uint8_t vmc_getup_enter_brace(int8_t turn_direction)
 {
+  if (vmc_getup_safe_length_ready() == 0U) {
+    return 0U;
+  }
   vmc_control.getup_state = VMC_GETUP_STATE_BRACE;
   vmc_control.getup_turn_direction = turn_direction;
   vmc_control.getup_body_flip_direction = 0;
@@ -2499,6 +2460,7 @@ static void vmc_getup_enter_brace(int8_t turn_direction)
   vmc_control.getup_upright_phi0_right = vmc_probe_state.right_leg.phi0;
   vmc_control.getup_phi0_feedforward_left = 0.0f;
   vmc_control.getup_phi0_feedforward_right = 0.0f;
+  return 1U;
 }
 
 static void vmc_getup_enter_stage(uint8_t state)
@@ -2594,6 +2556,7 @@ static void vmc_getup_abort(void)
   vmc_control.getup_left_confirm_ms = 0U;
   vmc_control.getup_right_confirm_ms = 0U;
   vmc_control.getup_lqr_release_pending = 0U;
+  vmc_getup_reset_balance_on_ready = 0U;
   vmc_control.getup_state_ms = 0U;
   vmc_control.getup_confirm_ms = 0U;
   vmc_fall_rearm_required = 1U;
@@ -2643,6 +2606,7 @@ static void vmc_update_getup_state(void)
     vmc_control.getup_left_direction = 0;
     vmc_control.getup_right_direction = 0;
     vmc_control.getup_lqr_release_pending = 0U;
+    vmc_getup_reset_balance_on_ready = 0U;
     vmc_control.getup_state_ms = 0U;
     vmc_control.getup_confirm_ms = 0U;
     vmc_control.getup_left_confirm_ms = 0U;
@@ -2710,26 +2674,26 @@ static void vmc_update_getup_state(void)
   if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
        vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
       fully_fallen != 0U) {
-    vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
+    (void)vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
   } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
               vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
              pose_getup_allowed != 0U &&
              vmc_getup_body_fan_is_required() != 0U) {
-    vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
+    (void)vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
   } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
               vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
              pose_getup_allowed != 0U &&
              vmc_getup_leg_recover_is_required() != 0U) {
-    vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
+    (void)vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
   } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
               vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
              pose_getup_allowed != 0U &&
              vmc_getup_direct_shrink_is_required() != 0U) {
-    vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
+    (void)vmc_getup_enter_brace((pitch < 0.0) ? 1 : -1);
   } else if ((vmc_control.getup_state == VMC_GETUP_STATE_IDLE ||
               vmc_control.getup_state == VMC_GETUP_STATE_READY) &&
              vmc_control.getup_lqr_release_pending != 0U) {
-    vmc_getup_enter_brace(-1);
+    (void)vmc_getup_enter_brace(-1);
   }
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE &&
@@ -3153,6 +3117,10 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_confirm_ms = 0U;
     }
     if (vmc_control.getup_confirm_ms >= VMC_GETUP_READY_CONFIRM_MS) {
+      if (vmc_getup_reset_balance_on_ready != 0U) {
+        vmc_stair_reset_balance_for_getup();
+        vmc_getup_reset_balance_on_ready = 0U;
+      }
       vmc_control.getup_state = VMC_GETUP_STATE_READY;
       vmc_control.getup_turn_direction = 0;
       vmc_control.getup_body_flip_direction = 0;
@@ -3764,7 +3732,6 @@ static uint8_t vmc_safety_allows_output(void)
           vmc_probe_state.feedback_timeout_active == 0U &&
           vmc_probe_state.airborne_active == 0U &&
           vmc_jump_blocks_wheel_output() == 0U &&
-          vmc_descent_blocks_wheel_output() == 0U &&
           remote_control_allows_joint_enable() != 0U)
              ? 1U
              : 0U;
@@ -3826,7 +3793,6 @@ static void vmc_update_airborne_state(void)
        vmc_probe_state.feedback_timeout_active == 0U &&
       vmc_getup_is_active() == 0U &&
       vmc_jump_is_active_or_aborted() == 0U &&
-      vmc_descent_is_active() == 0U &&
       remote_control_allows_joint_enable() != 0U)
           ? 1U
           : 0U;
@@ -4557,7 +4523,6 @@ void vmc_balance_update(void)
        vmc_control.stair_length_override_active == 0U &&
        vmc_getup_is_active() == 0U &&
        vmc_stair_is_active() == 0U &&
-       vmc_descent_is_active() == 0U &&
        vmc_jump_is_active_or_aborted() == 0U)
           ? 1U
           : 0U;
@@ -4798,7 +4763,6 @@ static void vmc_balance_apply_wheel_output(void)
       vmc_balance.wheel_output_user_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       vmc_jump_blocks_wheel_output() == 0U &&
-      vmc_descent_blocks_wheel_output() == 0U &&
       vmc_safety_allows_output() != 0U) {
     if (vmc_balance.gimbal_follow_active != 0U) {
       yaw_current = vmc_update_gimbal_follow_current();
@@ -5092,7 +5056,6 @@ void vmc_control_init(void)
   vmc_control.stair_stage = VMC_STAIR_STAGE_IDLE;
   vmc_control.stair_abort_reason = VMC_STAIR_ABORT_NONE;
   vmc_control.stair_length_override_active = 0U;
-  vmc_control.stair_length_override_remote_position = 0U;
   vmc_control.stair_fast_detected = 0U;
   vmc_control.stair_impact_detected = 0U;
   vmc_control.stair_ready_detected = 0U;
@@ -5163,38 +5126,7 @@ void vmc_control_init(void)
   vmc_control.stair_retract_support_force =
       VMC_STAIR_RETRACT_SUPPORT_FORCE_DEFAULT;
   vmc_control.stair_support_force = VMC_STAIR_SUPPORT_FORCE_DEFAULT;
-  vmc_control.descent_enable = VMC_DESCENT_ENABLE_DEFAULT;
-  vmc_control.descent_stage = VMC_DESCENT_STAGE_IDLE;
-  vmc_control.descent_abort_reason = VMC_DESCENT_ABORT_NONE;
-  vmc_control.descent_contact_detected = 0U;
-  vmc_control.descent_stage_start_ms = 0U;
-  vmc_control.descent_start_ms = 0U;
-  vmc_control.descent_last_finish_ms = 0U;
-  vmc_control.descent_stage_ms = 0U;
-  vmc_control.descent_contact_ms = 0U;
-  vmc_control.descent_trigger_count = 0U;
-  vmc_control.descent_abort_count = 0U;
-  vmc_control.descent_start_confirm_ms =
-      VMC_DESCENT_START_CONFIRM_MS_DEFAULT;
-  vmc_control.descent_contact_confirm_ms =
-      VMC_DESCENT_CONTACT_CONFIRM_MS_DEFAULT;
-  vmc_control.descent_air_timeout_ms = VMC_DESCENT_AIR_TIMEOUT_MS_DEFAULT;
-  vmc_control.descent_cushion_timeout_ms =
-      VMC_DESCENT_CUSHION_TIMEOUT_MS_DEFAULT;
-  vmc_control.descent_cooldown_ms = VMC_DESCENT_COOLDOWN_MS_DEFAULT;
-  vmc_control.descent_extend_length = VMC_DESCENT_EXTEND_LENGTH_DEFAULT;
-  vmc_control.descent_extend_rate = VMC_DESCENT_EXTEND_RATE_DEFAULT;
-  vmc_control.descent_return_rate = VMC_DESCENT_RETURN_RATE_DEFAULT;
-  vmc_control.descent_kp_length = VMC_DESCENT_LENGTH_KP_DEFAULT;
-  vmc_control.descent_kd_length = VMC_DESCENT_LENGTH_KD_DEFAULT;
-  vmc_control.descent_max_force = VMC_DESCENT_FORCE_MAX_DEFAULT;
-  vmc_control.descent_support_force = VMC_DESCENT_SUPPORT_FORCE_DEFAULT;
-  vmc_control.descent_start_speed = VMC_DESCENT_START_SPEED_DEFAULT;
-  vmc_control.descent_contact_torque = VMC_DESCENT_CONTACT_TORQUE_DEFAULT;
-  vmc_control.descent_entry_length = VMC_LEG_LENGTH_DEFAULT;
-  vmc_control.descent_extend_target = VMC_DESCENT_EXTEND_LENGTH_DEFAULT;
-  vmc_control.descent_length_command = VMC_LEG_LENGTH_DEFAULT;
-  vmc_control.descent_contact_torque_measured = 0.0f;
+  vmc_stair_reset_detector();
   vmc_control.ramped_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.length_ramp_rate = VMC_LEG_LENGTH_RAMP_RATE_DEFAULT;
   vmc_control.kp_length = VMC_LEG_LENGTH_KP_DEFAULT;
@@ -5281,9 +5213,7 @@ void vmc_control_init(void)
   vmc_fall_prev_fully_fallen = 0U;
   vmc_jump_last_update_ms = 0U;
   vmc_jump_auto_hold_ms = 0U;
-  vmc_stair_manual_armed = 0U;
-  vmc_stair_length_pending_remote_position = 0U;
-  vmc_stair_length_pending_since_ms = 0U;
+  vmc_stair_auto_armed = 0U;
   vmc_control.ramp_active = 0U;
 }
 
@@ -5463,9 +5393,7 @@ void vmc_control_update(void)
   double kd_phi0;
   uint8_t jump_override;
   uint8_t stair_override;
-  uint8_t descent_override;
   uint8_t jump_force_profile;
-  uint8_t descent_force_profile;
   uint8_t stair_force_profile;
   uint8_t getup_force_profile;
   uint8_t getup_fan_profile;
@@ -5497,7 +5425,6 @@ void vmc_control_update(void)
   }
   jump_override = vmc_jump_overrides_target();
   stair_override = vmc_stair_overrides_target();
-  descent_override = vmc_descent_overrides_target();
 
   if (vmc_control.enabled == 0U ||
       vmc_fall_rearm_required != 0U ||
@@ -5554,8 +5481,6 @@ void vmc_control_update(void)
     target_length = VMC_GETUP_STAND_LENGTH;
   } else if (jump_override != 0U) {
     target_length = vmc_jump_stage_target_length();
-  } else if (descent_override != 0U) {
-    target_length = vmc_descent_target_length();
   } else if (stair_override != 0U ||
              vmc_control.stair_length_override_active != 0U) {
     target_length = vmc_stair_target_length();
@@ -5566,7 +5491,7 @@ void vmc_control_update(void)
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
       vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     ramped_target_length = target_length;
-  } else if (jump_override != 0U || descent_override != 0U) {
+  } else if (jump_override != 0U) {
     ramped_target_length = target_length;
   } else {
     length_ramp_rate =
@@ -5595,7 +5520,6 @@ void vmc_control_update(void)
       (vmc_control.roll_comp_enable != 0U &&
        vmc_getup_is_active() == 0U &&
        jump_override == 0U &&
-       descent_override == 0U &&
        stair_override == 0U &&
        vmc_control.stair_length_override_active == 0U &&
        vmc_probe_state.body.imu_valid != 0U &&
@@ -5604,15 +5528,10 @@ void vmc_control_update(void)
                          -roll_comp_limit,
                          roll_comp_limit)
           : 0.0;
-  roll_comp_offset =
-      (descent_override != 0U)
-          ? 0.0
-          : vmc_step_towards(vmc_control.roll_comp_offset,
-                             roll_comp_desired,
-                             clamp_double(vmc_control.roll_comp_ramp_rate,
-                                          0.0,
-                                          1.0) *
-                                 vmc_loop_dt());
+  roll_comp_offset = vmc_step_towards(
+      vmc_control.roll_comp_offset,
+      roll_comp_desired,
+      clamp_double(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) * vmc_loop_dt());
   vmc_control.roll_comp_offset = (float)roll_comp_offset;
 
   left_target_length =
@@ -5651,7 +5570,6 @@ void vmc_control_update(void)
   if (vmc_control.leg_follow_enable != 0U &&
       vmc_getup_is_active() == 0U &&
       jump_override == 0U &&
-      descent_override == 0U &&
       stair_override == 0U &&
       vmc_control.stair_length_override_active == 0U) {
     const double dt = vmc_loop_dt();
@@ -5834,11 +5752,8 @@ void vmc_control_update(void)
        vmc_control.jump_stage == VMC_JUMP_STAGE_RETRACT)
           ? 1U
           : 0U;
-  descent_force_profile = (descent_override != 0U) ? 1U : 0U;
   stair_force_profile =
-      (descent_force_profile == 0U &&
-       (stair_override != 0U ||
-        vmc_control.stair_length_override_active != 0U))
+      (stair_override != 0U)
           ? 1U
           : 0U;
   if (getup_force_profile != 0U) {
@@ -5850,12 +5765,6 @@ void vmc_control_update(void)
     kp_length = clamp_double(vmc_control.jump_kp_length, 0.0, 5000.0);
     kd_length = clamp_double(vmc_control.jump_kd_length, 0.0, 1000.0);
     max_force = clamp_double(vmc_control.jump_max_force,
-                             0.0,
-                             VMC_LEG_FORCE_MAX_DEFAULT);
-  } else if (descent_force_profile != 0U) {
-    kp_length = clamp_double(vmc_control.descent_kp_length, 0.0, 5000.0);
-    kd_length = clamp_double(vmc_control.descent_kd_length, 0.0, 1000.0);
-    max_force = clamp_double(vmc_control.descent_max_force,
                              0.0,
                              VMC_LEG_FORCE_MAX_DEFAULT);
   } else if (stair_force_profile != 0U) {
@@ -6028,19 +5937,13 @@ void vmc_control_update(void)
     /* Match Shanhai's body-relative theta poses: first lift to 90 degrees,
      * then retract to the 60 degree climbing pose.  Convert the desired
      * world-frame theta back to the absolute phi0 command every cycle. */
-    const double stair_phi0_command =
-        (vmc_control.stair_stage == VMC_STAIR_STAGE_RECOVER)
-            ? vmc_angle_nearest_to(
-                  (double)VMC_PHI0_VERTICAL_RAD +
-                      (double)vmc_probe_state.body.pitch,
-                  (vmc_control.stair_phi0_ramped))
-            : vmc_angle_nearest_to(
-                  (double)VMC_PHI0_VERTICAL_RAD +
-                      (double)vmc_probe_state.body.pitch +
-                      ((vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
-                           ? (double)vmc_control.stair_lift_theta
-                           : (double)vmc_control.stair_retract_theta),
-                  (vmc_control.stair_phi0_ramped));
+    const double stair_phi0_command = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD +
+            (double)vmc_probe_state.body.pitch +
+            ((vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
+                 ? (double)vmc_control.stair_lift_theta
+                 : (double)vmc_control.stair_retract_theta),
+        (vmc_control.stair_phi0_ramped));
     vmc_control.stair_phi0_ramped = (float)vmc_step_towards(
         vmc_control.stair_phi0_ramped,
         stair_phi0_command,
@@ -6173,10 +6076,6 @@ void vmc_control_update(void)
     support_force = clamp_double(vmc_control.jump_support_force,
                                  -VMC_LEG_SUPPORT_FORCE_MAX,
                                  VMC_LEG_SUPPORT_FORCE_MAX);
-  } else if (descent_force_profile != 0U) {
-    support_force = clamp_double(vmc_control.descent_support_force,
-                                 -VMC_LEG_SUPPORT_FORCE_MAX,
-                                 VMC_LEG_SUPPORT_FORCE_MAX);
   } else if (stair_force_profile != 0U) {
     const double stair_support =
         (vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
@@ -6287,7 +6186,6 @@ void vmc_wheel_control_update(void)
          vmc_probe_state.airborne_active == 0U &&
          vmc_probe_state.feedback_timeout_active == 0U &&
          vmc_jump_blocks_wheel_output() == 0U &&
-         vmc_descent_blocks_wheel_output() == 0U &&
          vmc_stair_blocks_wheel_output() == 0U &&
          remote_control_allows_joint_enable() != 0U)
             ? 1U
@@ -6454,7 +6352,6 @@ void vmc_probe_task(void const *argument)
     vmc_update_motion_state();
     vmc_jump_update();
     vmc_update_airborne_state();
-    vmc_descent_update();
     vmc_stair_update();
     vmc_lqr_rtt_update();
     vmc_update_lqr_gain();

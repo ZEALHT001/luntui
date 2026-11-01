@@ -498,8 +498,8 @@ FORMAT_V25_PROFILE = Profile(
     },
 )
 
-# Automatic descent assist (schema 22).  The stage is EXTEND while the wheels
-# remain gated, then CUSHION after measured joint load confirms touchdown.
+# Legacy schema-22 descent slots.  The firmware now emits fixed zeros here so
+# older capture files and every earlier telemetry index remain compatible.
 FORMAT_PROFILE = Profile(
     name="format",
     field_count=187,
@@ -768,7 +768,7 @@ CSV_FIELDS = [
     "rc_source",
     "remote_s1",
     "remote_s2",
-    # Automatic descent assist.
+    # Legacy reserved descent slots (always zero in current firmware).
     "descent_stage",
     "descent_abort_reason",
     "descent_contact_detected",
@@ -950,7 +950,7 @@ class KalmanSample:
     stair_speed_ms: float = INVALID_VALUE
     stair_preimpact_ms: float = INVALID_VALUE
     stair_impact_ms: float = INVALID_VALUE
-    # Automatic descent assist (schema 22).
+    # Legacy reserved descent slots (always zero in current firmware).
     descent_stage: float = INVALID_VALUE
     descent_abort_reason: float = INVALID_VALUE
     descent_contact_detected: float = INVALID_VALUE

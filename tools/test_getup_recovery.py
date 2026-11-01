@@ -235,6 +235,19 @@ class ProfileTest(unittest.TestCase):
 
 
 class StateMachineTest(unittest.TestCase):
+    def test_every_entry_requires_a_safe_knob_length(self) -> None:
+        self.assertAlmostEqual(_macro("VMC_GETUP_SAFE_LENGTH_MAX"), 0.220)
+        source = SOURCE.read_text(encoding="utf-8")
+        ready = _body(source, "vmc_getup_safe_length_ready")
+        self.assertIn("VMC_GETUP_SAFE_LENGTH_MAX", ready)
+        self.assertIn("remote_control_source != RC_SOURCE_SBUS", ready)
+        self.assertIn("RC_LOST_TIMEOUT_MS", ready)
+        self.assertIn("vmc_remote_leg_length_target()", ready)
+
+        brace = _body(source, "vmc_getup_enter_brace")
+        self.assertIn("vmc_getup_safe_length_ready() == 0U", brace)
+        self.assertIn("return 0U;", brace)
+
     def test_entry_starts_with_brace_instead_of_turn(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_getup_state")
         _has(body, "VMC_GETUP_STATE_BRACE", "the recovery entry has no brace stage")
