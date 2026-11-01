@@ -440,17 +440,18 @@ extern "C" {
  *         + L0*dtheta^2*cos(theta)
  *   FN  = P + m_w*g + m_w*ddz
  *
- * FN below the threshold means that wheel is unloaded.  Only that wheel's
- * torque is cut.  Its joints keep running with Tp reduced to the theta/dtheta
- * posture terms, while its length target remains the channel-9 command; there
- * is no automatic air length and no leg-follow extension. */
+ * FN below the threshold means that wheel is unloaded.  That wheel's torque is
+ * cut, its leg target ramps to Shanhai's 0.30 m air length, and Tp keeps only
+ * the theta/dtheta posture terms.  The channel-9 target is restored after the
+ * short airborne-state release hold. */
 #define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
 /* Vehicle calibration (2026-11-01):
  *   grounded FN p01/median: left 72.8/79.7 N, right 65.4/67.8 N
  *   airborne FN median:     left 22.6 N, right 23.5 N
  * Shanhai's 80 N value cuts both wheels in a normal crouch on this chassis.
- * 40 N preserves a wide ground/air margin and is the tested default here. */
-#define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 40.0f
+ * 35 N gives the partial-lift case extra margin while remaining well above
+ * the measured airborne median. */
+#define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 35.0f
 /* Whole-machine compatibility thresholds.  Wheel speed and pitch no longer
  * participate in ground detection. */
 #define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 20U
@@ -459,14 +460,17 @@ extern "C" {
 #define VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT 4.0f
 #define VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT 200U
 #define VMC_AIRBORNE_PITCH_REFERENCE_NONE (-999.0f)
-/* Shanhai's contact test is per side.  A short confirmation rejects feedback
- * spikes.  Release uses a small hysteresis band but no time delay: once FN
- * reaches the release threshold, wheel output returns in the same control
- * cycle. */
+/* FN is filtered before the threshold comparison.  Entry and release use a
+ * wide hysteresis band.  Wheel output is released immediately, while the leg
+ * posture/0.30 m state has a short minimum hold to avoid state chatter. */
 #define VMC_AIRBORNE_SIDE_ENABLE_DEFAULT 1U
-#define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 20U
+#define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 30U
 #define VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT 100U
-#define VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT 1.25f
+#define VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT 1.70f
+#define VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT 100U
+#define VMC_AIRBORNE_LENGTH_RAMP_RATE_DEFAULT 0.30f
+#define VMC_AIRBORNE_FN_FILTER_ALPHA_DEFAULT 0.18f
+#define VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT 0.30f
 #define VMC_WHEEL_MASS_KG                  0.40f
 #define VMC_LEG_ACCEL_FILTER_ALPHA_DEFAULT 0.20f
 #define VMC_AIRBORNE_SIDE_LEFT  0U
@@ -1712,6 +1716,11 @@ typedef struct {
   uint8_t airborne_side_candidate[VMC_AIRBORNE_SIDE_COUNT];
   uint32_t airborne_side_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
   uint32_t airborne_side_release_candidate_ms[VMC_AIRBORNE_SIDE_COUNT];
+  float airborne_side_fn_filtered[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t airborne_side_fn_filter_initialized[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t airborne_side_posture_active[VMC_AIRBORNE_SIDE_COUNT];
+  uint32_t airborne_side_posture_ms[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t airborne_side_length_returning[VMC_AIRBORNE_SIDE_COUNT];
   /* Measured control-loop timing.  loop_dt_s is the period handed to every
    * time-based term in the controller, loop_dt_us the same value in the
    * telemetry's integer encoding, and loop_count an iteration counter so a

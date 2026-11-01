@@ -1264,6 +1264,11 @@ static void vmc_clear_airborne_latch(void)
     vmc_probe_state.airborne_side_candidate[side] = 0U;
     vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
     vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+    vmc_probe_state.airborne_side_fn_filtered[side] = 0.0f;
+    vmc_probe_state.airborne_side_fn_filter_initialized[side] = 0U;
+    vmc_probe_state.airborne_side_posture_active[side] = 0U;
+    vmc_probe_state.airborne_side_posture_ms[side] = 0U;
+    vmc_probe_state.airborne_side_length_returning[side] = 0U;
   }
 }
 
@@ -3870,6 +3875,18 @@ static void vmc_update_airborne_state(void)
 
     for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
       side_fn_valid[side] = vmc_side_support_force(side, &side_fn[side]);
+      if (side_fn_valid[side] != 0U) {
+        if (vmc_probe_state.airborne_side_fn_filter_initialized[side] == 0U) {
+          vmc_probe_state.airborne_side_fn_filtered[side] = side_fn[side];
+          vmc_probe_state.airborne_side_fn_filter_initialized[side] = 1U;
+        } else {
+          vmc_probe_state.airborne_side_fn_filtered[side] +=
+              VMC_AIRBORNE_FN_FILTER_ALPHA_DEFAULT *
+              (side_fn[side] -
+               vmc_probe_state.airborne_side_fn_filtered[side]);
+        }
+        side_fn[side] = vmc_probe_state.airborne_side_fn_filtered[side];
+      }
       vmc_probe_state.airborne_side_torque[side] =
           (side_fn_valid[side] != 0U) ? side_fn[side] : 0.0f;
 
@@ -3878,6 +3895,10 @@ static void vmc_update_airborne_state(void)
         vmc_probe_state.airborne_side_candidate[side] = 0U;
         vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
         vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+        vmc_probe_state.airborne_side_fn_filter_initialized[side] = 0U;
+        vmc_probe_state.airborne_side_posture_active[side] = 0U;
+        vmc_probe_state.airborne_side_posture_ms[side] = 0U;
+        vmc_probe_state.airborne_side_length_returning[side] = 0U;
         continue;
       }
 
@@ -3887,11 +3908,7 @@ static void vmc_update_airborne_state(void)
           vmc_probe_state.airborne_side_candidate[side] = 0U;
           vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
         }
-        vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
-        continue;
-      }
-
-      if (side_fn[side] < force_threshold) {
+      } else if (side_fn[side] < force_threshold) {
         vmc_probe_state.airborne_side_candidate[side] = 1U;
         if (vmc_probe_state.airborne_side_candidate_ms[side] <
             side_confirm_ms) {
@@ -3901,10 +3918,33 @@ static void vmc_update_airborne_state(void)
             side_confirm_ms) {
           vmc_probe_state.airborne_side_active[side] = 1U;
           vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+          vmc_probe_state.airborne_side_posture_active[side] = 1U;
+          vmc_probe_state.airborne_side_posture_ms[side] = 0U;
+          vmc_probe_state.airborne_side_length_returning[side] = 0U;
         }
       } else {
         vmc_probe_state.airborne_side_candidate[side] = 0U;
         vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
+      }
+
+      vmc_probe_state.airborne_side_release_candidate_ms[side] = 0U;
+      if (vmc_probe_state.airborne_side_posture_active[side] != 0U) {
+        if (vmc_probe_state.airborne_side_posture_ms[side] <
+            VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT) {
+          vmc_probe_state.airborne_side_posture_ms[side] += dt_ms;
+          if (vmc_probe_state.airborne_side_posture_ms[side] >
+              VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT) {
+            vmc_probe_state.airborne_side_posture_ms[side] =
+                VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT;
+          }
+        }
+        if (vmc_probe_state.airborne_side_active[side] == 0U &&
+            vmc_probe_state.airborne_side_posture_ms[side] >=
+                VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT) {
+          vmc_probe_state.airborne_side_posture_active[side] = 0U;
+          vmc_probe_state.airborne_side_posture_ms[side] = 0U;
+          vmc_probe_state.airborne_side_length_returning[side] = 1U;
+        }
       }
     }
   }
@@ -3922,6 +3962,12 @@ static void vmc_update_airborne_state(void)
     vmc_probe_state.airborne_candidate = 0U;
     vmc_probe_state.airborne_candidate_ms = 0U;
     vmc_probe_state.airborne_release_candidate_ms = 0U;
+    for (uint8_t side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
+      vmc_probe_state.airborne_side_fn_filter_initialized[side] = 0U;
+      vmc_probe_state.airborne_side_posture_active[side] = 0U;
+      vmc_probe_state.airborne_side_posture_ms[side] = 0U;
+      vmc_probe_state.airborne_side_length_returning[side] = 0U;
+    }
     return;
   }
 
@@ -4496,7 +4542,11 @@ void vmc_balance_update(void)
        vmc_stair_is_active() == 0U &&
        vmc_jump_is_active_or_aborted() == 0U &&
        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] == 0U &&
-       vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U)
+       vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U &&
+       vmc_probe_state.airborne_side_posture_active[VMC_AIRBORNE_SIDE_LEFT] ==
+           0U &&
+       vmc_probe_state.airborne_side_posture_active[VMC_AIRBORNE_SIDE_RIGHT] ==
+           0U)
           ? 1U
           : 0U;
   const double leg_sync_error =
@@ -5547,6 +5597,74 @@ void vmc_control_update(void)
                    VMC_LEG_LENGTH_MIN,
                    VMC_LEG_LENGTH_MAX);
 
+  /* Shanhai substitutes a 0.30 m air target on an unloaded side.  Keep this
+   * inside normal drive only; jump, stair and get-up own their targets. */
+  {
+    const double normal_left_target_length = left_target_length;
+    const double normal_right_target_length = right_target_length;
+    const uint8_t airborne_control_allowed =
+        (vmc_getup_is_active() == 0U &&
+         vmc_jump_is_active_or_aborted() == 0U &&
+         vmc_stair_is_active() == 0U &&
+         stair_override == 0U &&
+         vmc_control.stair_length_override_active == 0U)
+            ? 1U
+            : 0U;
+    left_airborne_posture =
+        (airborne_control_allowed != 0U &&
+         vmc_probe_state.airborne_side_posture_active[VMC_AIRBORNE_SIDE_LEFT] !=
+             0U)
+            ? 1U
+            : 0U;
+    right_airborne_posture =
+        (airborne_control_allowed != 0U &&
+         vmc_probe_state.airborne_side_posture_active
+                 [VMC_AIRBORNE_SIDE_RIGHT] != 0U)
+            ? 1U
+            : 0U;
+    left_airborne_tp =
+        -(vmc_balance.left_tp_theta_term +
+          vmc_balance.left_tp_dtheta_term);
+    right_airborne_tp =
+        -(vmc_balance.right_tp_theta_term +
+          vmc_balance.right_tp_dtheta_term);
+    const double airborne_length_step =
+        clamp_double(VMC_AIRBORNE_LENGTH_RAMP_RATE_DEFAULT, 0.0, 2.0) *
+        vmc_loop_dt();
+    if (left_airborne_posture != 0U) {
+      left_target_length =
+          vmc_step_towards(vmc_control.left_target_length,
+                           VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT,
+                           airborne_length_step);
+    } else if (vmc_probe_state.airborne_side_length_returning
+                   [VMC_AIRBORNE_SIDE_LEFT] != 0U) {
+      left_target_length =
+          vmc_step_towards(vmc_control.left_target_length,
+                           left_target_length,
+                           airborne_length_step);
+      if (fabs(left_target_length - normal_left_target_length) <= 1.0e-4) {
+        vmc_probe_state.airborne_side_length_returning
+            [VMC_AIRBORNE_SIDE_LEFT] = 0U;
+      }
+    }
+    if (right_airborne_posture != 0U) {
+      right_target_length =
+          vmc_step_towards(vmc_control.right_target_length,
+                           VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT,
+                           airborne_length_step);
+    } else if (vmc_probe_state.airborne_side_length_returning
+                   [VMC_AIRBORNE_SIDE_RIGHT] != 0U) {
+      right_target_length =
+          vmc_step_towards(vmc_control.right_target_length,
+                           right_target_length,
+                           airborne_length_step);
+      if (fabs(right_target_length - normal_right_target_length) <= 1.0e-4) {
+        vmc_probe_state.airborne_side_length_returning
+            [VMC_AIRBORNE_SIDE_RIGHT] = 0U;
+      }
+    }
+  }
+
   if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     /* Keep each leg at its own captured length.  A completed leg must not be
      * passive: with zero force it can extend under the spring/gravity while
@@ -5941,36 +6059,6 @@ void vmc_control_update(void)
     if (vmc_control.getup_right_direction == 0) {
       right_max_phi0_torque = 0.0;
     }
-  }
-
-  /* Shanhai isolates virtual-leg posture while a side is unloaded:
-   * Tp = Ktheta*theta + Kdtheta*dtheta, with no x/dx/pitch/dpitch terms.
-   * Do this only in normal drive; jump, stair and get-up own Tp themselves. */
-  {
-    const uint8_t airborne_posture_allowed =
-        (vmc_getup_is_active() == 0U &&
-         vmc_jump_is_active_or_aborted() == 0U &&
-         vmc_stair_is_active() == 0U &&
-         stair_override == 0U &&
-         vmc_control.stair_length_override_active == 0U)
-            ? 1U
-            : 0U;
-    left_airborne_posture =
-        (airborne_posture_allowed != 0U &&
-         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT] != 0U)
-            ? 1U
-            : 0U;
-    right_airborne_posture =
-        (airborne_posture_allowed != 0U &&
-         vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] != 0U)
-            ? 1U
-            : 0U;
-    left_airborne_tp =
-        -(vmc_balance.left_tp_theta_term +
-          vmc_balance.left_tp_dtheta_term);
-    right_airborne_tp =
-        -(vmc_balance.right_tp_theta_term +
-          vmc_balance.right_tp_dtheta_term);
   }
 
   update_leg_length_control(&vmc_probe_state.left_leg,

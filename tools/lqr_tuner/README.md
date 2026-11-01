@@ -102,8 +102,8 @@ diagnostics below:
 | 136 | TF02-Pro laser distance | centimetres, `0` with connected `0` means no reading |
 | 137 | TF02-Pro laser health flag | `0` or `1`, cleared after 100 ms without a frame |
 | 138 | roll compensation offset | metres, the commanded differential / 2 |
-| 139 | left leg length target | metres, after roll compensation and the MIN/MAX clamp |
-| 140 | right leg length target | metres, after roll compensation and the MIN/MAX clamp |
+| 139 | left leg length target | metres, including roll compensation, airborne 0.30 m override and MIN/MAX clamp |
+| 140 | right leg length target | metres, including roll compensation, airborne 0.30 m override and MIN/MAX clamp |
 | 141 | ground-following extension, left | metres, already included in field 139 |
 | 142 | ground-following extension, right | metres, already included in field 140 |
 | 143 | side the follow feature is extending | `0` left, `1` right, `2` none |

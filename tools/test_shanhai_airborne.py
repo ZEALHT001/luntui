@@ -54,12 +54,16 @@ def _function_body(source: str, name: str) -> str:
 
 class DefaultsTest(unittest.TestCase):
     def test_uses_shanhai_support_force_cutoff(self) -> None:
-        self.assertEqual(_macro("VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT"), 40.0)
-        self.assertEqual(_macro("VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT"), 1.25)
+        self.assertEqual(_macro("VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT"), 35.0)
+        self.assertEqual(_macro("VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT"), 1.70)
+        self.assertEqual(_macro("VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT"), 0.30)
+        self.assertEqual(_macro("VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT"), 100.0)
+        self.assertEqual(_macro("VMC_AIRBORNE_LENGTH_RAMP_RATE_DEFAULT"), 0.30)
+        self.assertEqual(_macro("VMC_AIRBORNE_FN_FILTER_ALPHA_DEFAULT"), 0.18)
         self.assertEqual(_macro("VMC_WHEEL_MASS_KG"), 0.40)
 
     def test_side_latch_confirms_across_multiple_control_frames(self) -> None:
-        self.assertEqual(_macro("VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT"), 20.0)
+        self.assertEqual(_macro("VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT"), 30.0)
         self.assertEqual(_macro("VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT"), 100.0)
 
     def test_old_leg_follow_configuration_is_gone(self) -> None:
@@ -136,7 +140,6 @@ class ForceObserverTest(unittest.TestCase):
         self.assertIn(
             "airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U", body
         )
-
     def test_landing_restores_wheel_without_release_delay(self) -> None:
         body = _function_body(PROBE_C.read_text(encoding="utf-8"),
                               "vmc_update_airborne_state")
@@ -171,6 +174,28 @@ class ForceObserverTest(unittest.TestCase):
         self.assertIn("airborne_posture != 0U", update)
         self.assertIn("clamp_double(airborne_posture_tp", update)
 
+    def test_unloaded_side_uses_shanhai_air_length(self) -> None:
+        body = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                              "vmc_control_update")
+        self.assertIn(
+            "vmc_control.left_target_length,\n"
+            "                           VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT",
+            body,
+        )
+        self.assertIn(
+            "vmc_control.right_target_length,\n"
+            "                           VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT",
+            body,
+        )
+
+    def test_air_state_is_filtered_and_held_after_wheel_release(self) -> None:
+        body = _function_body(PROBE_C.read_text(encoding="utf-8"),
+                              "vmc_update_airborne_state")
+        self.assertIn("VMC_AIRBORNE_FN_FILTER_ALPHA_DEFAULT", body)
+        self.assertIn("airborne_side_posture_ms[side]", body)
+        self.assertIn("VMC_AIRBORNE_SIDE_HOLD_MS_DEFAULT", body)
+        self.assertIn("airborne_side_posture_active[side] != 0U", body)
+
     def test_leg_sync_is_inert_when_either_side_is_unloaded(self) -> None:
         body = _function_body(PROBE_C.read_text(encoding="utf-8"),
                               "vmc_balance_update")
@@ -179,6 +204,12 @@ class ForceObserverTest(unittest.TestCase):
         )
         self.assertIn(
             "airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT] == 0U", body
+        )
+        self.assertIn(
+            "airborne_side_posture_active[VMC_AIRBORNE_SIDE_LEFT]", body
+        )
+        self.assertIn(
+            "airborne_side_posture_active[VMC_AIRBORNE_SIDE_RIGHT]", body
         )
 
     def test_leg_target_is_not_rewritten_when_unloaded(self) -> None:
