@@ -197,13 +197,10 @@ reusing its count: 146 fields (schemas 12/13) parses as `format-v17`, 147
 (schema 14) as `format-v18`, and 151 (schema 15) is the current `format`.
 143 fields parses as `format-v15`.
 
-Fields 141/142 were added with schema 11, alongside the "跟随接地伸长" controls
-(`leg_follow_enable` / `leg_follow_rate` / `leg_follow_return_rate`).  A leg
-that has stopped carrying the machine lets its length target chase outward so
-the support feedforward pushes that wheel back down, instead of the loop
-holding the channel-9 leg-length target and pulling the wheel up toward the body.  The extension
-is capped at `VMC_LEG_LENGTH_MAX`, so once the leg is fully extended further
-lifting is real flight and the airborne detector takes over.  Off by default.
+Fields 141..146 were added with schema 11 for the retired ground-following
+extension. They remain zero-valued compatibility slots so existing captures and
+field indices stay valid. The current controller never changes the leg target
+for an unloaded side; it only gates that side's wheel from Shanhai FN.
 The 141-field layout is still parsed as `format-v14`.
 
 Fields 138..140 were added with schema 10.  Field 77 is the COMMON ramped

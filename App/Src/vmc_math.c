@@ -266,3 +266,30 @@ void vmc_leg_force(double force, double torque_phi0, double phi1, double phi4,
                     t118_tmp * (t185 * (0.0 - t112_tmp * t65_tmp / 2.0) -
                                  t130 * (t110 * t65_tmp / 2.0));
 }
+
+uint8_t vmc_leg_virtual_force(const double joint_torque[2], double phi1,
+                              double phi4, double *force,
+                              double *torque_phi0)
+{
+  double force_basis[2];
+  double force_coefficient;
+
+  if (joint_torque == 0 || force == 0 || torque_phi0 == 0) {
+    return 0U;
+  }
+
+  /* vmc_leg_force() is affine in (F, Tp).  Its documented, posture-independent
+   * Tp terms are +0.5 on each joint; the F terms are equal and opposite.
+   * Evaluating only the unit-F input is therefore enough to recover both. */
+  vmc_leg_force(1.0, 0.0, phi1, phi4, force_basis);
+  force_coefficient = force_basis[0];
+  if (fabs(force_coefficient) <= 1.0e-9 ||
+      fabs(force_basis[1] + force_basis[0]) > 1.0e-9) {
+    return 0U;
+  }
+
+  *force = (joint_torque[0] - joint_torque[1]) /
+           (2.0 * force_coefficient);
+  *torque_phi0 = joint_torque[0] + joint_torque[1];
+  return 1U;
+}

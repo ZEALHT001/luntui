@@ -239,10 +239,9 @@ FORMAT_V9_PROFILE = Profile(
     },
 )
 
-# Airborne-latch inputs added (schema 6): the weakest and strongest joint loads
-# replace the mean, plus the attitude reference the pitch guard uses and the
-# pitch rate the controller consumes.  The airborne decision is only
-# reproducible offline if all four values are recorded.
+# Airborne diagnostics added (schema 6): the weakest and strongest measured
+# joint loads, the retired pitch-reference slot, and pitch rate.  Current FN
+# detection uses the per-side fields at 130/131.
 # Layout with the airborne-latch inputs (schema 6).
 FORMAT_V10_PROFILE = Profile(
     name="format-v10",
@@ -256,9 +255,9 @@ FORMAT_V10_PROFILE = Profile(
     },
 )
 
-# Per-side airborne latch added (schema 7).  A single lifted leg leaves the
-# four-joint average high, so the whole-machine latch cannot see it; each side
-# now has its own load and latch state, and gates only its own wheel.
+# Per-side airborne latch added (schema 7).  The legacy "torque" channel names
+# are retained for wire compatibility; current firmware publishes Shanhai FN
+# (newtons) in each side's load slot.
 # Layout with the per-side airborne latch (schema 7).
 FORMAT_V11_PROFILE = Profile(
     name="format-v11",
@@ -1966,17 +1965,12 @@ class FlagWatcher:
             if airborne != self.airborne:
                 self.airborne = airborne
                 if airborne:
-                    # The joint-load extremes are what the latch keys on; the
-                    # mean alone cannot show that one leg still carried the
-                    # body, which is the supported-but-slipping case.
                     print(
-                        f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE ACTIVE - wheel "
-                        f"output gated (wheel="
-                        f"{format_value(sample.airborne_wheel_speed, 2)} rad/s, "
-                        f"joint load min="
+                        f"  [FLAG {elapsed_s:7.2f}s] BOTH SIDES UNLOADED - wheel "
+                        f"outputs gated (joint load min="
                         f"{format_value(sample.airborne_joint_torque_min, 2)} "
                         f"max={format_value(sample.airborne_joint_torque_max, 2)} "
-                        f"Nm, pitch={format_value(sample.pitch, 3)} rad)"
+                        f"Nm)"
                     )
                 else:
                     print(f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE released")
@@ -1992,14 +1986,12 @@ class FlagWatcher:
             if (left or right) != self.airborne_side:
                 self.airborne_side = left or right
                 if left or right:
-                    # A single lifted leg: only that side's wheel is cut, the
-                    # grounded side keeps balancing.
                     print(
-                        f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE leg lifted "
-                        f"L={int(left)} R={int(right)} (torque L="
+                        f"  [FLAG {elapsed_s:7.2f}s] FN below threshold "
+                        f"L={int(left)} R={int(right)} (FN L="
                         f"{format_value(sample.airborne_side_torque_left, 2)} "
                         f"R={format_value(sample.airborne_side_torque_right, 2)} "
-                        f"Nm)"
+                        f"N)"
                     )
                 else:
                     print(f"  [FLAG {elapsed_s:7.2f}s] AIRBORNE leg back down")

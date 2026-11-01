@@ -1171,21 +1171,6 @@ static void vmc_joint_torque_abs_extremes(float *minimum, float *maximum)
   }
 }
 
-/* Load carried by one leg, averaged over its two joints.  Both joints of a
- * lifted leg lose the body weight, so the pair is a much stronger signal than
- * either joint alone. */
-static float vmc_side_joint_torque_abs(uint8_t side)
-{
-  if (side == VMC_AIRBORNE_SIDE_LEFT) {
-    return (fabsf(vmc_probe_state.joint_left_ahead.torque) +
-            fabsf(vmc_probe_state.joint_left_back.torque)) *
-           0.5f;
-  }
-  return (fabsf(vmc_probe_state.joint_right_ahead.torque) +
-          fabsf(vmc_probe_state.joint_right_back.torque)) *
-         0.5f;
-}
-
 static uint8_t vmc_jump_is_active(void)
 {
   return (vmc_control.jump_stage == VMC_JUMP_STAGE_COMPRESS ||
@@ -3558,6 +3543,16 @@ static void vmc_update_gravity_compensation(void)
   vmc_probe_state.body.ax_lin = vmc_probe_state.body.ax - g_unit_x;
   vmc_probe_state.body.ay_lin = vmc_probe_state.body.ay - g_unit_y;
   vmc_probe_state.body.az_lin = vmc_probe_state.body.az - g_unit_z;
+  if (vmc_gravity_sign != 0) {
+    vmc_probe_state.body.world_az_lin =
+        (float)vmc_gravity_sign *
+        (vmc_probe_state.body.ax_lin * g_unit_x +
+         vmc_probe_state.body.ay_lin * g_unit_y +
+         vmc_probe_state.body.az_lin * g_unit_z) *
+        VMC_GRAVITY_ACCEL;
+  } else {
+    vmc_probe_state.body.world_az_lin = 0.0f;
+  }
   vmc_probe_state.body.gravity_sign = vmc_gravity_sign;
 }
 
@@ -3737,27 +3732,80 @@ static uint8_t vmc_safety_allows_output(void)
              : 0U;
 }
 
-/* Detect "the whole machine is off the ground": the wheels are spinning, the
- * legs are carrying almost nothing, and the body is not being swung around.
- * Once confirmed, latch the condition until leg load recovers so the wheels
- * cannot repeatedly restart while still in the air.
- *
- * The test is the AVERAGE leg load, not the strongest leg.  Recording
- * 20260927_173327 settles this: held in the air, the weakest leg reads
- * p50 0.49 N.m (it hangs free) but the strongest reads p50 3.89 N.m, because
- * the leg controller keeps driving the joints while airborne.  Requiring all
- * four legs under 2 N.m is therefore satisfied on only 7 of 275 in-air frames,
- * and the latch chattered - 24 transitions, wheels reaching 4.19 m/s with the
- * wheel output gated for just 7.6% of the air time.  The old mean-based test
- * satisfies 126 of those frames and gates 57% of the air time with no
- * ground-side false trigger, since the average stays above 10 N.m whenever the
- * machine is resting on its legs.
- *
- * The reachable-but-supported case - a wheel spinning on a low-friction
- * surface while the body still rests on its legs - is handled by the slip
- * gate in the body-motion estimator, not here.  The attitude guard is on top:
- * while the body is being carried or thrown by the pilot its pitch leaves the
- * reference the guard captured when the wheel-speed condition first held. */
+/* Reconstruct Shanhai's virtual-leg force from the measured joint torques.
+ * Their input is motor torque after removing the gas-spring feedforward.  This
+ * linkage has no gas-spring term in vmc_leg_force(), so the inverse of that
+ * same command Jacobian supplies the equivalent F/Tp directly. */
+static uint8_t vmc_leg_force_from_measurement(
+    volatile vmc_leg_state_t *leg, double ahead_direction,
+    double back_direction, double *force, double *torque_phi0)
+{
+  double joint_torque[2];
+
+  if (ahead_direction == 0.0 || back_direction == 0.0) {
+    return 0U;
+  }
+  joint_torque[0] =
+      (double)((leg == &vmc_probe_state.left_leg)
+                   ? vmc_probe_state.joint_left_ahead.torque
+                   : vmc_probe_state.joint_right_ahead.torque) /
+      ahead_direction;
+  joint_torque[1] =
+      (double)((leg == &vmc_probe_state.left_leg)
+                   ? vmc_probe_state.joint_left_back.torque
+                   : vmc_probe_state.joint_right_back.torque) /
+      back_direction;
+  return vmc_leg_virtual_force(joint_torque, leg->phi1, leg->phi4, force,
+                               torque_phi0);
+}
+
+/* Shanhai Observer_GetFN().  theta is body-relative and has the opposite sign
+ * to motion.*_theta, matching the Shanhai convention used in the formula. */
+static uint8_t vmc_side_support_force(uint8_t side, float *normal_force)
+{
+  const uint8_t left = (side == VMC_AIRBORNE_SIDE_LEFT) ? 1U : 0U;
+  volatile vmc_leg_state_t *leg =
+      left != 0U ? &vmc_probe_state.left_leg : &vmc_probe_state.right_leg;
+  const double ahead_direction =
+      left != 0U ? (double)VMC_DIR_LEFT_AHEAD : (double)VMC_DIR_RIGHT_AHEAD;
+  const double back_direction =
+      left != 0U ? (double)VMC_DIR_LEFT_BACK : (double)VMC_DIR_RIGHT_BACK;
+  const double theta =
+      (double)vmc_rad_format((float)(
+          VMC_PHI0_VERTICAL_RAD - leg->phi0 - vmc_probe_state.body.pitch));
+  const double d_theta =
+      -(leg->d_phi0 + (double)vmc_probe_state.body.pitch_rate);
+  double force;
+  double torque_phi0;
+  double p;
+  double ddz_w;
+
+  if (leg->length <= 0.01 ||
+      vmc_leg_force_from_measurement(leg, ahead_direction, back_direction,
+                                     &force, &torque_phi0) == 0U) {
+    return 0U;
+  }
+
+  /* This controller's support-force command points through
+   * VMC_LEG_SUPPORT_FORCE_DIRECTION = -1; Shanhai's FN observer uses the
+   * opposite positive-compression convention.  Tp has the same sign in both
+   * paths, while theta above already uses Shanhai's body-relative sign. */
+  force = -force;
+  p = force * cos(theta) + torque_phi0 * sin(theta) / leg->length;
+  ddz_w = (double)vmc_probe_state.body.world_az_lin -
+          leg->dd_length * cos(theta) +
+          2.0 * leg->d_length * d_theta * sin(theta) +
+          leg->length * leg->dd_theta * sin(theta) +
+          leg->length * d_theta * d_theta * cos(theta);
+  *normal_force = (float)(
+      p + (double)VMC_WHEEL_MASS_KG * (double)VMC_GRAVITY_ACCEL +
+      (double)VMC_WHEEL_MASS_KG * ddz_w);
+  return 1U;
+}
+
+/* Per-side Shanhai ground latch.  FN below the cutoff means the wheel is
+ * unloaded, so only that wheel is disabled.  The leg controller, its gains and
+ * the selected channel-9 length target remain untouched. */
 static void vmc_update_airborne_state(void)
 {
   const uint32_t now = HAL_GetTick();
@@ -3770,30 +3818,21 @@ static void vmc_update_airborne_state(void)
   const float joint_torque = vmc_average_joint_torque_abs();
   float joint_torque_min;
   float joint_torque_max;
-  const float body_pitch = vmc_probe_state.body.pitch;
-  const float pitch_rate = fabsf(vmc_probe_state.body.pitch_rate);
-  const float wheel_speed_threshold =
-      clamp_float(vmc_balance.airborne_wheel_speed_threshold, 0.1f, 30.0f);
-  const float joint_torque_threshold =
-      clamp_float(vmc_balance.airborne_joint_torque_threshold, 0.1f, 54.0f);
-  const float pitch_dev_max =
-      clamp_float(vmc_balance.airborne_pitch_dev_max, 0.01f, 3.0f);
-  const float pitch_rate_max =
-      clamp_float(vmc_balance.airborne_pitch_rate_max, 0.1f, 30.0f);
+  const float force_threshold =
+      clamp_float(vmc_balance.airborne_joint_torque_threshold, 1.0f, 500.0f);
+  const float release_threshold =
+      force_threshold * VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT;
   uint32_t confirm_ms = vmc_balance.airborne_confirm_ms;
   uint32_t release_ms = vmc_balance.airborne_release_ms;
-  uint8_t wheels_fast;
-  uint8_t joints_unloaded;
-  uint8_t attitude_quiet;
-  uint8_t entry_ready;
+  float side_fn[VMC_AIRBORNE_SIDE_COUNT];
+  uint8_t side_fn_valid[VMC_AIRBORNE_SIDE_COUNT];
   const uint8_t detector_ready =
       (vmc_balance.airborne_detect_enable != 0U &&
        vmc_control.enabled != 0U &&
-       vmc_balance.wheel_output_enable != 0U &&
        vmc_probe_state.feedback_timeout_active == 0U &&
-      vmc_getup_is_active() == 0U &&
-      vmc_jump_is_active_or_aborted() == 0U &&
-      remote_control_allows_joint_enable() != 0U)
+       vmc_getup_is_active() == 0U &&
+       vmc_jump_is_active_or_aborted() == 0U &&
+       remote_control_allows_joint_enable() != 0U)
           ? 1U
           : 0U;
 
@@ -3817,52 +3856,11 @@ static void vmc_update_airborne_state(void)
   vmc_probe_state.airborne_joint_torque = joint_torque;
   vmc_probe_state.airborne_joint_torque_min = joint_torque_min;
   vmc_probe_state.airborne_joint_torque_max = joint_torque_max;
+  vmc_probe_state.airborne_pitch_reference = VMC_AIRBORNE_PITCH_REFERENCE_NONE;
+  vmc_probe_state.airborne_pitch_reference_valid = 0U;
+  vmc_probe_state.airborne_pitch_reference_hold_ms = 0U;
 
-  /* Arm the attitude reference the moment the wheels start spinning on
-   * unloaded legs and keep it briefly after that stops holding, so the latch
-   * still has to happen while the body is where it just was rather than
-   * re-arming the reference on the cycle that trips the latch. */
-  wheels_fast = (wheel_speed >= wheel_speed_threshold) ? 1U : 0U;
-  joints_unloaded = (joint_torque <= joint_torque_threshold) ? 1U : 0U;
-  if (wheels_fast != 0U && joints_unloaded != 0U && detector_ready != 0U) {
-    if (vmc_probe_state.airborne_pitch_reference_valid == 0U) {
-      vmc_probe_state.airborne_pitch_reference = body_pitch;
-    }
-    vmc_probe_state.airborne_pitch_reference_valid = 1U;
-    vmc_probe_state.airborne_pitch_reference_hold_ms =
-        VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT;
-  } else if (vmc_probe_state.airborne_pitch_reference_valid != 0U) {
-    if (vmc_probe_state.airborne_pitch_reference_hold_ms > dt_ms) {
-      vmc_probe_state.airborne_pitch_reference_hold_ms -= dt_ms;
-    } else {
-      vmc_probe_state.airborne_pitch_reference_valid = 0U;
-      vmc_probe_state.airborne_pitch_reference_hold_ms = 0U;
-    }
-  } else {
-    vmc_probe_state.airborne_pitch_reference_hold_ms = 0U;
-  }
-  attitude_quiet =
-      (pitch_rate <= pitch_rate_max &&
-       (vmc_probe_state.airborne_pitch_reference_valid == 0U ||
-        fabsf(body_pitch - vmc_probe_state.airborne_pitch_reference) <=
-            pitch_dev_max))
-          ? 1U
-          : 0U;
-  entry_ready =
-      (wheels_fast != 0U && joints_unloaded != 0U && attitude_quiet != 0U)
-          ? 1U
-          : 0U;
-
-  /* Per-side latch: one leg lifted while the other still carries the body.
-   * The whole-machine test above cannot see that case - the average of all
-   * four joints stays high - so each side is tested on its own.  Only the
-   * lifted side's wheel gets gated; the grounded side must keep balancing. */
   {
-    const float side_torque[VMC_AIRBORNE_SIDE_COUNT] = {
-        vmc_side_joint_torque_abs(VMC_AIRBORNE_SIDE_LEFT),
-        vmc_side_joint_torque_abs(VMC_AIRBORNE_SIDE_RIGHT)};
-    const float side_wheel_speed[VMC_AIRBORNE_SIDE_COUNT] = {left_wheel_speed,
-                                                             right_wheel_speed};
     const uint32_t side_confirm_ms =
         (vmc_balance.airborne_side_confirm_ms > 10000U)
             ? 10000U
@@ -3871,7 +3869,6 @@ static void vmc_update_airborne_state(void)
         (vmc_balance.airborne_side_release_ms > 10000U)
             ? 10000U
             : vmc_balance.airborne_side_release_ms;
-    const float side_release_torque = joint_torque_threshold * 1.5f;
     const uint8_t side_ready =
         (detector_ready != 0U &&
          vmc_balance.airborne_side_enable != 0U &&
@@ -3881,9 +3878,11 @@ static void vmc_update_airborne_state(void)
     uint8_t side;
 
     for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
-      vmc_probe_state.airborne_side_torque[side] = side_torque[side];
+      side_fn_valid[side] = vmc_side_support_force(side, &side_fn[side]);
+      vmc_probe_state.airborne_side_torque[side] =
+          (side_fn_valid[side] != 0U) ? side_fn[side] : 0.0f;
 
-      if (side_ready == 0U) {
+      if (side_ready == 0U || side_fn_valid[side] == 0U) {
         vmc_probe_state.airborne_side_active[side] = 0U;
         vmc_probe_state.airborne_side_candidate[side] = 0U;
         vmc_probe_state.airborne_side_candidate_ms[side] = 0U;
@@ -3892,7 +3891,7 @@ static void vmc_update_airborne_state(void)
       }
 
       if (vmc_probe_state.airborne_side_active[side] != 0U) {
-        if (side_torque[side] >= side_release_torque) {
+        if (side_fn[side] >= release_threshold) {
           if (vmc_probe_state.airborne_side_release_candidate_ms[side] <
               side_release_ms) {
             vmc_probe_state.airborne_side_release_candidate_ms[side] += dt_ms;
@@ -3910,8 +3909,7 @@ static void vmc_update_airborne_state(void)
         continue;
       }
 
-      if (side_wheel_speed[side] >= wheel_speed_threshold &&
-          side_torque[side] <= joint_torque_threshold) {
+      if (side_fn[side] < force_threshold) {
         vmc_probe_state.airborne_side_candidate[side] = 1U;
         if (vmc_probe_state.airborne_side_candidate_ms[side] <
             side_confirm_ms) {
@@ -3934,7 +3932,6 @@ static void vmc_update_airborne_state(void)
     vmc_probe_state.airborne_candidate = 0U;
     vmc_probe_state.airborne_candidate_ms = 0U;
     vmc_probe_state.airborne_release_candidate_ms = 0U;
-    vmc_probe_state.airborne_pitch_reference_valid = 0U;
     return;
   }
 
@@ -3943,41 +3940,39 @@ static void vmc_update_airborne_state(void)
     vmc_probe_state.airborne_candidate = 0U;
     vmc_probe_state.airborne_candidate_ms = 0U;
     vmc_probe_state.airborne_release_candidate_ms = 0U;
-    vmc_probe_state.airborne_pitch_reference_valid = 0U;
     return;
   }
 
-  if (vmc_probe_state.airborne_active != 0U) {
-    const float release_torque_threshold = joint_torque_threshold * 1.5f;
-    if (joint_torque >= release_torque_threshold) {
-      if (vmc_probe_state.airborne_release_candidate_ms < release_ms) {
-        vmc_probe_state.airborne_release_candidate_ms += dt_ms;
-      }
-      if (vmc_probe_state.airborne_release_candidate_ms >= release_ms) {
+  /* Preserve the whole-machine compatibility latch as the AND of the two
+   * side latches.  Wheel gating itself is always per side. */
+  {
+    uint8_t side;
+    uint8_t all_candidate = 1U;
+    uint32_t candidate_min = confirm_ms;
+    uint32_t release_min = release_ms;
+
+    vmc_probe_state.airborne_active = 1U;
+    for (side = 0U; side < VMC_AIRBORNE_SIDE_COUNT; side++) {
+      if (vmc_probe_state.airborne_side_active[side] == 0U) {
         vmc_probe_state.airborne_active = 0U;
-        vmc_probe_state.airborne_candidate = 0U;
-        vmc_probe_state.airborne_candidate_ms = 0U;
-        vmc_probe_state.airborne_release_candidate_ms = 0U;
-        vmc_probe_state.airborne_pitch_reference_valid = 0U;
       }
-    } else {
-      vmc_probe_state.airborne_release_candidate_ms = 0U;
+      if (vmc_probe_state.airborne_side_candidate[side] == 0U) {
+        all_candidate = 0U;
+      }
+      if (vmc_probe_state.airborne_side_candidate_ms[side] < candidate_min) {
+        candidate_min = vmc_probe_state.airborne_side_candidate_ms[side];
+      }
+      if (vmc_probe_state.airborne_side_release_candidate_ms[side] <
+          release_min) {
+        release_min =
+            vmc_probe_state.airborne_side_release_candidate_ms[side];
+      }
     }
-    return;
-  }
-
-  if (entry_ready != 0U) {
-    vmc_probe_state.airborne_candidate = 1U;
-    if (vmc_probe_state.airborne_candidate_ms < confirm_ms) {
-      vmc_probe_state.airborne_candidate_ms += dt_ms;
-    }
-    if (vmc_probe_state.airborne_candidate_ms >= confirm_ms) {
-      vmc_probe_state.airborne_active = 1U;
-      vmc_probe_state.airborne_release_candidate_ms = 0U;
-    }
-  } else {
-    vmc_probe_state.airborne_candidate = 0U;
-    vmc_probe_state.airborne_candidate_ms = 0U;
+    vmc_probe_state.airborne_candidate = all_candidate;
+    vmc_probe_state.airborne_candidate_ms =
+        (all_candidate != 0U) ? candidate_min : 0U;
+    vmc_probe_state.airborne_release_candidate_ms =
+        (vmc_probe_state.airborne_active != 0U) ? release_min : 0U;
   }
 }
 
@@ -5012,6 +5007,78 @@ void vmc_update_leg_state(void)
                 &length, &phi0);
   vmc_probe_state.right_leg.d_length = length;
   vmc_probe_state.right_leg.d_phi0 = phi0;
+
+  /* Shanhai's FN observer needs ddL0 and ddtheta.  Differentiate the measured
+   * virtual-leg rates and low-pass the result; no commanded leg motion is
+   * substituted here, so free-fall and landing are visible to the observer. */
+  {
+    if (vmc_control.enabled == 0U ||
+        vmc_probe_state.feedback_timeout_active != 0U ||
+        remote_control_allows_joint_enable() == 0U) {
+      vmc_probe_state.left_leg.acceleration_valid = 0U;
+      vmc_probe_state.right_leg.acceleration_valid = 0U;
+      vmc_probe_state.left_leg.dd_length = 0.0;
+      vmc_probe_state.left_leg.dd_theta = 0.0;
+      vmc_probe_state.right_leg.dd_length = 0.0;
+      vmc_probe_state.right_leg.dd_theta = 0.0;
+      return;
+    }
+
+    const double dt = vmc_loop_dt();
+    const double alpha = VMC_LEG_ACCEL_FILTER_ALPHA_DEFAULT;
+    const double left_theta_rate =
+        -(vmc_probe_state.left_leg.d_phi0 +
+          (double)vmc_probe_state.body.pitch_rate);
+    const double right_theta_rate =
+        -(vmc_probe_state.right_leg.d_phi0 +
+          (double)vmc_probe_state.body.pitch_rate);
+
+    if (vmc_probe_state.left_leg.acceleration_valid == 0U) {
+      vmc_probe_state.left_leg.previous_d_length =
+          vmc_probe_state.left_leg.d_length;
+      vmc_probe_state.left_leg.previous_d_theta = left_theta_rate;
+      vmc_probe_state.left_leg.dd_length = 0.0;
+      vmc_probe_state.left_leg.dd_theta = 0.0;
+      vmc_probe_state.left_leg.acceleration_valid = 1U;
+    } else {
+      const double dd_length_raw =
+          (vmc_probe_state.left_leg.d_length -
+           vmc_probe_state.left_leg.previous_d_length) /
+          dt;
+      const double dd_theta_raw =
+          (left_theta_rate - vmc_probe_state.left_leg.previous_d_theta) / dt;
+      vmc_probe_state.left_leg.dd_length +=
+          alpha * (dd_length_raw - vmc_probe_state.left_leg.dd_length);
+      vmc_probe_state.left_leg.dd_theta +=
+          alpha * (dd_theta_raw - vmc_probe_state.left_leg.dd_theta);
+      vmc_probe_state.left_leg.previous_d_length =
+          vmc_probe_state.left_leg.d_length;
+      vmc_probe_state.left_leg.previous_d_theta = left_theta_rate;
+    }
+
+    if (vmc_probe_state.right_leg.acceleration_valid == 0U) {
+      vmc_probe_state.right_leg.previous_d_length =
+          vmc_probe_state.right_leg.d_length;
+      vmc_probe_state.right_leg.previous_d_theta = right_theta_rate;
+      vmc_probe_state.right_leg.dd_length = 0.0;
+      vmc_probe_state.right_leg.dd_theta = 0.0;
+      vmc_probe_state.right_leg.acceleration_valid = 1U;
+    } else {
+      const double dd_length_raw =
+          (vmc_probe_state.right_leg.d_length -
+           vmc_probe_state.right_leg.previous_d_length) /
+          dt;
+      const double dd_theta_raw =
+          (right_theta_rate - vmc_probe_state.right_leg.previous_d_theta) / dt;
+      vmc_probe_state.right_leg.dd_length +=
+          alpha * (dd_length_raw - vmc_probe_state.right_leg.dd_length);
+      vmc_probe_state.right_leg.dd_theta +=
+          alpha * (dd_theta_raw - vmc_probe_state.right_leg.dd_theta);
+      vmc_probe_state.right_leg.previous_d_length =
+          vmc_probe_state.right_leg.d_length;
+      vmc_probe_state.right_leg.previous_d_theta = right_theta_rate;
+    }
+  }
 }
 
 void vmc_control_init(void)
@@ -5147,27 +5214,6 @@ void vmc_control_init(void)
   vmc_control.roll_comp_offset = 0.0f;
   vmc_control.left_target_length = VMC_LEG_LENGTH_DEFAULT;
   vmc_control.right_target_length = VMC_LEG_LENGTH_DEFAULT;
-  vmc_control.leg_follow_enable = VMC_LEG_FOLLOW_ENABLE_DEFAULT;
-  vmc_control.leg_follow_machine_wide = VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
-  vmc_control.leg_follow_auto_scope = VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT;
-  vmc_control.leg_follow_roll_deadband =
-      VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT;
-  vmc_control.leg_follow_episode_timeout_ms =
-      VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT;
-  vmc_control.leg_follow_scope_confirm_ms =
-      VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT;
-  vmc_control.leg_follow_scope_machine_wide =
-      VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT;
-  vmc_control.leg_follow_episode_active = 0U;
-  vmc_control.leg_follow_scope_resolved = 0U;
-  vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
-  vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
-  vmc_control.leg_follow_candidate_ms = 0U;
-  vmc_control.leg_follow_episode_ms = 0U;
-  vmc_control.leg_follow_rate = VMC_LEG_FOLLOW_RATE_DEFAULT;
-  vmc_control.leg_follow_return_rate = VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT;
-  vmc_control.leg_follow_offset_left = 0.0f;
-  vmc_control.leg_follow_offset_right = 0.0f;
   vmc_control.getup_state = VMC_GETUP_STATE_IDLE;
   vmc_control.getup_turn_direction = 0;
   vmc_control.getup_body_flip_direction = 0;
@@ -5244,28 +5290,6 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg)
   leg->torque_phi0_command = 0.0;
   leg->joint_torque_ahead = 0.0;
   leg->joint_torque_back = 0.0;
-}
-
-/* Which side is DOWN, if the body is tilted enough to say.
- *
- *   VMC_AIRBORNE_SIDE_LEFT   the left side is low  (roll > +deadband)
- *   VMC_AIRBORNE_SIDE_RIGHT  the right side is low (roll < -deadband)
- *   VMC_LEG_FOLLOW_SIDE_NONE the body is level, so the reading is ambiguous
- *
- * body.roll is positive when the RIGHT side is high, which is what makes the
- * mapping the way round it is.  Split out from the episode state machine so
- * the sign convention can be tested on its own: backwards, it extends the
- * wrong leg in every case.
- */
-static uint8_t vmc_leg_follow_low_side_from_roll(double roll, double deadband)
-{
-  if (roll > deadband) {
-    return VMC_AIRBORNE_SIDE_LEFT;
-  }
-  if (roll < -deadband) {
-    return VMC_AIRBORNE_SIDE_RIGHT;
-  }
-  return VMC_LEG_FOLLOW_SIDE_NONE;
 }
 
 static void update_leg_length_control(volatile vmc_leg_state_t *leg,
@@ -5432,14 +5456,6 @@ void vmc_control_update(void)
       remote_control_allows_joint_enable() == 0U) {
     vmc_control.ramp_active = 0U;
     vmc_control.roll_comp_offset = 0.0f;
-    vmc_control.leg_follow_offset_left = 0.0f;
-    vmc_control.leg_follow_offset_right = 0.0f;
-    vmc_control.leg_follow_episode_active = 0U;
-    vmc_control.leg_follow_scope_resolved = 0U;
-    vmc_control.leg_follow_episode_ms = 0U;
-    vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
-    vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
-    vmc_control.leg_follow_candidate_ms = 0U;
     vmc_control.left_target_length = vmc_control.target_length;
     vmc_control.right_target_length = vmc_control.target_length;
     vmc_control.getup_target_phi0_left = VMC_LEG_PHI0_TARGET_DEFAULT;
@@ -5542,193 +5558,6 @@ void vmc_control_update(void)
       clamp_double(ramped_target_length - roll_comp_offset,
                    VMC_LEG_LENGTH_MIN,
                    VMC_LEG_LENGTH_MAX);
-
-  /* Ground-following extension.  A leg that has stopped carrying the machine
-   * lets its target chase outward so the support feedforward can push that
-   * wheel back down to the ground; a loaded leg returns to the preset.
-   *
-   * This is what makes a slowly lifted body behave: without it the loop holds
-   * a fixed length, treats the lift as a position error, and pulls the wheel
-   * UP toward the body - so the leg stops following long before it reaches
-   * the stroke limit and the wheel leaves the ground early.
-   *
-   * The offset is capped at the remaining stroke, so the target can never be
-   * driven past VMC_LEG_LENGTH_MAX; once there the leg is fully extended and
-   * further lifting is genuine flight, which the airborne detector handles.
-   *
-   * Scope comes from the roll direction and is decided ONCE per episode; see
-   * VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT for why the sign, and why it stays
-   * pending until the sign is decisive.
-   *
-   * The episode outlives the load latch on purpose.  Extending the leg raises
-   * the joint torque, which trips the very latch the follow is waiting on, so
-   * a naive "follow while latched" loop extended ~14 mm, released itself,
-   * unwound 102 mm and started over - it never accumulated enough reach to
-   * touch anything.  An episode therefore persists while the body is still
-   * tilted and only unwinds once it is level again (or the timeout expires,
-   * so a machine parked on an edge cannot hold its extension forever). */
-  if (vmc_control.leg_follow_enable != 0U &&
-      vmc_getup_is_active() == 0U &&
-      jump_override == 0U &&
-      stair_override == 0U &&
-      vmc_control.stair_length_override_active == 0U) {
-    const double dt = vmc_loop_dt();
-    const double deadband =
-        clamp_double(vmc_control.leg_follow_roll_deadband, 0.0, 0.5);
-    const double roll_now = (double)vmc_probe_state.body.roll;
-    const uint8_t body_level = (fabs(roll_now) <= deadband) ? 1U : 0U;
-    const double follow_step =
-        clamp_double(vmc_control.leg_follow_rate, 0.0, 1.0) * dt;
-    const double return_step =
-        clamp_double(vmc_control.leg_follow_return_rate, 0.0, 1.0) * dt;
-    const uint8_t left_unloaded =
-        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_LEFT];
-    const uint8_t right_unloaded =
-        vmc_probe_state.airborne_side_active[VMC_AIRBORNE_SIDE_RIGHT];
-    const uint8_t any_unloaded =
-        (left_unloaded != 0U || right_unloaded != 0U) ? 1U : 0U;
-    /* Side-low flags, from the same sign convention as the scope: roll is
-     * positive when the RIGHT side is high, so the LEFT side is the low one
-     * when roll is positive. */
-    const uint8_t left_low = (roll_now > deadband) ? 1U : 0U;
-    const uint8_t right_low = (roll_now < -deadband) ? 1U : 0U;
-    const uint32_t episode_timeout_ms =
-        (vmc_control.leg_follow_episode_timeout_ms > 60000U)
-            ? 60000U
-            : vmc_control.leg_follow_episode_timeout_ms;
-    const uint32_t scope_confirm_ms =
-        (vmc_control.leg_follow_scope_confirm_ms > 5000U)
-            ? 5000U
-            : vmc_control.leg_follow_scope_confirm_ms;
-    /* Which side is down right now.  This is the signal the feature acts on;
-     * the load latches only ever corroborate it. */
-    const uint8_t low_side_now = vmc_leg_follow_low_side_from_roll(
-        roll_now, deadband);
-    uint8_t machine_wide;
-    uint8_t follow_left;
-    uint8_t follow_right;
-
-    /* --- episode lifetime --------------------------------------------- */
-    if (any_unloaded != 0U) {
-      if (vmc_control.leg_follow_episode_active == 0U) {
-        /* Fresh episode: inherit nothing, and stay undecided until a
-         * classification has held long enough to be believed. */
-        vmc_control.leg_follow_episode_active = 1U;
-        vmc_control.leg_follow_scope_resolved = 0U;
-        vmc_control.leg_follow_scope_machine_wide = 0U;
-        vmc_control.leg_follow_low_side = VMC_LEG_FOLLOW_SIDE_NONE;
-        vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
-        vmc_control.leg_follow_candidate_ms = 0U;
-      }
-      vmc_control.leg_follow_episode_ms = 0U;
-    } else if (vmc_control.leg_follow_episode_active != 0U) {
-      if (vmc_control.leg_follow_episode_ms < episode_timeout_ms) {
-        vmc_control.leg_follow_episode_ms += (uint32_t)(dt * 1000.0);
-      }
-      /* Hold the episode while the body is still tilted, so the extension
-       * this feature just paid for is not given straight back. */
-      if (body_level != 0U ||
-          vmc_control.leg_follow_episode_ms >= episode_timeout_ms) {
-        vmc_control.leg_follow_episode_active = 0U;
-        vmc_control.leg_follow_scope_resolved = 0U;
-        vmc_control.leg_follow_episode_ms = 0U;
-      }
-    }
-
-    /* --- settle which side is down, then hold it ----------------------
-     *
-     * A single frame is not evidence: pushing one side off a platform
-     * unloaded the PLATFORM side for 120 ms on the way through, and that side
-     * is in the high half whenever the other has gone down.  Believing it
-     * meant extending the platform side, which levers the machine further
-     * over the edge.  So a classification has to hold for
-     * leg_follow_scope_confirm_ms before it is used. */
-    if (vmc_control.leg_follow_auto_scope == 0U) {
-      vmc_control.leg_follow_scope_machine_wide =
-          (vmc_control.leg_follow_machine_wide != 0U) ? 1U : 0U;
-      vmc_control.leg_follow_scope_resolved = 1U;
-      vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
-      vmc_control.leg_follow_candidate_ms = 0U;
-    } else if (vmc_control.leg_follow_episode_active != 0U) {
-      if (vmc_control.leg_follow_scope_resolved != 0U) {
-        /* Already settled this episode; the body swings through level while
-         * this feature pushes it around, so do not reconsider. */
-        vmc_control.leg_follow_candidate_side = VMC_LEG_FOLLOW_SIDE_NONE;
-        vmc_control.leg_follow_candidate_ms = 0U;
-      } else if (low_side_now == vmc_control.leg_follow_candidate_side) {
-        if (vmc_control.leg_follow_candidate_ms < scope_confirm_ms) {
-          vmc_control.leg_follow_candidate_ms += (uint32_t)(dt * 1000.0);
-        }
-        if (vmc_control.leg_follow_candidate_ms >= scope_confirm_ms) {
-          vmc_control.leg_follow_low_side = vmc_control.leg_follow_candidate_side;
-          vmc_control.leg_follow_scope_resolved = 1U;
-        }
-      } else {
-        /* Candidate changed (including to "level"), so the clock restarts. */
-        vmc_control.leg_follow_candidate_side = low_side_now;
-        vmc_control.leg_follow_candidate_ms = 0U;
-      }
-    }
-
-    /* --- which legs extend -------------------------------------------- */
-    machine_wide = vmc_control.leg_follow_scope_machine_wide;
-    if (vmc_control.leg_follow_auto_scope == 0U) {
-      /* Legacy fixed scope, kept for contrast runs. */
-      if (machine_wide != 0U) {
-        follow_left = vmc_control.leg_follow_episode_active;
-        follow_right = vmc_control.leg_follow_episode_active;
-      } else {
-        follow_left = left_unloaded;
-        follow_right = right_unloaded;
-      }
-    } else if (vmc_control.leg_follow_scope_resolved != 0U) {
-      /* Extend the LOW side, and keep extending it while the episode lasts.
-       * The load latch drops as soon as the leg starts carrying load, so
-       * gating on it here would release the reach this feature just paid
-       * for. */
-      follow_left =
-          (vmc_control.leg_follow_low_side == VMC_AIRBORNE_SIDE_LEFT) ? 1U : 0U;
-      follow_right =
-          (vmc_control.leg_follow_low_side == VMC_AIRBORNE_SIDE_RIGHT) ? 1U : 0U;
-    } else {
-      /* Not settled yet: only reach on a side that is both unloaded and low,
-       * which is the case the follow exists for.  Conservative by
-       * construction - it never pushes the high side over an edge. */
-      follow_left = (left_unloaded != 0U && left_low != 0U) ? 1U : 0U;
-      follow_right = (right_unloaded != 0U && right_low != 0U) ? 1U : 0U;
-    }
-
-    double offset_left = (double)vmc_control.leg_follow_offset_left;
-    double offset_right = (double)vmc_control.leg_follow_offset_right;
-
-    /* Each side is still capped by its OWN remaining stroke, so a leg that is
-     * already near full extension stops there while the other keeps
-     * following. */
-    if (follow_left != 0U) {
-      offset_left = clamp_double(offset_left + follow_step,
-                                 0.0,
-                                 VMC_LEG_LENGTH_MAX - left_target_length);
-    } else {
-      offset_left = vmc_step_towards(offset_left, 0.0, return_step);
-    }
-    if (follow_right != 0U) {
-      offset_right = clamp_double(offset_right + follow_step,
-                                  0.0,
-                                  VMC_LEG_LENGTH_MAX - right_target_length);
-    } else {
-      offset_right = vmc_step_towards(offset_right, 0.0, return_step);
-    }
-
-    vmc_control.leg_follow_offset_left = (float)offset_left;
-    vmc_control.leg_follow_offset_right = (float)offset_right;
-    left_target_length += offset_left;
-    right_target_length += offset_right;
-  } else {
-    /* Disabled, or a jump / recovery owns the leg: drop the extra extension
-     * so the preset is restored the moment this stops applying. */
-    vmc_control.leg_follow_offset_left = 0.0f;
-    vmc_control.leg_follow_offset_right = 0.0f;
-  }
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     /* Keep each leg at its own captured length.  A completed leg must not be

@@ -354,7 +354,7 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "airborne_joint_torque_threshold", &value) != 0U) {
     vmc_balance.airborne_joint_torque_threshold =
-        vmc_lqr_rtt_clamp_float(value, 0.1f, 54.0f);
+        vmc_lqr_rtt_clamp_float(value, 1.0f, 500.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "airborne_confirm_ms", &value) != 0U) {
@@ -887,49 +887,6 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_control.roll_comp_ramp_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
     applied = 1U;
   }
-  /* Ground-following leg extension. */
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_enable", &value) != 0U) {
-    vmc_control.leg_follow_enable = (value > 0.5f) ? 1U : 0U;
-    if (vmc_control.leg_follow_enable == 0U) {
-      vmc_control.leg_follow_offset_left = 0.0f;
-      vmc_control.leg_follow_offset_right = 0.0f;
-    }
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_rate", &value) != 0U) {
-    vmc_control.leg_follow_rate = vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_machine_wide", &value) != 0U) {
-    vmc_control.leg_follow_machine_wide = (value > 0.5f) ? 1U : 0U;
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_auto_scope", &value) != 0U) {
-    vmc_control.leg_follow_auto_scope = (value > 0.5f) ? 1U : 0U;
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_roll_deadband", &value) != 0U) {
-    vmc_control.leg_follow_roll_deadband =
-        vmc_lqr_rtt_clamp_float(value, 0.0f, 0.50f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_episode_timeout_ms",
-                                    &value) != 0U) {
-    vmc_control.leg_follow_episode_timeout_ms =
-        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 60000.0f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_scope_confirm_ms",
-                                    &value) != 0U) {
-    vmc_control.leg_follow_scope_confirm_ms =
-        (uint32_t)vmc_lqr_rtt_clamp_float(value, 0.0f, 5000.0f);
-    applied = 1U;
-  }
-  if (vmc_lqr_rtt_parse_named_float(line, "leg_follow_return_rate", &value) != 0U) {
-    vmc_control.leg_follow_return_rate =
-        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
-    applied = 1U;
-  }
   if (vmc_lqr_rtt_parse_named_float(line, "kp_phi0", &value) != 0U) {
     vmc_control.kp_phi0 = vmc_lqr_rtt_clamp_float(value, 0.0f, 500.0f);
     applied = 1U;
@@ -1238,8 +1195,10 @@ static double vmc_lqr_rtt_frame_age_ms(uint32_t now, uint32_t last_ms)
   V(joint_right_back_torque,       100, (double)s->joint_right_back.torque)  \
   V(slip_metric,                   100, s->motion.kf_slip_metric)            \
   V(airborne_wheel_speed,         1000, (double)s->airborne_wheel_speed)     \
-  V(airborne_joint_torque_min,     100, (double)s->airborne_joint_torque_min)\
-  V(airborne_joint_torque_max,     100, (double)s->airborne_joint_torque_max)
+  V(airborne_joint_torque_min,     100,                                     \
+    (double)s->airborne_side_torque[VMC_AIRBORNE_SIDE_LEFT])                  \
+  V(airborne_joint_torque_max,     100,                                     \
+    (double)s->airborne_side_torque[VMC_AIRBORNE_SIDE_RIGHT])
 
 /* Context flags, in wire order.  Written as raw bytes. */
 #define VMC_LQR_RTT_FAST_FLAGS(V)                                            \
@@ -1311,6 +1270,7 @@ void vmc_lqr_rtt_telemetry_update(void)
    * runs from one task only, so a static buffer is safe here. */
   static char line[VMC_LQR_RTT_LINE_MAX];
   int offset;
+  uint8_t i;
   const double tp_phi_gain = b->tp_phi_gain;
   const double left_tp_phi_term = tp_phi_gain * vmc_probe_state.lqr.left_k[9] * b->phi_error;
   const double left_tp_dphi_term = tp_phi_gain * vmc_probe_state.lqr.left_k[11] * b->dpitch_lpf;
@@ -1619,13 +1579,10 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_probe_state.body.wy);
 
-  /* VMCVOFA fields 126..129: airborne-latch inputs and the pitch channel the
-   * guard uses.  The latch needs all four legs unloaded at once, so the
-   * weakest and strongest joint loads are recorded instead of the mean, and
-   * the attitude reference shows what "the body did not move much" was
-   * measured against.  body->wy above shares an axis with the roll rate on
-   * this IMU mounting; the pitch rate the controller actually consumes is
-   * field 129. */
+  /* VMCVOFA fields 126..129: legacy airborne diagnostics.  The slow stream
+   * keeps measured joint-torque extremes because the flash-safety tool uses
+   * them; the FN values live in fields 130/131.  The pitch reference is fixed
+   * at its retired sentinel. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_probe_state.airborne_joint_torque_min);
@@ -1640,10 +1597,10 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_probe_state.body.pitch_rate);
 
-  /* VMCVOFA fields 130..133: per-side airborne latch.  One leg lifted while
-   * the other still carries the body leaves the four-joint average high, so
-   * the whole-machine test cannot see it; these record each side's own load
-   * and latch state, and each latch gates only its own wheel. */
+  /* VMCVOFA fields 130..133: per-side Shanhai support force and wheel latch.
+   * The field names retain "torque" for wire compatibility; values 130/131 are
+   * FN in newtons.  Each latch gates only its own wheel while the leg
+   * controller remains active. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_probe_state.airborne_side_torque[VMC_AIRBORNE_SIDE_LEFT]);
@@ -1710,47 +1667,11 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_control.right_target_length);
 
-  /* VMCVOFA fields 141..142: ground-following extension, per side.
-   *
-   * The per-leg targets above already include this, but without it there is no
-   * way to tell a target that the operator moved with channel 9 from one the follow
-   * feature pushed outward because that leg had lost the ground. */
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_offset_left);
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_offset_right);
-
-  /* VMCVOFA fields 143..144: which side the follow feature is extending and
-   * whether an episode is in progress.
-   *
-   * The side is classified from the roll direction over a confirmation window
-   * and then held, so it is not something the operator set and not something
-   * the instantaneous latches show.  Publishing it is the only way a recording
-   * can tell "the wrong leg is pushing" from "no leg is pushing yet"; roll is
-   * field 122 and the per-side latches are 130..133. */
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_low_side);
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_episode_active);
-  /* VMCVOFA field 145: whether the follow scope has actually been settled for
-   * this episode.  Without it a recording cannot tell "per-leg because the
-   * unloaded side is low" from "per-leg because the sign is still inside the
-   * deadband and nothing has been decided yet" - and that distinction is the
-   * whole reason the decision is deferred instead of taken on the latch. */
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_scope_resolved);
-  /* VMCVOFA field 146: the classification still being timed out.  Publishing
-   * it is what makes the confirmation window verifiable - a recording can show
-   * that the platform-side transient WAS seen and deliberately not believed,
-   * rather than the firmware never having noticed it. */
-  offset = vmc_lqr_rtt_append_scaled(
-      line, offset, (int)sizeof(line),
-      (double)vmc_control.leg_follow_candidate_side);
+  /* VMCVOFA fields 141..146: retired leg-follow slots.  Keep emitting zeros so
+   * every existing recorder keeps its field indices and schema version. */
+  for (i = 0U; i < 6U; i++) {
+    offset = vmc_lqr_rtt_append_scaled(line, offset, (int)sizeof(line), 0.0);
+  }
 
   /* VMCVOFA fields 147..150: the rest of the accelerometer vector, raw and
    * gravity-compensated, in g.

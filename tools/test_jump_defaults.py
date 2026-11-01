@@ -88,16 +88,10 @@ class JumpDefaultsTest(unittest.TestCase):
         self.assertEqual(_macro("VMC_JUMP_ENABLE_DEFAULT"), 1.0)
 
     def test_airborne_latch_is_not_single_frame(self) -> None:
-        """One telemetry frame must not be able to declare the robot airborne.
-
-        Both times were 1 ms, so a single wheel-speed spike or a single
-        dropped torque sample cut the wheels mid-drive.  A landing impact
-        produces exactly those spikes, which is why this looked like the robot
-        randomly dying after a jump.
-        """
-        confirm = _macro("VMC_AIRBORNE_CONFIRM_MS_DEFAULT")
-        release = _macro("VMC_AIRBORNE_RELEASE_MS_DEFAULT")
-        self.assertGreaterEqual(confirm, 50.0)
+        """The Shanhai FN latch must span several control cycles."""
+        confirm = _macro("VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT")
+        release = _macro("VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT")
+        self.assertGreater(confirm, 1.0)
         self.assertGreaterEqual(release, 100.0)
         self.assertGreater(release, confirm)
 

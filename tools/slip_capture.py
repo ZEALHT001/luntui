@@ -40,10 +40,6 @@ Besides the stream rates, the capture can set tunables at runtime over RTT, so
 one run both configures the controller and records the result:
 
 * ``--slip-threshold`` / ``--slip-confirm-ms`` / ``--slip-gate``
-* ``--leg-follow on|off``            ground-following leg extension
-* ``--leg-follow-machine-wide on|off`` either-side-unloaded => both legs
-* ``--leg-follow-rate`` / ``--leg-follow-return-rate``
-
 Any option left unset keeps the firmware's current value, and both the
 requested and the telemetry-observed values land in ``summary.json``.
 """
@@ -146,6 +142,8 @@ FAST_SCALARS: list[tuple[str, int]] = [
     ("joint_right_back_torque", 100),
     ("slip_metric", 100),
     ("airborne_wheel_speed", 1000),
+    # Legacy wire names.  Current firmware publishes per-side Shanhai FN (N)
+    # here so the fast stream can show the 20 ms wheel-gating decision.
     ("airborne_joint_torque_min", 100),
     ("airborne_joint_torque_max", 100),
 ]
@@ -303,14 +301,6 @@ def _enable_payload(
     slip_lqr_theta_scale: float | None = None,
     slip_lqr_dtheta_scale: float | None = None,
     slip_wheel_current_scale: float | None = None,
-    leg_follow_enable: bool | None = None,
-    leg_follow_rate: float | None = None,
-    leg_follow_return_rate: float | None = None,
-    leg_follow_machine_wide: bool | None = None,
-    leg_follow_auto_scope: bool | None = None,
-    leg_follow_roll_deadband: float | None = None,
-    leg_follow_episode_timeout_ms: float | None = None,
-    leg_follow_scope_confirm_ms: float | None = None,
 ) -> str:
     """Build the RTT parameter payload for one capture.
 
@@ -320,13 +310,6 @@ def _enable_payload(
     latch is allowed to reject the wheel measurement feeding the Kalman
     filter; a pure data-collection run leaves it off so the recording cannot
     influence what it is measuring.
-
-    ``leg_follow_*`` set the ground-following leg extension at runtime.  The
-    firmware accepts these keys in any ``vmc_balance_params`` payload, so a
-    single capture can pin the feature on or off, change the outward / return
-    rates, and switch between per-leg and whole-machine scope.  Whatever is
-    left as ``None`` keeps the firmware's current value, so a capture never
-    silently resets a parameter the operator did not name.
     """
     payload: dict[str, object] = {
         "type": "vmc_balance_params",
@@ -344,27 +327,6 @@ def _enable_payload(
         payload["slip_lqr_dtheta_scale"] = float(slip_lqr_dtheta_scale)
     if slip_wheel_current_scale is not None:
         payload["slip_wheel_current_scale"] = float(slip_wheel_current_scale)
-    if leg_follow_enable is not None:
-        payload["leg_follow_enable"] = 1 if leg_follow_enable else 0
-    if leg_follow_rate is not None:
-        payload["leg_follow_rate"] = float(leg_follow_rate)
-    if leg_follow_return_rate is not None:
-        payload["leg_follow_return_rate"] = float(leg_follow_return_rate)
-    if leg_follow_machine_wide is not None:
-        payload["leg_follow_machine_wide"] = 1 if leg_follow_machine_wide else 0
-    if leg_follow_auto_scope is not None:
-        payload["leg_follow_auto_scope"] = 1 if leg_follow_auto_scope else 0
-    if leg_follow_roll_deadband is not None:
-        payload["leg_follow_roll_deadband"] = float(leg_follow_roll_deadband)
-    if leg_follow_episode_timeout_ms is not None:
-        payload["leg_follow_episode_timeout_ms"] = float(
-            leg_follow_episode_timeout_ms
-        )
-    if leg_follow_scope_confirm_ms is not None:
-        payload["leg_follow_scope_confirm_ms"] = float(
-            leg_follow_scope_confirm_ms
-        )
-
     if mode == "slow":
         payload.update(
             {"fast_enable": 0, "telem_period_ms": slow_period_ms}
@@ -581,8 +543,6 @@ def summarize_capture(
     demux_stats: dict[str, int] | None = None,
     slip_requested: dict[str, Any] | None = None,
     slip_applied: dict[str, Any] | None = None,
-    leg_follow_requested: dict[str, Any] | None = None,
-    leg_follow_applied: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fast_summary = _stream_summary(fast_times_ms, requested_fast_period_ms)
     if fast_loop_counts and len(fast_loop_counts) == len(fast_times_ms):
@@ -608,8 +568,6 @@ def summarize_capture(
         "demux": demux_stats or {},
         "slip_requested": slip_requested or {},
         "slip_applied": slip_applied or {},
-        "leg_follow_requested": leg_follow_requested or {},
-        "leg_follow_applied": leg_follow_applied or {},
     }
 
 
@@ -709,82 +667,6 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--leg-follow",
-        choices=("on", "off"),
-        default=None,
-        help=(
-            "runtime ground-following leg extension (firmware default on); "
-            "on = an unloaded leg extends so it keeps chasing the ground, "
-            "off = hold the S2 preset"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-machine-wide",
-        choices=("on", "off"),
-        default=None,
-        help=(
-            "fixed follow scope, used only when --leg-follow-auto-scope off; "
-            "on = if EITHER side unloads, BOTH legs extend; off = only the "
-            "unloaded leg extends"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-auto-scope",
-        choices=("on", "off"),
-        default=None,
-        help=(
-            "on (firmware default) = choose the follow scope per unload "
-            "episode from the roll direction: unloaded side HIGH means the "
-            "machine was lifted (extend both), LOW means it went over an edge "
-            "(extend only that leg). off = use --leg-follow-machine-wide"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-roll-deadband",
-        type=float,
-        default=None,
-        help=(
-            "|roll| below this is treated as level, so the previous episode's "
-            "scope is kept (firmware default 0.05 rad)"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-episode-timeout-ms",
-        type=float,
-        default=None,
-        help=(
-            "how long an unload episode survives with nothing latched, so the "
-            "reach is not unwound before it arrives (firmware default 3000)"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-scope-confirm-ms",
-        type=float,
-        default=None,
-        help=(
-            "how long a low-side classification must hold before it is "
-            "believed; one frame is not evidence (firmware default 250)"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-rate",
-        type=float,
-        default=None,
-        help=(
-            "outward chase rate in m/s while a leg is unloaded "
-            "(firmware default 0.2)"
-        ),
-    )
-    parser.add_argument(
-        "--leg-follow-return-rate",
-        type=float,
-        default=None,
-        help=(
-            "rate in m/s at which the extra extension returns to the preset "
-            "once the leg loads again (firmware default 0.05)"
-        ),
-    )
-    parser.add_argument(
         "--source",
         choices=("gdbserver", "auto", "tcp", "jlink"),
         default="gdbserver",
@@ -849,37 +731,6 @@ def main() -> int:
     slip_lqr_enable = (
         None if args.slip_lqr is None else (args.slip_lqr == "on")
     )
-    if args.leg_follow_rate is not None and not (0.0 <= args.leg_follow_rate <= 1.0):
-        parser.error("--leg-follow-rate must be in [0, 1] m/s")
-    if args.leg_follow_return_rate is not None and not (
-        0.0 <= args.leg_follow_return_rate <= 1.0
-    ):
-        parser.error("--leg-follow-return-rate must be in [0, 1] m/s")
-    if args.leg_follow_roll_deadband is not None and not (
-        0.0 <= args.leg_follow_roll_deadband <= 0.5
-    ):
-        parser.error("--leg-follow-roll-deadband must be in [0, 0.5] rad")
-    if args.leg_follow_episode_timeout_ms is not None and not (
-        0.0 <= args.leg_follow_episode_timeout_ms <= 60000.0
-    ):
-        parser.error("--leg-follow-episode-timeout-ms must be in [0, 60000]")
-    if args.leg_follow_scope_confirm_ms is not None and not (
-        0.0 <= args.leg_follow_scope_confirm_ms <= 5000.0
-    ):
-        parser.error("--leg-follow-scope-confirm-ms must be in [0, 5000]")
-    leg_follow_enable = (
-        None if args.leg_follow is None else (args.leg_follow == "on")
-    )
-    leg_follow_machine_wide = (
-        None
-        if args.leg_follow_machine_wide is None
-        else (args.leg_follow_machine_wide == "on")
-    )
-    leg_follow_auto_scope = (
-        None
-        if args.leg_follow_auto_scope is None
-        else (args.leg_follow_auto_scope == "on")
-    )
     record_fast = args.mode in ("both", "fast")
     record_slow = args.mode in ("both", "slow")
     active_slow_period_ms = (
@@ -911,9 +762,6 @@ def main() -> int:
     demux = RttDemux()
     applied_threshold: float | None = None
     applied_gate: float | None = None
-    applied_leg_follow_left: float | None = None
-    applied_leg_follow_right: float | None = None
-
     try:
         reader = open_reader(args)
         if not send_with_ack(
@@ -929,14 +777,6 @@ def main() -> int:
                 args.slip_lqr_theta_scale,
                 args.slip_lqr_dtheta_scale,
                 args.slip_wheel_current_scale,
-                leg_follow_enable,
-                args.leg_follow_rate,
-                args.leg_follow_return_rate,
-                leg_follow_machine_wide,
-                leg_follow_auto_scope,
-                args.leg_follow_roll_deadband,
-                args.leg_follow_episode_timeout_ms,
-                args.leg_follow_scope_confirm_ms,
             ),
             "VMC_BALANCE_PARAMS OK",
         ):
@@ -1009,66 +849,6 @@ def main() -> int:
                     f"wheel_current_scale {args.slip_wheel_current_scale:g}"
                     if args.slip_wheel_current_scale is not None
                     else "wheel_current_scale unchanged"
-                )
-            )
-        if (
-            leg_follow_enable is not None
-            or leg_follow_machine_wide is not None
-            or leg_follow_auto_scope is not None
-            or args.leg_follow_rate is not None
-            or args.leg_follow_return_rate is not None
-            or args.leg_follow_roll_deadband is not None
-            or args.leg_follow_episode_timeout_ms is not None
-            or args.leg_follow_scope_confirm_ms is not None
-        ):
-            print(
-                "leg follow set: "
-                + (
-                    f"enable {1 if leg_follow_enable else 0}"
-                    if leg_follow_enable is not None
-                    else "enable unchanged"
-                )
-                + ", "
-                + (
-                    f"auto_scope {1 if leg_follow_auto_scope else 0}"
-                    if leg_follow_auto_scope is not None
-                    else "auto_scope unchanged"
-                )
-                + ", "
-                + (
-                    f"machine_wide {1 if leg_follow_machine_wide else 0}"
-                    if leg_follow_machine_wide is not None
-                    else "machine_wide unchanged"
-                )
-                + ", "
-                + (
-                    f"roll_deadband {args.leg_follow_roll_deadband:g} rad"
-                    if args.leg_follow_roll_deadband is not None
-                    else "roll_deadband unchanged"
-                )
-                + ", "
-                + (
-                    f"episode_timeout {args.leg_follow_episode_timeout_ms:g} ms"
-                    if args.leg_follow_episode_timeout_ms is not None
-                    else "episode_timeout unchanged"
-                )
-                + ", "
-                + (
-                    f"scope_confirm {args.leg_follow_scope_confirm_ms:g} ms"
-                    if args.leg_follow_scope_confirm_ms is not None
-                    else "scope_confirm unchanged"
-                )
-                + ", "
-                + (
-                    f"rate {args.leg_follow_rate:g} m/s"
-                    if args.leg_follow_rate is not None
-                    else "rate unchanged"
-                )
-                + ", "
-                + (
-                    f"return {args.leg_follow_return_rate:g} m/s"
-                    if args.leg_follow_return_rate is not None
-                    else "return unchanged"
                 )
             )
         if marker.enabled:
@@ -1156,10 +936,6 @@ def main() -> int:
                         applied_threshold = sample.slip_accel_threshold
                     if sample.slip_enable == sample.slip_enable:
                         applied_gate = sample.slip_enable
-                    if sample.leg_follow_offset_left == sample.leg_follow_offset_left:
-                        applied_leg_follow_left = sample.leg_follow_offset_left
-                    if sample.leg_follow_offset_right == sample.leg_follow_offset_right:
-                        applied_leg_follow_right = sample.leg_follow_offset_right
                     row = _sample_to_row(sample)
                     row["host_time_s"] = elapsed
                     slow_writer.writerow(row)
@@ -1248,20 +1024,6 @@ def main() -> int:
         slip_applied={
             "threshold": applied_threshold,
             "gate_active": applied_gate,
-        },
-        leg_follow_requested={
-            "enable": leg_follow_enable,
-            "machine_wide": leg_follow_machine_wide,
-            "auto_scope": leg_follow_auto_scope,
-            "roll_deadband": args.leg_follow_roll_deadband,
-            "episode_timeout_ms": args.leg_follow_episode_timeout_ms,
-            "scope_confirm_ms": args.leg_follow_scope_confirm_ms,
-            "rate": args.leg_follow_rate,
-            "return_rate": args.leg_follow_return_rate,
-        },
-        leg_follow_applied={
-            "offset_left": applied_leg_follow_left,
-            "offset_right": applied_leg_follow_right,
         },
     )
     summary["label"] = args.label

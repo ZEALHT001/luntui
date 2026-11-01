@@ -103,116 +103,6 @@ extern "C" {
  * stands. */
 #define VMC_LEG_SUPPORT_FORCE_MAX     250.0f
 #define VMC_LEG_SUPPORT_FORCE_DIRECTION -1.0f
-/* Ground-following leg extension.
- *
- * Off by default.  While a leg is NOT carrying the machine - the per-side
- * load latch is set - its length target chases outward at leg_follow_rate
- * (m/s) instead of holding the channel-9 leg-length target.  The existing
- * support feedforward
- * then pushes that wheel back down toward the ground, so a body that is
- * slowly lifted keeps its wheels in contact until the leg runs out of stroke
- * at VMC_LEG_LENGTH_MAX.  Only then does further lifting take the wheel off
- * the ground, which is what the airborne detector is for.
- *
- * Without this the loop holds a fixed length and treats the lift as an error,
- * so it pulls the wheel UP toward the body and the leg stops following long
- * before it reaches the stroke limit.
- *
- * Once the leg loads again the extra offset returns to zero at
- * leg_follow_return_rate, so the machine settles back to its normal stance
- * height instead of ratcheting taller on every lift.
- *
- * The unloaded decision comes from the same per-side latch the airborne
- * detector uses, so the airborne detector must be enabled for this to act;
- * with it off the latch stays 0 and the feature is inert. */
-#define VMC_LEG_FOLLOW_ENABLE_DEFAULT       1U
-#define VMC_LEG_FOLLOW_RATE_DEFAULT         0.2f /* m/s outward */
-#define VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT  0.05f /* m/s back to the preset */
-/* Trigger scope.
- *
- * 0 = per leg: only the leg that lost the ground extends.  Correct for
- *     driving, where one wheel is knocked up and the other must keep
- *     balancing at its normal length.
- * 1 = whole machine (default): if EITHER side is unloaded, BOTH legs extend.
- *     This is what makes a slow, quasi-static lift behave.  Raising one side
- *     by hand does not spin that wheel, so the per-leg detector may never
- *     latch, and the grounded leg - now carrying the whole machine - reads
- *     MORE load, never less, so it can never latch either.  Extending both
- *     lets the grounded leg push its wheel down while the lifted side
- *     follows, so the machine rises as a whole instead of twisting.
- *
- * The cost of mode 1 is that the grounded leg actively pushes the machine up.
- * Each leg is still capped by its own remaining stroke, so the extension stops
- * at VMC_LEG_LENGTH_MAX rather than running away. */
-#define VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT 1U
-/* Automatic scope selection from the direction of the roll.
- *
- * What the feature acts on is WHICH WAY THE MACHINE IS TIPPING, not which
- * side unloaded - the latch is only ever a symptom of that.
- *
- * The response is always "extend the LOW side":
- *
- *   LOW side reaching down
- *     A wheel is over an edge, a step down, or off a platform, and that leg
- *     has to find ground.  This is the case a fixed rule got wrong: pushing
- *     one side off a platform unloaded the PLATFORM side first (see
- *     VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT), and extending that side levered
- *     the body further over the edge.
- *
- *   LOW side as the grounded leg
- *     The machine is being lifted on the other side, so the grounded side is
- *     the low one.  Extending it raises the machine as a whole, which is the
- *     wanted lift response.
- *
- * Both cases are the same action, so this needs no lift/drop classifier at
- * all - only a reliable reading of which side is down.  That also makes the
- * undecided window safe: extending the low side cannot lever the machine over
- * an edge, so the worst case before a classification confirms is "no follow
- * yet", not "the wrong leg is pushing".
- *
- * Because of that, the scope is NO LONGER a choice between per-leg and
- * whole-machine: leg_follow_machine_wide is only consulted when auto_scope is
- * 0, where it restores the old fixed behaviour for a contrast run.
- *
- * The side is classified over VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT and then
- * HELD for the rest of the episode, because the body swings through level
- * while this feature's own extension pushes it around.
- *
- * Set leg_follow_auto_scope to 0 to go back to a fixed scope chosen by
- * leg_follow_machine_wide. */
-#define VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT   1U
-/* |roll| below this cannot be told apart from level.  0.10 rad = 5.7 deg. */
-#define VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT 0.1f
-/* How long a side-classification must hold before it is believed.
- *
- * One frame of "this side is unloaded" is not evidence.  Measured pushing one
- * side off a platform: the lift that propagated through the machine unloaded
- * the PLATFORM side first (its torque dipped to 1.9 N.m, just under the
- * 2.0 N.m set threshold, while the body swung), and that side is in the HIGH
- * half whenever the other one has gone down.  Classified on the first frame,
- * the drop therefore came out as "the high side unloaded, so the machine was
- * LIFTED" and both legs extended - the machine kept tipping and the two legs
- * ran to their stroke limit, 38.7 deg of roll, without reaching anything.
- *
- * The transient lasted 120 ms there.  250 ms rejects it and still leaves the
- * real classification settled well before the body has travelled far. */
-#define VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT 250U
-/* How long an episode survives with NOTHING latched.
- *
- * While a side is still low the extension must not be given back: the follow
- * feature raises the joint torque as it pushes, which trips the same load
- * latch it is waiting on, and the measured result was a loop that extended
- * ~14 mm, released itself, unwound 102 mm and started again - it never
- * accumulated enough reach to touch anything.  So the episode persists while
- * the body is still tilted, and the extension is only unwound once the body
- * is level again.
- *
- * This timeout is the escape hatch for the case where it never levels: a
- * machine parked on an edge would otherwise hold its extension forever. */
-#define VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT 3000U
-/* "Neither side in particular": the body is level, so which side is low
- * cannot be read.  Distinct from VMC_AIRBORNE_SIDE_LEFT/RIGHT. */
-#define VMC_LEG_FOLLOW_SIDE_NONE 2U
 
 /* SBUS channel 9 is a continuous leg-length knob.  Its -1 endpoint maps to
  * VMC_LEG_KNOB_MIN_DEFAULT, midpoint is the linear midpoint, and +1 maps to
@@ -539,56 +429,46 @@ extern "C" {
  * a wheel change. */
 #define VMC_WHEEL_RADIUS          0.060f
 #define VMC_AIRBORNE_DETECT_ENABLE_DEFAULT 1U
-/* An unloaded wheel accelerates quickly while the joints carry almost no
- * load.  Keep the thresholds conservative so normal balancing corrections do
- * not trip the latch. */
-#define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
-#define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 2.0f
-/* Confirmation and release times for the whole-machine latch.
+/* Shanhai ground detection.
  *
- * These were left at 1 ms, which makes the latch react to a SINGLE telemetry
- * frame: one wheel-speed spike or one dropped torque sample was enough to
- * declare the robot airborne and cut its wheels mid-drive.  A landing impact
- * produces exactly those spikes.  Restored to the values the detector was
- * written with; 100 ms is short enough that a real lift-off still cuts the
- * wheels well before the machine reacts, and 500 ms of release hysteresis
- * keeps a single good frame from re-arming the wheels while it is still in
- * the air. */
-#define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 100U
-#define VMC_AIRBORNE_RELEASE_MS_DEFAULT 500U
-/* "Whole machine off the ground" also has to look still, so the latch cannot
- * sit on a body the pilot is carrying or throwing.  Measured on the recorded
- * runs: pitch moved by at most 0.012 rad in the 200 ms before every latch
- * onset (bench lift, landing and low-friction driving alike), so the guard is
- * deliberately loose and does not sharpen the trigger.  It is there for the
- * swing that is not in the recordings yet - a tumbling body moves several
- * tenths of a rad over that span. */
+ * Each side is evaluated independently from its measured joint torques:
+ *
+ *   P   = F*cos(theta) + Tp*sin(theta)/L0
+ *   ddz = body vertical acceleration - ddL0*cos(theta)
+ *         + 2*dL0*dtheta*sin(theta)
+ *         + L0*ddtheta*sin(theta)
+ *         + L0*dtheta^2*cos(theta)
+ *   FN  = P + m_w*g + m_w*ddz
+ *
+ * FN below the threshold means that wheel is unloaded.  Only that wheel's
+ * torque is cut.  Its joints keep running and its length target remains the
+ * channel-9 command; there is no automatic air length and no leg-follow
+ * extension. */
+#define VMC_AIRBORNE_WHEEL_SPEED_THRESHOLD_DEFAULT 4.0f
+/* Vehicle calibration (2026-11-01):
+ *   grounded FN p01/median: left 72.8/79.7 N, right 65.4/67.8 N
+ *   airborne FN median:     left 22.6 N, right 23.5 N
+ * Shanhai's 80 N value cuts both wheels in a normal crouch on this chassis.
+ * 40 N preserves a wide ground/air margin and is the tested default here. */
+#define VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD_DEFAULT 40.0f
+/* Whole-machine compatibility thresholds.  Wheel speed and pitch no longer
+ * participate in ground detection. */
+#define VMC_AIRBORNE_CONFIRM_MS_DEFAULT 20U
+#define VMC_AIRBORNE_RELEASE_MS_DEFAULT 100U
 #define VMC_AIRBORNE_PITCH_DEV_MAX_DEFAULT 0.2f
 #define VMC_AIRBORNE_PITCH_RATE_MAX_DEFAULT 4.0f
-/* How long the armed pitch reference survives after the wheel-speed condition
- * stops holding.  Without this the reference would be re-armed on the very
- * cycle that triggers the latch, and the comparison would always read zero.
- * 200 ms covers several control-confirmation windows so a body that swings
- * away inside that span still blocks the latch. */
 #define VMC_AIRBORNE_PITCH_REF_HOLD_MS_DEFAULT 200U
-/* Telemetry sentinel for "no attitude reference armed".  It has to be outside
- * the reachable pitch range so a recording cannot confuse an unarmed guard
- * with a reference captured at zero pitch. */
 #define VMC_AIRBORNE_PITCH_REFERENCE_NONE (-999.0f)
-/* Single-leg variant.  The whole-machine test above keys on the average of all
- * four joints, so it cannot see one leg being lifted: the other leg still
- * carries the body and holds that average well above the threshold.  Each side
- * therefore latches on its own, and only the lifted side's wheel is gated -
- * the grounded side is still needed to balance.
- *
- * The torque threshold is the same 2 N.m used by the whole-machine test, but
- * the confirmation is far longer.  Ground margin is wide - over the projectile
- * run the lowest single joint read 3.67 N.m and a side average is higher than
- * its own lowest joint - so the long confirmation is what keeps one bump from
- * cutting a wheel that is still on the ground. */
+/* Shanhai's contact test is per side.  A short confirmation rejects feedback
+ * spikes; release needs the load to recover above a hysteresis band so a
+ * wheel cannot chatter at the threshold.  These are the parameters shown in
+ * the tuner and used by the firmware. */
 #define VMC_AIRBORNE_SIDE_ENABLE_DEFAULT 1U
-#define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 60U
-#define VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT 200U
+#define VMC_AIRBORNE_SIDE_CONFIRM_MS_DEFAULT 20U
+#define VMC_AIRBORNE_SIDE_RELEASE_MS_DEFAULT 100U
+#define VMC_AIRBORNE_FN_RELEASE_RATIO_DEFAULT 1.25f
+#define VMC_WHEEL_MASS_KG                  0.40f
+#define VMC_LEG_ACCEL_FILTER_ALPHA_DEFAULT 0.20f
 #define VMC_AIRBORNE_SIDE_LEFT  0U
 #define VMC_AIRBORNE_SIDE_RIGHT 1U
 #define VMC_AIRBORNE_SIDE_COUNT 2U
@@ -1269,6 +1149,11 @@ typedef struct {
   double phi0;
   double d_length;
   double d_phi0;
+  double dd_length;
+  double dd_theta;
+  double previous_d_length;
+  double previous_d_theta;
+  uint8_t acceleration_valid;
   double length_error;
   double length_p_output;
   double length_d_output;
@@ -1410,44 +1295,6 @@ typedef struct {
   float roll_comp_offset;
   float left_target_length;
   float right_target_length;
-  /* Ground-following extension: extra length added to each side's target
-   * while that leg is unloaded, and the two rates that drive it.  See
-   * VMC_LEG_FOLLOW_RATE_DEFAULT. */
-  uint8_t leg_follow_enable;
-  /* 0 = per leg, 1 = both legs when either side is unloaded.  Only consulted
-   * when leg_follow_auto_scope is 0; otherwise the scope for the current
-   * unload episode is decided by leg_follow_resolve_scope(). */
-  uint8_t leg_follow_machine_wide;
-  /* 1 = pick the scope per unload episode from the roll direction. */
-  uint8_t leg_follow_auto_scope;
-  /* |roll| below this is treated as level; see the macro. */
-  float leg_follow_roll_deadband;
-  /* How long an episode may survive with nothing latched.  See
-   * VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT. */
-  uint32_t leg_follow_episode_timeout_ms;
-  /* How long a side-classification must hold before it is believed.  See
-   * VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT. */
-  uint32_t leg_follow_scope_confirm_ms;
-  /* Scope legacy flag (fixed per-leg / whole-machine, auto_scope = 0 only),
-   * whether an episode is in progress, and whether the side has been settled
-   * yet.  Published to telemetry so a recording can show what was active -
-   * and, while the side is undecided, that it was undecided. */
-  uint8_t leg_follow_scope_machine_wide;
-  uint8_t leg_follow_episode_active;
-  uint8_t leg_follow_scope_resolved;
-  /* Which side is the LOW one for this episode, held once settled.  This is
-   * the side the feature extends - see VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT. */
-  uint8_t leg_follow_low_side;
-  /* Pending classification: how long the current candidate has held, and what
-   * it is.  Cleared whenever the candidate changes. */
-  uint32_t leg_follow_candidate_ms;
-  uint8_t leg_follow_candidate_side;
-  /* Millisecond counter for the episode timeout. */
-  uint32_t leg_follow_episode_ms;
-  float leg_follow_rate;
-  float leg_follow_return_rate;
-  float leg_follow_offset_left;
-  float leg_follow_offset_right;
   uint8_t getup_state;
   int8_t getup_turn_direction;
   int8_t getup_body_flip_direction;
@@ -1594,6 +1441,8 @@ typedef struct {
   float wheel_torque_to_current;
   float wheel_current_gain;
   uint8_t airborne_detect_enable;
+  /* Compatibility names for existing RTT clients.  The operational threshold
+   * is airborne_joint_torque_threshold, now Shanhai's FN cutoff in newtons. */
   float airborne_wheel_speed_threshold;
   float airborne_joint_torque_threshold;
   uint32_t airborne_confirm_ms;
@@ -1727,6 +1576,8 @@ typedef struct {
   float ax_lin;
   float ay_lin;
   float az_lin;
+  /* Gravity-compensated acceleration projected onto world +Z, m/s2. */
+  float world_az_lin;
   /* Resolved accelerometer sign convention: 0 = not yet known, else +1/-1. */
   int8_t gravity_sign;
   uint8_t imu_connected;
@@ -1844,21 +1695,18 @@ typedef struct {
   uint32_t airborne_release_candidate_ms;
   float airborne_wheel_speed;
   float airborne_joint_torque;
-  /* The same "all four unloaded" test now needs the weakest and the strongest
-   * joint, not their mean.  Keeping the mean for compatibility with older
-   * recordings, the extremes are what decide the latch. */
+  /* Slow telemetry keeps the measured joint-torque extremes for flash-safety
+   * and legacy analysis.  The fast stream reuses these two wire slots for
+   * per-side FN so the 450 Hz support-force signal remains observable. */
   float airborne_joint_torque_min;
   float airborne_joint_torque_max;
-  /* Pitch captured when the wheel-speed condition first armed.  The latch
-   * requires the body not to have swung away from that value. */
+  /* Retired attitude-guard fields, retained at their original offsets. */
   float airborne_pitch_reference;
   uint8_t airborne_pitch_reference_valid;
   uint32_t airborne_pitch_reference_hold_ms;
-  /* Per-side "this leg is off the ground" latch, indexed by
-   * VMC_AIRBORNE_SIDE_LEFT/RIGHT.  Unlike airborne_active above - which is the
-   * whole-machine condition and gates both wheels - these gate only their own
-   * wheel, so a lifted leg stops spinning while the grounded one keeps
-   * balancing. */
+  /* Per-side Shanhai FN (newtons, despite the legacy field name) and its wheel
+   * latch, indexed by VMC_AIRBORNE_SIDE_LEFT/RIGHT.  Each latch gates only its
+   * own wheel; airborne_active is the compatibility AND of both sides. */
   float airborne_side_torque[VMC_AIRBORNE_SIDE_COUNT];
   uint8_t airborne_side_active[VMC_AIRBORNE_SIDE_COUNT];
   uint8_t airborne_side_candidate[VMC_AIRBORNE_SIDE_COUNT];

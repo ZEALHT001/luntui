@@ -31,10 +31,9 @@ wrong way by construction.
 Ground contact
     The tool also reports whether each leg was actually CARRYING the machine,
     because a levelling correction can only work on a leg that is on the
-    ground.  The observable is joint torque, not leg length: a leg pressing
-    into the ground reads high torque, a lifted one collapses to a few N.m.
-    The firmware already thresholds this at
-    VMC_AIRBORNE_JOINT_TORQUE_THRESHOLD (2 N.m) and latches it per side, so
+    ground.  The observable is Shanhai support force FN, not leg length: a leg
+    pressing into the ground reads high FN, while a lifted one collapses
+    toward zero.  The firmware thresholds this per side, so
     `airborne_side_left/right` in the capture is a ready-made contact flag.
 
     A leg that is off the ground cannot resist the leg-length loop at all: the
@@ -45,8 +44,6 @@ This tool reports which of the three happened, and when.
 
 Requires a schema-10 capture (VMCVOFA fields 138..140).  Older captures do not
 carry the compensator output at all and are rejected with a clear message.
-Schema-11 captures add the ground-following leg extension
-(``leg_follow_offset_left/right``); when present that section is reported too.
 
 Usage:
     python3 tools/roll_comp_report.py logs/<stamp>/kalman_samples.csv
@@ -98,23 +95,12 @@ def analyse(rows: list[dict[str, str]]) -> dict[str, object]:
     measured_left = [_num(r, "leg_length_left") for r in rows]
     measured_right = [_num(r, "leg_length_right") for r in rows]
 
-    # Ground contact, per side.  airborne_side_* is the firmware's own latch;
-    # the torques are what drives it.
+    # Ground contact, per side.  The legacy field names say "torque", but the
+    # current firmware publishes Shanhai FN in newtons in those two slots.
     side_torque_left = [_num(r, "airborne_side_torque_left") for r in rows]
     side_torque_right = [_num(r, "airborne_side_torque_right") for r in rows]
     airborne_left = [_num(r, "airborne_side_active_left") for r in rows]
     airborne_right = [_num(r, "airborne_side_active_right") for r in rows]
-
-    # Ground-following leg extension.  Only schema-11 captures carry these
-    # columns; on an older capture every value stays NaN and the section is
-    # simply omitted.
-    follow_left = [_num(r, "leg_follow_offset_left") for r in rows]
-    follow_right = [_num(r, "leg_follow_offset_right") for r in rows]
-    follow_present = any(math.isfinite(v) for v in follow_left + follow_right)
-    follow_frames = sum(
-        1 for a, b in zip(follow_left, follow_right)
-        if (math.isfinite(a) and a > 1e-6) or (math.isfinite(b) and b > 1e-6)
-    )
 
     moving = [i for i, v in enumerate(offset) if math.isfinite(v) and abs(v) > 1e-6]
     clipped_left = [
@@ -204,14 +190,6 @@ def analyse(rows: list[dict[str, str]]) -> dict[str, object]:
         "times": t,
         "airborne_right_flag": airborne_right,
         "airborne_left_flag": airborne_left,
-        "leg_follow_present": follow_present,
-        "leg_follow_left_max": max(
-            (v for v in follow_left if math.isfinite(v)), default=float("nan")
-        ),
-        "leg_follow_right_max": max(
-            (v for v in follow_right if math.isfinite(v)), default=float("nan")
-        ),
-        "leg_follow_frames": follow_frames,
     }
 
 
@@ -303,7 +281,7 @@ def verdict(result: dict[str, object]) -> list[str]:
         lines.append(
             "LEG OFF THE GROUND: the per-side load latch fired for "
             + "; ".join(which)
-            + f".  Median side load was L {load_l:.2f} N.m / R {load_r:.2f} N.m.  "
+            + f".  Median side FN was L {load_l:.2f} N / R {load_r:.2f} N.  "
             "A leg that is not carrying the machine cannot resist the "
             "leg-length loop, so the constant support feedforward drives it "
             "outward - a commanded retraction can then show up as a measured "
@@ -312,27 +290,8 @@ def verdict(result: dict[str, object]) -> list[str]:
     else:
         lines.append(
             f"BOTH LEGS LOADED: no per-side airborne latch fired.  Median side "
-            f"load L {load_l:.2f} N.m / R {load_r:.2f} N.m."
+            f"FN L {load_l:.2f} N / R {load_r:.2f} N."
         )
-
-    if bool(result["leg_follow_present"]):
-        follow_frames = int(result["leg_follow_frames"])
-        follow_l = float(result["leg_follow_left_max"]) * 1000.0
-        follow_r = float(result["leg_follow_right_max"]) * 1000.0
-        if follow_frames == 0:
-            lines.append(
-                "LEG FOLLOW IDLE: leg_follow_offset stayed at zero for the "
-                "whole capture, so no leg was extended to chase the ground.  "
-                "Either the feature is disabled or the per-side load latch "
-                "never fired."
-            )
-        else:
-            lines.append(
-                f"LEG FOLLOW ACTIVE: offset was non-zero in {follow_frames}/{total} "
-                f"frames, peaking at L {follow_l:.1f} mm / R {follow_r:.1f} mm.  "
-                "This is the extra outward extension on top of the preset, held "
-                "while the leg is unloaded and released once it reloads."
-            )
 
     return lines
 
@@ -377,16 +336,6 @@ def main() -> int:
     print(f"    latch on (left)     : {int(result['airborne_left_frames'])} frames")
     print(f"    latch on (right)    : {int(result['airborne_right_frames'])} frames")
     print()
-    if bool(result["leg_follow_present"]):
-        print("  ground-following extension")
-        print(
-            f"    offset peak         : L {float(result['leg_follow_left_max']) * 1000:6.1f} mm   "
-            f"R {float(result['leg_follow_right_max']) * 1000:6.1f} mm"
-        )
-        print(
-            f"    active              : {int(result['leg_follow_frames'])} frames"
-        )
-        print()
     for line in verdict(result):
         print(f"  {line}")
     return 0

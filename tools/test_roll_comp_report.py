@@ -12,9 +12,7 @@ def _rows(offset: float, left: float, right: float, roll: float,
           count: int = 100, measured_left: float | None = None,
           measured_right: float | None = None,
           load_left: float = 11.0, load_right: float = 11.0,
-          air_left: float = 0.0, air_right: float = 0.0,
-          follow_left: float | None = None,
-          follow_right: float | None = None) -> list[dict[str, str]]:
+          air_left: float = 0.0, air_right: float = 0.0) -> list[dict[str, str]]:
     rows = []
     for i in range(count):
         row = {
@@ -31,12 +29,6 @@ def _rows(offset: float, left: float, right: float, roll: float,
             "airborne_side_active_left": str(air_left),
             "airborne_side_active_right": str(air_right),
         }
-        # Schema-11 captures add the ground-following offsets; older captures
-        # simply omit the columns.
-        if follow_left is not None:
-            row["leg_follow_offset_left"] = str(follow_left)
-        if follow_right is not None:
-            row["leg_follow_offset_right"] = str(follow_right)
         rows.append(row)
     return rows
 
@@ -113,7 +105,7 @@ class VerdictTest(unittest.TestCase):
         self.assertIn("NOT TRACKED", joined)
 
     def test_lifted_leg_is_reported_from_its_load_latch(self) -> None:
-        """The contact flag is joint torque, not leg length.
+        """The contact flag is Shanhai FN, not leg length.
 
         The right leg was lifted, so it could not resist the length loop at all;
         that is why a commanded retraction produced a measured extension.
@@ -131,36 +123,6 @@ class VerdictTest(unittest.TestCase):
         lines = verdict(analyse(_rows(0.05, 0.33, 0.23, roll=0.1)))
         joined = " ".join(lines)
         self.assertIn("BOTH LEGS LOADED", joined)
-
-    def test_leg_follow_absent_on_schema10(self) -> None:
-        result = analyse(_rows(0.05, 0.33, 0.23, roll=0.1))
-        self.assertFalse(bool(result["leg_follow_present"]))
-        joined = " ".join(verdict(result))
-        self.assertNotIn("LEG FOLLOW", joined)
-
-    def test_leg_follow_active_is_reported(self) -> None:
-        result = analyse(_rows(
-            0.048, 0.218, 0.121, roll=0.12,
-            air_left=1.0, air_right=1.0,
-            follow_left=0.06, follow_right=0.06,
-        ))
-        self.assertTrue(bool(result["leg_follow_present"]))
-        self.assertAlmostEqual(float(result["leg_follow_left_max"]), 0.06)
-        self.assertEqual(int(result["leg_follow_frames"]), 100)
-        joined = " ".join(verdict(result))
-        self.assertIn("LEG FOLLOW ACTIVE", joined)
-
-    def test_leg_follow_idle_is_reported(self) -> None:
-        result = analyse(_rows(
-            0.048, 0.218, 0.121, roll=0.12,
-            air_left=0.0, air_right=0.0,
-            follow_left=0.0, follow_right=0.0,
-        ))
-        self.assertTrue(bool(result["leg_follow_present"]))
-        self.assertEqual(int(result["leg_follow_frames"]), 0)
-        joined = " ".join(verdict(result))
-        self.assertIn("LEG FOLLOW IDLE", joined)
-
 
 if __name__ == "__main__":
     unittest.main()

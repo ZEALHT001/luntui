@@ -63,14 +63,14 @@ _BALANCE_PARAM_FALLBACK = {
     "wheel_current_limit": 5000.0,
     "airborne_detect_enable": 1.0,
     "airborne_wheel_speed_threshold": 4.0,
-    "airborne_joint_torque_threshold": 2.0,
-    "airborne_confirm_ms": 100.0,
-    "airborne_release_ms": 500.0,
+    "airborne_joint_torque_threshold": 40.0,
+    "airborne_confirm_ms": 20.0,
+    "airborne_release_ms": 100.0,
     "airborne_pitch_dev_max": 0.20,
     "airborne_pitch_rate_max": 4.0,
     "airborne_side_enable": 1.0,
-    "airborne_side_confirm_ms": 60.0,
-    "airborne_side_release_ms": 200.0,
+    "airborne_side_confirm_ms": 20.0,
+    "airborne_side_release_ms": 100.0,
     "tp_limit": 108.0,
     "tp_phi_gain": 1.0,
     "tp_x_gain": 1.0,
@@ -174,32 +174,6 @@ _BALANCE_PARAM_FALLBACK = {
     "roll_comp_gain": 0.10,
     "roll_comp_limit": 0.1025,
     "roll_comp_ramp_rate": 0.054,
-    # Ground-following leg extension.  Off by default: the unloaded leg's
-    # target chases outward so the wheel is pushed back to the ground instead
-    # of being pulled up toward the body.
-    "leg_follow_enable": 0.0,
-    # 1 = both legs extend when either side unloads.  Required for a slow hand
-    # lift, which never spins the lifted wheel, so the per-leg detector cannot
-    # latch; the grounded leg then carries everything and reads more load.
-    "leg_follow_machine_wide": 1.0,
-    # 1 = pick the scope per unload episode from the roll direction: the
-    # unloaded side on the HIGH side means the machine was lifted (extend
-    # both), on the LOW side means it went over an edge (extend only that
-    # leg).  Overrides leg_follow_machine_wide while set.
-    "leg_follow_auto_scope": 1.0,
-    "leg_follow_roll_deadband": 0.10,
-    # How long a side-classification must hold before it is believed.  A
-    # single frame is not evidence: pushing one side off a platform unloaded
-    # the PLATFORM side for 120 ms, and that side is in the high half whenever
-    # the other has gone down.
-    "leg_follow_scope_confirm_ms": 250.0,
-    # How long an unload episode survives with nothing latched.  The follow
-    # feature raises joint torque as it pushes, which trips the same load latch
-    # it waits on, so the episode has to outlive the latch or the extension is
-    # given back before it has reached anything.
-    "leg_follow_episode_timeout_ms": 3000.0,
-    "leg_follow_rate": 0.20,
-    "leg_follow_return_rate": 0.05,
     "kp_phi0": 50.0,
     "kd_phi0": 0.5,
     "max_phi0_torque": 108.0,
@@ -364,20 +338,6 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "roll_comp_gain": ("VMC_ROLL_LENGTH_COMP_GAIN_DEFAULT", "float"),
     "roll_comp_limit": ("VMC_ROLL_LENGTH_COMP_LIMIT_DEFAULT", "float"),
     "roll_comp_ramp_rate": ("VMC_ROLL_LENGTH_COMP_RAMP_RATE_DEFAULT", "float"),
-    "leg_follow_enable": ("VMC_LEG_FOLLOW_ENABLE_DEFAULT", "uint"),
-    "leg_follow_machine_wide": ("VMC_LEG_FOLLOW_MACHINE_WIDE_DEFAULT", "uint"),
-    "leg_follow_auto_scope": ("VMC_LEG_FOLLOW_AUTO_SCOPE_DEFAULT", "uint"),
-    "leg_follow_roll_deadband": ("VMC_LEG_FOLLOW_ROLL_DEADBAND_DEFAULT", "float"),
-    "leg_follow_episode_timeout_ms": (
-        "VMC_LEG_FOLLOW_EPISODE_TIMEOUT_MS_DEFAULT",
-        "uint_value",
-    ),
-    "leg_follow_scope_confirm_ms": (
-        "VMC_LEG_FOLLOW_SCOPE_CONFIRM_MS_DEFAULT",
-        "uint_value",
-    ),
-    "leg_follow_rate": ("VMC_LEG_FOLLOW_RATE_DEFAULT", "float"),
-    "leg_follow_return_rate": ("VMC_LEG_FOLLOW_RETURN_RATE_DEFAULT", "float"),
     "kp_phi0": ("VMC_LEG_PHI0_KP_DEFAULT", "float"),
     "kd_phi0": ("VMC_LEG_PHI0_KD_DEFAULT", "float"),
     "max_phi0_torque": ("VMC_LEG_PHI0_TORQUE_MAX_DEFAULT", "float"),

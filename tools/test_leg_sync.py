@@ -14,7 +14,7 @@ The fix is a differential term on the joint torque:
     Tp    = clamp(kp * e + kd * edot, +/- limit)
     left -= Tp ; right += Tp
 
-These are source-level checks, in the same style as test_leg_follow.py: the
+These are source-level checks, in the same style as test_shanhai_airborne.py: the
 firmware has no host-buildable control layer, so the properties are asserted
 against the shipped source.
 """
