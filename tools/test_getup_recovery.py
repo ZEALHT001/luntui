@@ -232,23 +232,10 @@ class ProfileTest(unittest.TestCase):
             _macro("VMC_GETUP_BODY_FAN_STALL_ROLL_RATE_RADPS"), 0.0
         )
 
-    def test_shallow_fold_has_a_dedicated_two_stage_pose(self) -> None:
-        self.assertAlmostEqual(
-            _macro("VMC_GETUP_PARTIAL_RAISE_LENGTH"), 0.200
-        )
-        self.assertAlmostEqual(
-            _macro("VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD"),
-            0.0,
-        )
-        self.assertAlmostEqual(
-            _macro("VMC_GETUP_PARTIAL_LOWER_THETA_RAD"), 0.0
-        )
+    def test_shallow_fold_starts_in_the_lower_pose(self) -> None:
         self.assertAlmostEqual(
             _macro("VMC_GETUP_PARTIAL_LOWER_LENGTH"),
             _macro("VMC_LEG_TARGET_SHORT"),
-        )
-        self.assertAlmostEqual(
-            _macro("VMC_GETUP_PARTIAL_THETA_TOL_RAD"), 0.250
         )
         self.assertLess(
             _macro("VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX"),
@@ -256,63 +243,50 @@ class ProfileTest(unittest.TestCase):
             "the shallow-fold detector accepts an ordinary extended stance",
         )
         self.assertGreater(
-            _macro("VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS"), 0.0
-        )
-        self.assertGreater(
             _macro("VMC_GETUP_PARTIAL_CONFIRM_MS"), 0.0
         )
-
-    def test_shallow_fold_uses_lqr_theta_torque_instead_of_position_pd(self) -> None:
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_CONFIRM_MS"), 1.0
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_PHI0_KP"), 50.0
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_READY_CONFIRM_MS"), 1.0
+        )
+    def test_shallow_fold_uses_position_pd_for_theta_alignment(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
-        signal = _body(source, "vmc_getup_lqr_signal_theta")
+        leg_control = _body(source, "update_leg_length_control")
         for needle in (
-            "apply_soft_deadband",
-            "k[1] * theta_error",
-            "k[3] * d_theta",
-            "VMC_GETUP_PHI0_TORQUE_MAX",
+            "kp_phi0 * phi0_error",
+            "-kd_phi0 * leg->d_phi0",
+            "phi0_torque_raw",
         ):
             with self.subTest(needle=needle):
                 _has(
-                    signal,
+                    leg_control,
                     needle,
-                    "the shallow-fold LQR theta signal is incomplete",
+                    "the get-up phi0 PD path is incomplete",
                 )
+        self.assertNotIn(
+            "vmc_getup_lqr_signal_theta",
+            source,
+            "shallow-fold alignment still contains an LQR theta pre-stage",
+        )
 
         control = _body(source, "vmc_control_update")
         for needle in (
-            "vmc_getup_lqr_signal_theta",
-            "vmc_probe_state.lqr.left_k",
-            "vmc_probe_state.lqr.right_k",
-            "vmc_balance.left_lqr_d_theta_limited",
-            "vmc_balance.right_lqr_d_theta_limited",
+            "VMC_PHI0_VERTICAL_RAD",
+            "vmc_angle_nearest_to",
+            "VMC_GETUP_PARTIAL_PHI0_KP",
+            "getup_partial_active",
         ):
             with self.subTest(needle=needle):
                 _has(
                     control,
                     needle,
-                    "FOLDED_RAISE does not drive theta through LQR torque",
+                    "FOLDED_LOWER does not target theta=0 through PD",
                 )
-
-        gain_start = control.index(
-            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {",
-            control.index("max_phi0_torque = clamp_double"),
-        )
-        gain_end = control.index(
-            "} else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {",
-            gain_start,
-        )
-        folded_gain = control[gain_start:gain_end]
-        _has(
-            folded_gain,
-            "kp_phi0 = 0.0;",
-            "FOLDED_RAISE still contributes a position-PD term",
-        )
-        _has(
-            folded_gain,
-            "kd_phi0 = 0.0;",
-            "FOLDED_RAISE still contributes a velocity-PD term",
-        )
-
 
 class StateMachineTest(unittest.TestCase):
     def test_every_entry_requires_a_safe_knob_length(self) -> None:
@@ -611,8 +585,9 @@ class StateMachineTest(unittest.TestCase):
         for needle in (
             "getup_partial_armed == 0U",
             "vmc_getup_safe_length_ready() == 0U",
-            "VMC_GETUP_STATE_FOLDED_RAISE",
+            "VMC_GETUP_STATE_FOLDED_LOWER",
             "getup_partial_armed = 0U",
+            "getup_partial_active = 1U",
             "wheel_output_enable = 0U",
         ):
             with self.subTest(needle=needle):
@@ -640,7 +615,7 @@ class StateMachineTest(unittest.TestCase):
         )
 
         active = _body(source, "vmc_getup_is_active")
-        for state_name in ("FOLDED_RAISE", "FOLDED_LOWER"):
+        for state_name in ("FOLDED_LOWER",):
             with self.subTest(state=state_name):
                 _has(
                     active,
@@ -648,44 +623,24 @@ class StateMachineTest(unittest.TestCase):
                     "the new get-up stage can release wheel output",
                 )
 
-    def test_shallow_fold_raise_then_lower_transitions_are_pose_gated(self) -> None:
+    def test_shallow_fold_lower_hands_to_upright_after_length_is_reached(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
         state = _body(source, "vmc_update_getup_state")
-        raise_start = state.index(
-            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE)"
+        self.assertNotIn(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE)",
+            state,
+            "FOLDED_RAISE is still executed",
         )
         lower_start = state.index(
             "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER)",
-            raise_start,
         )
-        raise_stage = state[raise_start:lower_start]
-        for needle in (
-            "VMC_GETUP_PARTIAL_RAISE_LENGTH",
-            "VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD",
-            "vmc_getup_partial_pose_ready",
-            "VMC_GETUP_STATE_FOLDED_LOWER",
-        ):
-            with self.subTest(needle=needle):
-                _has(
-                    raise_stage,
-                    needle,
-                    "FOLDED_RAISE can advance before reaching its pose",
-                )
-
-        ready = _body(source, "vmc_getup_partial_pose_ready")
-        _has(
-            ready,
-            "VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS",
-            "FOLDED_RAISE can advance while theta is still moving",
-        )
-
-        lower_end = state.index(
-            "if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER)",
+        upright_start = state.index(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT)",
             lower_start,
         )
-        lower_stage = state[lower_start:lower_end]
+        lower_stage = state[lower_start:upright_start]
         for needle in (
-            "vmc_getup_upright_ready",
+            "VMC_GETUP_LENGTH_READY_TOL",
             "VMC_GETUP_STATE_UPRIGHT",
             "getup_upright_phi0_left",
         ):
@@ -696,13 +651,23 @@ class StateMachineTest(unittest.TestCase):
                     "FOLDED_LOWER can enter LQR before settling",
                 )
 
+        upright_stage = state[upright_start:]
+        for needle in (
+            "vmc_getup_upright_ready",
+            "VMC_GETUP_READY_CONFIRM_MS",
+            "wheel_output_enable = 1U",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    upright_stage,
+                    needle,
+                    "UPRIGHT does not hard-switch to LQR after settling",
+                )
+
         control = _body(source, "vmc_control_update")
         for needle in (
-            "VMC_GETUP_PARTIAL_RAISE_LENGTH",
             "VMC_GETUP_PARTIAL_LOWER_LENGTH",
-            "VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD",
-            "VMC_GETUP_PARTIAL_LOWER_THETA_RAD",
-            "vmc_getup_lqr_signal_theta",
+            "VMC_PHI0_VERTICAL_RAD",
             "vmc_angle_nearest_to",
         ):
             with self.subTest(needle=needle):
@@ -711,6 +676,12 @@ class StateMachineTest(unittest.TestCase):
                     needle,
                     "the shallow-fold length/posture targets are incomplete",
                 )
+
+        self.assertNotIn(
+            "vmc_getup_partial_target_theta",
+            source,
+            "the partial get-up does not always target theta=0",
+        )
 
     def test_theta_bad_zone_recovery_uses_the_reversed_winding(self) -> None:
         self.assertLess(_macro("VMC_GETUP_LEG_RECOVER_DIRECTION"), 0.0)
@@ -896,7 +867,6 @@ class ControlIntegrationTest(unittest.TestCase):
             "BODY_FLIP",
             "BODY_FAN",
             "BODY_FAN_SYNC",
-            "FOLDED_RAISE",
             "FOLDED_LOWER",
         ):
             with self.subTest(state=state):

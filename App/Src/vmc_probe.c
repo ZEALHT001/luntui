@@ -88,8 +88,6 @@ static uint8_t vmc_getup_is_active(void);
 static uint8_t vmc_getup_pose_ready(void);
 static uint8_t vmc_getup_upright_ready(void);
 static uint8_t vmc_getup_partial_folded_is_required(double pitch);
-static uint8_t vmc_getup_partial_pose_ready(double target_length,
-                                            double target_theta);
 static int8_t vmc_getup_body_mode(double pitch);
 static int8_t vmc_getup_body_align_direction(double phi4, int8_t body_mode);
 static uint8_t vmc_getup_body_fan_is_required(void);
@@ -1130,23 +1128,6 @@ static double vmc_getup_phi0_feedforward_slew(double previous,
   return vmc_step_towards(previous, target, rate * vmc_loop_dt());
 }
 
-/* Shanhai's LQR_Clc_SignalTheta() uses only the theta and theta-rate rows of
- * the standing LQR.  Reproduce that torque signal in this controller's theta
- * convention, whose sign is opposite to Shanhai's. */
-static double vmc_getup_lqr_signal_theta(
-    volatile const double k[12],
-    double theta,
-    double d_theta)
-{
-  const double theta_error =
-      apply_soft_deadband(theta, (double)vmc_balance.theta_deadband);
-
-  return clamp_double(
-      -(k[1] * theta_error + k[3] * d_theta),
-      -(double)VMC_GETUP_PHI0_TORQUE_MAX,
-      (double)VMC_GETUP_PHI0_TORQUE_MAX);
-}
-
 static float vmc_average_joint_torque_abs(void)
 {
   return (fabsf(vmc_probe_state.joint_left_ahead.torque) +
@@ -2146,7 +2127,6 @@ static uint8_t vmc_getup_is_active(void)
           vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
           vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN ||
           vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN_SYNC ||
-          vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE ||
           vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER ||
           vmc_control.getup_lqr_release_pending != 0U)
              ? 1U
@@ -2445,27 +2425,6 @@ static uint8_t vmc_getup_partial_folded_is_required(double pitch)
              : 0U;
 }
 
-static uint8_t vmc_getup_partial_pose_ready(double target_length,
-                                            double target_theta)
-{
-  return (fabs(vmc_probe_state.left_leg.length - target_length) <=
-              VMC_GETUP_PARTIAL_LENGTH_TOL &&
-          fabs(vmc_probe_state.right_leg.length - target_length) <=
-              VMC_GETUP_PARTIAL_LENGTH_TOL &&
-          fabs(vmc_rad_format((float)(
-              vmc_probe_state.motion.left_theta - target_theta))) <=
-              VMC_GETUP_PARTIAL_THETA_TOL_RAD &&
-          fabs(vmc_rad_format((float)(
-              vmc_probe_state.motion.right_theta - target_theta))) <=
-              VMC_GETUP_PARTIAL_THETA_TOL_RAD &&
-          fabs(vmc_probe_state.motion.left_d_theta) <
-              VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS &&
-          fabs(vmc_probe_state.motion.right_d_theta) <
-              VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS)
-             ? 1U
-             : 0U;
-}
-
 static uint8_t vmc_getup_enter_brace(int8_t turn_direction)
 {
   if (vmc_getup_safe_length_ready() == 0U) {
@@ -2479,6 +2438,7 @@ static uint8_t vmc_getup_enter_brace(int8_t turn_direction)
   vmc_control.getup_left_done = 0U;
   vmc_control.getup_right_done = 0U;
   vmc_control.getup_leg_align_complete = 0U;
+  vmc_control.getup_partial_active = 0U;
   vmc_control.getup_body_fan_sync_complete = 0U;
   vmc_control.getup_body_fan_sync_phi0_target = 0.0f;
   vmc_control.getup_body_fan_sync_fold_side = 0U;
@@ -2588,9 +2548,6 @@ static void vmc_getup_enter_stage(uint8_t state)
         (float)vmc_probe_state.motion.left_theta;
     vmc_control.getup_shrink_target_theta_right =
         (float)vmc_probe_state.motion.right_theta;
-  } else if (state == VMC_GETUP_STATE_FOLDED_RAISE) {
-    vmc_control.getup_upright_phi0_left = vmc_probe_state.left_leg.phi0;
-    vmc_control.getup_upright_phi0_right = vmc_probe_state.right_leg.phi0;
   }
 }
 
@@ -2602,9 +2559,10 @@ static uint8_t vmc_getup_enter_partial_fold(void)
   }
 
   vmc_stair_reset_balance_for_getup();
-  vmc_getup_enter_stage(VMC_GETUP_STATE_FOLDED_RAISE);
+  vmc_getup_enter_stage(VMC_GETUP_STATE_FOLDED_LOWER);
   vmc_control.getup_lqr_release_pending = 1U;
   vmc_control.getup_partial_armed = 0U;
+  vmc_control.getup_partial_active = 1U;
   vmc_getup_reset_balance_on_ready = 1U;
   vmc_balance.wheel_output_enable = 0U;
   return 1U;
@@ -2624,6 +2582,7 @@ static void vmc_getup_abort(void)
   vmc_control.getup_lqr_release_pending = 0U;
   vmc_getup_reset_balance_on_ready = 0U;
   vmc_control.getup_partial_armed = 0U;
+  vmc_control.getup_partial_active = 0U;
   vmc_control.getup_state_ms = 0U;
   vmc_control.getup_confirm_ms = 0U;
   vmc_fall_rearm_required = 1U;
@@ -2656,8 +2615,7 @@ static void vmc_update_getup_state(void)
   const uint32_t stage_timeout_ms =
       (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN)
           ? VMC_GETUP_BODY_FAN_TIMEOUT_MS
-          : ((vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE ||
-              vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER)
+          : ((vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER)
                  ? VMC_GETUP_PARTIAL_TIMEOUT_MS
                  : VMC_GETUP_TIMEOUT_MS);
 
@@ -2743,7 +2701,6 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN_SYNC ||
-      vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE ||
       vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER) {
     vmc_control.getup_state_ms += dt_ms;
     if (vmc_control.getup_state_ms >= stage_timeout_ms) {
@@ -3044,23 +3001,11 @@ static void vmc_update_getup_state(void)
     }
   }
 
-  if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
-    if (vmc_getup_partial_pose_ready(
-            VMC_GETUP_PARTIAL_RAISE_LENGTH,
-            VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD) != 0U) {
-      if (vmc_control.getup_confirm_ms < VMC_GETUP_PARTIAL_CONFIRM_MS) {
-        vmc_control.getup_confirm_ms += dt_ms;
-      }
-    } else {
-      vmc_control.getup_confirm_ms = 0U;
-    }
-    if (vmc_control.getup_confirm_ms >= VMC_GETUP_PARTIAL_CONFIRM_MS) {
-      vmc_getup_enter_stage(VMC_GETUP_STATE_FOLDED_LOWER);
-    }
-  }
-
   if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER) {
-    if (vmc_getup_upright_ready() != 0U) {
+    if (fabs(vmc_probe_state.left_leg.length - VMC_GETUP_STAND_LENGTH) <
+            VMC_GETUP_LENGTH_READY_TOL &&
+        fabs(vmc_probe_state.right_leg.length - VMC_GETUP_STAND_LENGTH) <
+            VMC_GETUP_LENGTH_READY_TOL) {
       if (vmc_control.getup_confirm_ms < VMC_GETUP_PARTIAL_CONFIRM_MS) {
         vmc_control.getup_confirm_ms += dt_ms;
       }
@@ -3244,6 +3189,7 @@ static void vmc_update_getup_state(void)
       vmc_control.getup_left_direction = 0;
       vmc_control.getup_right_direction = 0;
       vmc_control.getup_lqr_release_pending = 0U;
+      vmc_control.getup_partial_active = 0U;
       vmc_control.getup_state_ms = 0U;
       vmc_control.getup_confirm_ms = 0U;
       vmc_balance.wheel_output_enable = 1U;
@@ -5380,6 +5326,7 @@ void vmc_control_init(void)
   vmc_control.getup_lqr_release_pending = 0U;
   vmc_control.getup_leg_align_complete = 0U;
   vmc_control.getup_partial_armed = 1U;
+  vmc_control.getup_partial_active = 0U;
   vmc_control.getup_left_confirm_ms = 0U;
   vmc_control.getup_right_confirm_ms = 0U;
   vmc_control.getup_left_hold_length = VMC_LEG_LENGTH_DEFAULT;
@@ -5656,8 +5603,6 @@ void vmc_control_update(void)
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN ||
              vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN_SYNC) {
     target_length = VMC_GETUP_BODY_FAN_SYNC_LENGTH;
-  } else if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
-    target_length = VMC_GETUP_PARTIAL_RAISE_LENGTH;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER) {
     target_length = VMC_GETUP_PARTIAL_LOWER_LENGTH;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK ||
@@ -5970,17 +5915,10 @@ void vmc_control_update(void)
         vmc_probe_state.motion.right_theta));
     left_target_phi0 = vmc_probe_state.left_leg.phi0 + left_theta_error;
     right_target_phi0 = vmc_probe_state.right_leg.phi0 + right_theta_error;
-  } else if (vmc_control.getup_state ==
-                 VMC_GETUP_STATE_FOLDED_RAISE ||
-             vmc_control.getup_state ==
-                 VMC_GETUP_STATE_FOLDED_LOWER) {
-    const double target_theta =
-        (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE)
-            ? (double)VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD
-            : (double)VMC_GETUP_PARTIAL_LOWER_THETA_RAD;
+  } else if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER) {
     const double target_absolute =
         (double)VMC_PHI0_VERTICAL_RAD +
-        (double)vmc_probe_state.body.pitch + target_theta;
+        (double)vmc_probe_state.body.pitch;
 
     left_target_phi0 = vmc_angle_nearest_to(
         target_absolute, vmc_probe_state.left_leg.phi0);
@@ -6034,16 +5972,7 @@ void vmc_control_update(void)
   }
   left_phi0_feedforward = 0.0;
   right_phi0_feedforward = 0.0;
-  if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
-    left_phi0_feedforward = vmc_getup_lqr_signal_theta(
-        vmc_probe_state.lqr.left_k,
-        vmc_probe_state.motion.left_theta,
-        vmc_balance.left_lqr_d_theta_limited);
-    right_phi0_feedforward = vmc_getup_lqr_signal_theta(
-        vmc_probe_state.lqr.right_k,
-        vmc_probe_state.motion.right_theta,
-        vmc_balance.right_lqr_d_theta_limited);
-  } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
+  if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
     const double fan_speed_target =
         (double)vmc_control.getup_turn_direction *
         (double)VMC_GETUP_BODY_FAN_SPEED_RADPS;
@@ -6128,11 +6057,13 @@ void vmc_control_update(void)
   kp_phi0 = clamp_double(vmc_control.kp_phi0, 0.0, 500.0);
   kd_phi0 = clamp_double(vmc_control.kd_phi0, 0.0, 50.0);
   if (getup_force_profile != 0U) {
-    if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE) {
+    if (vmc_control.getup_partial_active != 0U &&
+        (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER ||
+         vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT)) {
       max_phi0_torque =
           clamp_double(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
-      kp_phi0 = 0.0;
-      kd_phi0 = 0.0;
+      kp_phi0 = clamp_double(VMC_GETUP_PARTIAL_PHI0_KP, 0.0, 500.0);
+      kd_phi0 = clamp_double(VMC_GETUP_PHI0_KD, 0.0, 50.0);
     } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
       max_phi0_torque = clamp_double(
           VMC_GETUP_BODY_FAN_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);

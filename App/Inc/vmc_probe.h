@@ -953,7 +953,7 @@ extern "C" {
 #define VMC_GETUP_LENGTH_CONFIRM_MS       100U
 #define VMC_GETUP_SHRINK_THETA_TARGET_RAD 0.800f
 #define VMC_GETUP_SHRINK_THETA_RATE_RADPS 0.500f
-#define VMC_GETUP_READY_CONFIRM_MS        250U
+#define VMC_GETUP_READY_CONFIRM_MS        1U
 #define VMC_GETUP_TIMEOUT_MS              10000U
 /* Shallow folded fall (pitch below the full-fall threshold).  This path does
  * not reuse TURN/SHRINK.  It first extends to 0.20 m while an LQR theta row
@@ -965,14 +965,9 @@ extern "C" {
 #define VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX    0.230f
 #define VMC_GETUP_PARTIAL_ENTRY_THETA_MIN_RAD 0.250f
 #define VMC_GETUP_PARTIAL_ENTRY_THETA_MAX_RAD 1.550f
-#define VMC_GETUP_PARTIAL_RAISE_LENGTH         0.200f
 #define VMC_GETUP_PARTIAL_LOWER_LENGTH         0.180f
-#define VMC_GETUP_PARTIAL_VERTICAL_THETA_RAD   0.0f
-#define VMC_GETUP_PARTIAL_LOWER_THETA_RAD      0.0f
-#define VMC_GETUP_PARTIAL_LENGTH_TOL           0.025f
-#define VMC_GETUP_PARTIAL_THETA_TOL_RAD        0.250f
-#define VMC_GETUP_PARTIAL_DTHETA_MAX_RADPS     0.350f
-#define VMC_GETUP_PARTIAL_CONFIRM_MS           120U
+#define VMC_GETUP_PARTIAL_PHI0_KP              50.0f
+#define VMC_GETUP_PARTIAL_CONFIRM_MS           1U
 #define VMC_GETUP_PARTIAL_TIMEOUT_MS           5000U
 
 /* Phi0 range protection is intentionally disabled.  These diagnostic state
@@ -1328,6 +1323,7 @@ typedef struct {
   uint8_t getup_right_done;
   uint8_t getup_leg_align_complete;
   uint8_t getup_partial_armed;
+  uint8_t getup_partial_active;
   uint32_t getup_left_confirm_ms;
   uint32_t getup_right_confirm_ms;
   float getup_left_hold_length;
