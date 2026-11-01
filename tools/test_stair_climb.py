@@ -99,10 +99,10 @@ class DefaultsTest(unittest.TestCase):
             _macro("VMC_STAIR_POSE_THETA_TOL_DEFAULT"), 0.0
         )
         self.assertGreater(_macro("VMC_STAIR_PHI0_RAMP_RATE_DEFAULT"), 0.0)
-        self.assertAlmostEqual(
+        self.assertGreater(
             _macro("VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT"),
             _macro("VMC_STAIR_PHI0_RAMP_RATE_DEFAULT"),
-            msg="LIFT should use the normal phi0 ramp again",
+            msg="LIFT should swing to the rear pose faster than RETRACT",
         )
         self.assertGreater(_macro("VMC_STAIR_PHI0_KP_DEFAULT"), 0.0)
         self.assertGreater(_macro("VMC_STAIR_PHI0_KD_DEFAULT"), 0.0)
@@ -131,19 +131,35 @@ class DefaultsTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             _macro("VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT"),
-            0.30,
+            0.19,
         )
         self.assertAlmostEqual(
             _macro("VMC_STAIR_SPEED_THRESHOLD_DEFAULT"),
-            1.0,
+            0.35,
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT"),
+            0.18,
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_SPEED_CONFIRM_MS_DEFAULT"),
+            25.0,
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_PREIMPACT_CONFIRM_MS_DEFAULT"),
+            20.0,
         )
         self.assertAlmostEqual(
             _macro("VMC_STAIR_IMPACT_CONFIRM_MS_DEFAULT"),
-            8.0,
+            15.0,
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT"),
+            1.45,
         )
         self.assertAlmostEqual(
             _macro("VMC_STAIR_IMPACT_DIFF_THRESHOLD_DEFAULT"),
-            0.4,
+            0.40,
         )
 
 
@@ -436,6 +452,7 @@ class RuntimeTuningTest(unittest.TestCase):
             "stair_lift_phi0_ramp_rate",
             "stair_ready_length",
             "stair_ready_confirm_ms",
+            "stair_command_speed_threshold",
             "stair_speed_confirm_ms",
             "stair_preimpact_confirm_ms",
             "stair_impact_confirm_ms",
@@ -477,6 +494,7 @@ class RuntimeTuningTest(unittest.TestCase):
             "stairLiftPhi0RampRate",
             "stairReadyLength",
             "stairReadyConfirmMs",
+            "stairCommandSpeedThreshold",
             "stairSpeedThreshold",
             "stairSpeedConfirmMs",
             "stairPreimpactConfirmMs",
@@ -524,6 +542,7 @@ class RuntimeTuningTest(unittest.TestCase):
             "stair_lift_phi0_ramp_rate",
             "stair_ready_length",
             "stair_ready_confirm_ms",
+            "stair_command_speed_threshold",
             "stair_speed_threshold",
             "stair_speed_confirm_ms",
             "stair_preimpact_confirm_ms",

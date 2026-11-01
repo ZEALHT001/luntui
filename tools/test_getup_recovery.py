@@ -233,6 +233,33 @@ class ProfileTest(unittest.TestCase):
             _macro("VMC_GETUP_BODY_FAN_STALL_ROLL_RATE_RADPS"), 0.0
         )
 
+    def test_shallow_fold_has_a_dedicated_two_stage_pose(self) -> None:
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_RAISE_LENGTH"), 0.200
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_RAISE_THETA_RAD"),
+            3.14159265 / 6.0,
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_LOWER_THETA_RAD"), 0.0
+        )
+        self.assertAlmostEqual(
+            _macro("VMC_GETUP_PARTIAL_LOWER_LENGTH"),
+            _macro("VMC_LEG_TARGET_SHORT"),
+        )
+        self.assertLess(
+            _macro("VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX"),
+            _macro("VMC_GETUP_SAFE_LENGTH_MAX") + 0.02,
+            "the shallow-fold detector accepts an ordinary extended stance",
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_PARTIAL_PHI0_RATE_RADPS"), 0.0
+        )
+        self.assertGreater(
+            _macro("VMC_GETUP_PARTIAL_CONFIRM_MS"), 0.0
+        )
+
 
 class StateMachineTest(unittest.TestCase):
     def test_every_entry_requires_a_safe_knob_length(self) -> None:
@@ -508,6 +535,123 @@ class StateMachineTest(unittest.TestCase):
         _has(state, "vmc_getup_direct_shrink_is_required()",
              "the startup path bypasses direct shrink and enables LQR")
 
+    def test_shallow_fold_entry_is_narrow_and_one_shot(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        entry = _body(source, "vmc_getup_partial_folded_is_required")
+        for needle in (
+            "VMC_GETUP_PARTIAL_PITCH_MIN_RAD",
+            "VMC_GETUP_START_PITCH_RAD",
+            "VMC_GETUP_PARTIAL_ROLL_MAX_RAD",
+            "VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX",
+            "VMC_GETUP_PARTIAL_ENTRY_THETA_MIN_RAD",
+            "VMC_GETUP_PARTIAL_ENTRY_THETA_MAX_RAD",
+            "left_theta * right_theta > 0.0",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    entry,
+                    needle,
+                    "the shallow-fold detector is too broad",
+                )
+
+        start = _body(source, "vmc_getup_enter_partial_fold")
+        for needle in (
+            "getup_partial_armed == 0U",
+            "vmc_getup_safe_length_ready() == 0U",
+            "VMC_GETUP_STATE_FOLDED_RAISE",
+            "getup_partial_armed = 0U",
+            "wheel_output_enable = 0U",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    start,
+                    needle,
+                    "the shallow-fold entry does not latch a safe wheel-off start",
+                )
+
+        state = _body(source, "vmc_update_getup_state")
+        self.assertLess(
+            state.index("partial_folded != 0U"),
+            state.index("vmc_getup_direct_shrink_is_required()"),
+            "the generic direct-shrink branch shadows the shallow-fold path",
+        )
+        _has(
+            state,
+            "getup_partial_armed = 1U;",
+            "turning S1 off does not re-arm shallow-fold recovery",
+        )
+        _has(
+            state,
+            "partial_folded == 0U",
+            "a normal upright enable does not consume shallow-fold recovery",
+        )
+
+        active = _body(source, "vmc_getup_is_active")
+        for state_name in ("FOLDED_RAISE", "FOLDED_LOWER"):
+            with self.subTest(state=state_name):
+                _has(
+                    active,
+                    f"VMC_GETUP_STATE_{state_name}",
+                    "the new get-up stage can release wheel output",
+                )
+
+    def test_shallow_fold_raise_then_lower_transitions_are_pose_gated(self) -> None:
+        source = SOURCE.read_text(encoding="utf-8")
+        state = _body(source, "vmc_update_getup_state")
+        raise_start = state.index(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_RAISE)"
+        )
+        lower_start = state.index(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER)",
+            raise_start,
+        )
+        raise_stage = state[raise_start:lower_start]
+        for needle in (
+            "VMC_GETUP_PARTIAL_RAISE_LENGTH",
+            "VMC_GETUP_PARTIAL_RAISE_THETA_RAD",
+            "vmc_getup_partial_pose_ready",
+            "VMC_GETUP_STATE_FOLDED_LOWER",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    raise_stage,
+                    needle,
+                    "FOLDED_RAISE can advance before reaching its pose",
+                )
+
+        lower_end = state.index(
+            "if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER)",
+            lower_start,
+        )
+        lower_stage = state[lower_start:lower_end]
+        for needle in (
+            "vmc_getup_upright_ready",
+            "VMC_GETUP_STATE_UPRIGHT",
+            "getup_upright_phi0_left",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    lower_stage,
+                    needle,
+                    "FOLDED_LOWER can enter LQR before settling",
+                )
+
+        control = _body(source, "vmc_control_update")
+        for needle in (
+            "VMC_GETUP_PARTIAL_RAISE_LENGTH",
+            "VMC_GETUP_PARTIAL_LOWER_LENGTH",
+            "VMC_GETUP_PARTIAL_RAISE_THETA_RAD",
+            "VMC_GETUP_PARTIAL_LOWER_THETA_RAD",
+            "VMC_GETUP_PARTIAL_PHI0_RATE_RADPS",
+            "vmc_angle_nearest_to",
+        ):
+            with self.subTest(needle=needle):
+                _has(
+                    control,
+                    needle,
+                    "the shallow-fold length/posture targets are incomplete",
+                )
+
     def test_theta_bad_zone_recovery_uses_the_reversed_winding(self) -> None:
         self.assertLess(_macro("VMC_GETUP_LEG_RECOVER_DIRECTION"), 0.0)
         self.assertAlmostEqual(_macro("VMC_GETUP_LEG_RECOVER_TARGET_RAD"), 1.30)
@@ -682,6 +826,8 @@ class ControlIntegrationTest(unittest.TestCase):
             "BODY_FLIP",
             "BODY_FAN",
             "BODY_FAN_SYNC",
+            "FOLDED_RAISE",
+            "FOLDED_LOWER",
         ):
             with self.subTest(state=state):
                 _has(body, f"VMC_GETUP_STATE_{state}",

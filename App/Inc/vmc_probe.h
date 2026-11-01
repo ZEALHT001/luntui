@@ -288,22 +288,22 @@ extern "C" {
 #define VMC_STAIR_RETRACT_SUPPORT_FORCE_DEFAULT    -14.0f
 /* Legacy serialized target retained for client compatibility. */
 #define VMC_STAIR_PHI0_TARGET_DEFAULT              2.500f
-#define VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT      2.5f
+#define VMC_STAIR_LIFT_PHI0_RAMP_RATE_DEFAULT      4.0f
 #define VMC_STAIR_PHI0_RAMP_RATE_DEFAULT           2.5f
 #define VMC_STAIR_PHI0_KP_DEFAULT                  120.0f
 #define VMC_STAIR_PHI0_KD_DEFAULT                  6.0f
 /* Automatic trigger defaults. */
-#define VMC_STAIR_SPEED_THRESHOLD_DEFAULT          1.0f
-#define VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT  0.2f
+#define VMC_STAIR_SPEED_THRESHOLD_DEFAULT          0.35f
+#define VMC_STAIR_COMMAND_SPEED_THRESHOLD_DEFAULT  0.18f
 #define VMC_STAIR_READY_LENGTH_DEFAULT             0.330f
 #define VMC_STAIR_READY_CONFIRM_MS_DEFAULT         200U
-#define VMC_STAIR_SPEED_CONFIRM_MS_DEFAULT         60U
-#define VMC_STAIR_PREIMPACT_CONFIRM_MS_DEFAULT     30U
-#define VMC_STAIR_IMPACT_CONFIRM_MS_DEFAULT        8U
+#define VMC_STAIR_SPEED_CONFIRM_MS_DEFAULT         25U
+#define VMC_STAIR_PREIMPACT_CONFIRM_MS_DEFAULT     20U
+#define VMC_STAIR_IMPACT_CONFIRM_MS_DEFAULT        15U
 #define VMC_STAIR_PREIMPACT_DIFF_MAX_DEFAULT       0.0f
-#define VMC_STAIR_IMPACT_DIFF_THRESHOLD_DEFAULT    0.4f
-#define VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT  4.5f
-#define VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT   0.30f
+#define VMC_STAIR_IMPACT_DIFF_THRESHOLD_DEFAULT    0.40f
+#define VMC_STAIR_IMPACT_TORQUE_THRESHOLD_DEFAULT  1.45f
+#define VMC_STAIR_IMPACT_THETA_THRESHOLD_DEFAULT   0.19f
 #define VMC_STAIR_LENGTH_RAMP_RATE_DEFAULT         0.180f
 #define VMC_STAIR_RETRACT_TIMEOUT_MS_DEFAULT       2000U
 #define VMC_STAIR_HOLD_MS_DEFAULT                  500U
@@ -809,6 +809,8 @@ extern "C" {
 #define VMC_GETUP_STATE_BODY_FLIP  8U
 #define VMC_GETUP_STATE_BODY_FAN   9U
 #define VMC_GETUP_STATE_BODY_FAN_SYNC 10U
+#define VMC_GETUP_STATE_FOLDED_RAISE 11U
+#define VMC_GETUP_STATE_FOLDED_LOWER 12U
 
 #define VMC_JUMP_STAGE_IDLE        0U
 #define VMC_JUMP_STAGE_COMPRESS    1U
@@ -954,6 +956,24 @@ extern "C" {
 #define VMC_GETUP_READY_CONFIRM_MS        250U
 #define VMC_GETUP_RELEASE_RAMP_MS         300U
 #define VMC_GETUP_TIMEOUT_MS              10000U
+/* Shallow folded fall (pitch below the full-fall threshold).  This path does
+ * not reuse TURN/SHRINK: it first extends to 0.20 m while moving theta to
+ * +30 deg, then retracts to the 0.18 m hardware floor with theta back at zero.
+ * Shanhai asks for 0.15 m, but this chassis must not go below 0.18 m. */
+#define VMC_GETUP_PARTIAL_PITCH_MIN_RAD       0.080f
+#define VMC_GETUP_PARTIAL_ROLL_MAX_RAD        0.350f
+#define VMC_GETUP_PARTIAL_ENTRY_LENGTH_MAX    0.230f
+#define VMC_GETUP_PARTIAL_ENTRY_THETA_MIN_RAD 0.250f
+#define VMC_GETUP_PARTIAL_ENTRY_THETA_MAX_RAD 1.550f
+#define VMC_GETUP_PARTIAL_RAISE_LENGTH         0.200f
+#define VMC_GETUP_PARTIAL_LOWER_LENGTH         0.180f
+#define VMC_GETUP_PARTIAL_RAISE_THETA_RAD      0.5235988f
+#define VMC_GETUP_PARTIAL_LOWER_THETA_RAD      0.0f
+#define VMC_GETUP_PARTIAL_PHI0_RATE_RADPS      1.000f
+#define VMC_GETUP_PARTIAL_LENGTH_TOL           0.025f
+#define VMC_GETUP_PARTIAL_THETA_TOL_RAD        0.120f
+#define VMC_GETUP_PARTIAL_CONFIRM_MS           120U
+#define VMC_GETUP_PARTIAL_TIMEOUT_MS           5000U
 
 /* Phi0 range protection is intentionally disabled.  These diagnostic state
  * values remain for debugger/telemetry compatibility only. */
@@ -1307,6 +1327,7 @@ typedef struct {
   uint8_t getup_left_done;
   uint8_t getup_right_done;
   uint8_t getup_leg_align_complete;
+  uint8_t getup_partial_armed;
   uint32_t getup_left_confirm_ms;
   uint32_t getup_right_confirm_ms;
   float getup_left_hold_length;

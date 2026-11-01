@@ -81,6 +81,7 @@ const balanceParamIds = [
   ["stairPoseConfirmMs", "stair_pose_confirm_ms"],
   ["stairReadyLength", "stair_ready_length"],
   ["stairReadyConfirmMs", "stair_ready_confirm_ms"],
+  ["stairCommandSpeedThreshold", "stair_command_speed_threshold"],
   ["stairSpeedThreshold", "stair_speed_threshold"],
   ["stairSpeedConfirmMs", "stair_speed_confirm_ms"],
   ["stairPreimpactConfirmMs", "stair_preimpact_confirm_ms"],

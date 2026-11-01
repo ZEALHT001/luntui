@@ -427,16 +427,20 @@
             <input id="stairReadyConfirmMs" type="number" step="10" min="1" max="5000" value="200" />
           </label>
           <label>
+            最小行驶指令 / stair_command_speed_threshold (m/s)
+            <input id="stairCommandSpeedThreshold" type="number" step="0.01" min="0" max="3" value="0.18" />
+          </label>
+          <label>
             最小前进轮速 / stair_speed_threshold (m/s)
-            <input id="stairSpeedThreshold" type="number" step="0.05" min="0.05" max="5" value="1.00" />
+            <input id="stairSpeedThreshold" type="number" step="0.01" min="0.05" max="5" value="0.35" />
           </label>
           <label>
             前进速度确认 / stair_speed_confirm_ms
-            <input id="stairSpeedConfirmMs" type="number" step="5" min="1" max="1000" value="60" />
+            <input id="stairSpeedConfirmMs" type="number" step="5" min="1" max="1000" value="25" />
           </label>
           <label>
             撞击前基准确认 / stair_preimpact_confirm_ms
-            <input id="stairPreimpactConfirmMs" type="number" step="5" min="1" max="1000" value="30" />
+            <input id="stairPreimpactConfirmMs" type="number" step="5" min="1" max="1000" value="20" />
           </label>
           <label>
             轮速下降阈值 / stair_impact_diff_threshold (m/s)
@@ -444,19 +448,19 @@
           </label>
           <label>
             双腿变化确认 / stair_impact_confirm_ms
-            <input id="stairImpactConfirmMs" type="number" step="1" min="1" max="200" value="8" />
+            <input id="stairImpactConfirmMs" type="number" step="1" min="1" max="200" value="15" />
           </label>
           <label>
             单轮 LQR 力矩阈值 / stair_impact_torque_threshold (N.m)
-            <input id="stairImpactTorqueThreshold" type="number" step="0.5" min="0" max="54" value="4.5" />
+            <input id="stairImpactTorqueThreshold" type="number" step="0.05" min="0" max="54" value="1.45" />
           </label>
           <label>
             双腿角度阈值 / stair_impact_theta_threshold (rad)
-            <input id="stairImpactThetaThreshold" type="number" step="0.01" min="0" max="3.15" value="0.30" />
+            <input id="stairImpactThetaThreshold" type="number" step="0.005" min="0" max="3.15" value="0.19" />
           </label>
           <label>
             抬腿 phi0 速度 / stair_lift_phi0_ramp_rate (rad/s)
-            <input id="stairLiftPhi0RampRate" type="number" step="0.1" min="0" max="20" value="2.5" />
+            <input id="stairLiftPhi0RampRate" type="number" step="0.1" min="0" max="20" value="4.0" />
           </label>
           <label>
             越阶/回收 phi0 速度 / stair_phi0_ramp_rate (rad/s)
