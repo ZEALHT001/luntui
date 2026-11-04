@@ -79,7 +79,10 @@ _BALANCE_PARAM_FALLBACK = {
     "leg_sync_kd": 0.0,
     "leg_sync_torque_limit": 12.0,
     "dpitch_lpf_alpha": 1.0,
-    "disturbance_observer_enable": 1.0,
+    "mpc_enable": 0.0,
+    "mpc_shadow_enable": 1.0,
+    "compute_only_enable": 1.0,
+    "disturbance_observer_enable": 0.0,
     # These act as "rate * dt" terms, and dt is now the measured control period
     # (~2.22 ms) rather than the old assumed 1 ms.  Values are scaled by 0.45 to
     # keep the behaviour the machine was tuned for; left unscaled the
@@ -227,6 +230,9 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "leg_sync_kd": ("VMC_LEG_SYNC_KD_DEFAULT", "float"),
     "leg_sync_torque_limit": ("VMC_LEG_SYNC_TORQUE_LIMIT_DEFAULT", "float"),
     "dpitch_lpf_alpha": ("VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT", "float"),
+    "mpc_enable": ("VMC_MPC_ENABLE_DEFAULT", "uint"),
+    "mpc_shadow_enable": ("VMC_MPC_SHADOW_ENABLE_DEFAULT", "uint"),
+    "compute_only_enable": ("VMC_COMPUTE_ONLY_DEFAULT", "uint"),
     "disturbance_observer_enable": ("VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT", "uint"),
     "disturbance_observer_gain": ("VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT", "float"),
     "disturbance_observer_leak": ("VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT", "float"),

@@ -495,30 +495,11 @@ extern "C" {
 #define VMC_GRAVITY_SIGN_ALPHA  0.002f
 #define VMC_GRAVITY_SIGN_MARGIN 0.5f
 
-/* Body-motion Kalman filter defaults.  q_v/q_a are the process-noise terms
- * for velocity and acceleration; r_wheel/r_imu are the wheel-speed and IMU
- * acceleration measurement-noise terms.
- *
- * R is calibrated from the measured sensor noise, not chosen as a tuning
- * knob, so that Q and R stay independently meaningful.  Feeding a rescaled
- * Q/R pair would leave the filter gain unchanged and make the two knobs
- * degenerate.  Measured on the vehicle:
- *   wheel velocity measurement variance  1.12e-4 (m/s)^2
- *   IMU linear acceleration variance      8.34e-3 (m/s2)^2
- *
- * The accelerometer is gated to its own 200 Hz frame rate, so r_imu is the
- * weight per IMU sample rather than per 1 kHz control cycle.
- *
- * q_v sets the wheel-channel bandwidth; q_a sets the IMU weight.  A q_v sweep
- * measured on the vehicle gave:
- *   q_v       tau_wheel   NIS_v   high-frequency noise passed
- *   1.12e-7    29.0 ms     9.4    0.26x
- *   4.0e-7     16.8 ms     4.3    0.41x   <- most consistent
- *   1.0e-6     11.0 ms     4.8    0.62x
- *   4.0e-6      5.8 ms  1771      0.94x   <- control loop oscillated
- * The default is the most statistically consistent setting that stayed
- * stable.  Raising q_v further removes almost all smoothing and destabilises
- * the velocity feedback loop. */
+/* Legacy Kalman tuning fields retained for RTT and Live Watch compatibility.
+ * This branch no longer fuses IMU acceleration into the forward state; kf_dx
+ * is the low-passed average wheel-derived body velocity and kf_x integrates
+ * that value.  The fields remain parseable so existing tuning clients do not
+ * corrupt a payload when they include them. */
 #define VMC_BODY_MOTION_KF_Q_V_DEFAULT      4.0e-7f
 #define VMC_BODY_MOTION_KF_Q_A_DEFAULT      2.0721e-5f
 #define VMC_BODY_MOTION_KF_R_WHEEL_DEFAULT  1.1176e-4f
@@ -643,6 +624,21 @@ extern "C" {
  * Threshold and confirmation are a pair; do not move one without re-running
  * tools/slip_analyze.py --sweep. */
 #define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 5U
+/* The motion estimator is intentionally wheel-only on this branch.  The
+ * average of the two wheel-derived body velocities drives kf_dx and kf_x;
+ * IMU acceleration is no longer fused into the forward state. */
+#define VMC_BODY_MOTION_WHEEL_ONLY 1U
+#define VMC_BODY_MOTION_WHEEL_ALPHA 0.35f
+#define VMC_BODY_MOTION_WHEEL_DEADBAND 0.002f
+
+/* Solve MPC as an observer by default, but keep the proven LQR in command
+ * until the shadow output and solve time have been validated on hardware. */
+#define VMC_MPC_SHADOW_ENABLE_DEFAULT   1U
+#define VMC_MPC_ENABLE_DEFAULT          0U
+#define VMC_MPC_WHEEL_DELTA_MAX_DEFAULT 0.20f
+#define VMC_MPC_LEG_DELTA_MAX_DEFAULT   2.00f
+/* Keep both controllers computing while all final actuator commands are zero. */
+#define VMC_COMPUTE_ONLY_DEFAULT        1U
 /* Slip LQR weight switching.
  *
  * The reference this comes from is the Nanhang sentry wheel-leg firmware
@@ -1090,7 +1086,9 @@ extern "C" {
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
 #define VMC_BALANCE_LQR_DTHETA_LIMIT_DEFAULT 10.0f
 #define VMC_BALANCE_DPITCH_LPF_ALPHA_DEFAULT 1.0f
-#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 1U
+/* MPC owns the steady-state integral action, so keep the legacy observer off
+ * at boot to avoid two integrators fighting each other. */
+#define VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT 0U
 /* Re-tuned on the 60 mm / 0.4 kg wheels (2026-10-01 RTT sweep).  The gains are
  * a leaky velocity-error integrator, so the pair sets both the steady-state
  * authority (gain/leak) and the response time (1/leak); these cannot be tuned
@@ -1199,6 +1197,7 @@ typedef struct {
 
 typedef struct {
   uint8_t enabled;
+  uint8_t compute_only;
   float target_length;
   uint8_t jump_enable;
   uint8_t jump_moving_enable;
@@ -1503,6 +1502,21 @@ typedef struct {
   float kalman_slip_yaw;
   uint32_t kalman_slip_hold_ms;
   uint32_t kalman_slip_confirm_ms;
+  uint8_t mpc_enable;
+  uint8_t mpc_active;
+  uint8_t mpc_shadow_enable;
+  uint8_t mpc_shadow_active;
+  uint32_t mpc_failure_count;
+  uint32_t mpc_saturation_count;
+  float mpc_left_wheel_torque;
+  float mpc_right_wheel_torque;
+  float mpc_left_tp_command;
+  float mpc_right_tp_command;
+  float mpc_left_wheel_delta;
+  float mpc_right_wheel_delta;
+  float mpc_left_tp_delta;
+  float mpc_right_tp_delta;
+  uint32_t mpc_solve_us;
   /* Slip LQR weight switching.  While one side's slip latch is set, that
    * side's leg-angle feedback is scaled up so the posture term dominates the
    * control output instead of the (unreliable) wheel/velocity terms.  See

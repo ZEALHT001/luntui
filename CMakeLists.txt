@@ -52,6 +52,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/hi12_imu.c
     App/Src/tf02_pro.c
     App/Src/vmc_lqr.c
+    App/Src/vmc_mpc.c
+    App/Src/vmc_mpc_model.c
     App/Src/vmc_lqr_rtt.c
     Drivers/RTT/SEGGER_RTT.c
 )

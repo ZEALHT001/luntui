@@ -160,11 +160,27 @@
           </label>
         </div>
 
+        <h3>控制器选择</h3>
+        <div class="params">
+          <label>
+            增量式 MPC 使能 / mpc_enable
+            <input id="mpcEnable" type="number" step="1" min="0" max="1" value="0" />
+          </label>
+          <label>
+            MPC 影子观测 / mpc_shadow_enable
+            <input id="mpcShadowEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+          <label>
+            仅计算不输出 / compute_only_enable
+            <input id="computeOnlyEnable" type="number" step="1" min="0" max="1" value="1" />
+          </label>
+        </div>
+
         <h3>扰动观测器（轮速误差积分 → Pitch 漂移补偿）</h3>
         <div class="params">
           <label>
             观测器使能 / disturbance_observer_enable
-            <input id="disturbanceObserverEnable" type="number" step="1" min="0" max="1" value="1" />
+            <input id="disturbanceObserverEnable" type="number" step="1" min="0" max="1" value="0" />
           </label>
           <label>
             观测器增益 / disturbance_observer_gain

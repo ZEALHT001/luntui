@@ -14,7 +14,7 @@
 #include <string.h>
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
-#define VMC_LQR_RTT_LINE_MAX     1536U
+#define VMC_LQR_RTT_LINE_MAX     1792U
 #define VMC_LQR_RTT_FAST_LINE_MAX 768U
 #define VMC_LQR_RTT_READ_CHUNK   64U
 #define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 22U
+#define VMC_LQR_RTT_SCHEMA_VERSION 24U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -476,6 +476,21 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_theta_gain", &value) != 0U) {
     vmc_balance.disturbance_observer_theta_gain =
         vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_enable", &value) != 0U) {
+    vmc_balance.mpc_enable = (value > 0.5f) ? 1U : 0U;
+    if (vmc_balance.mpc_enable == 0U) {
+      vmc_balance.mpc_active = 0U;
+    }
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_shadow_enable", &value) != 0U) {
+    vmc_balance.mpc_shadow_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "compute_only_enable", &value) != 0U) {
+    vmc_control.compute_only = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
@@ -1809,6 +1824,40 @@ void vmc_lqr_rtt_telemetry_update(void)
     offset = vmc_lqr_rtt_append_scaled(
         line, offset, (int)sizeof(line), 0.0);
   }
+
+  /* VMCVOFA fields 187..199: incremental-MPC diagnostics.  These are appended
+   * after the legacy layout so every pre-MPC recorder keeps its field indices. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_enable);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_active);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_failure_count);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_saturation_count);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_wheel_torque);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_wheel_torque);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_tp_command);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_tp_command);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_wheel_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_wheel_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_tp_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_tp_delta);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_solve_us);
+  /* VMCVOFA fields 200..201: bench mode and controller enable. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.compute_only);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.enabled);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

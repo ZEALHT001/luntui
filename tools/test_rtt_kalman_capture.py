@@ -147,6 +147,48 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(sample.kf_innovation_v, 0.05)
         self.assertAlmostEqual(sample.gravity_sign, 1.0)
 
+    def test_mpc_diagnostics_parse_from_schema_24(self) -> None:
+        fields = format_line(schema_version=24.0).split(",")
+        values = {
+            "mpc_enable": "1",
+            "mpc_active": "1",
+            "mpc_failure_count": "2",
+            "mpc_saturation_count": "3",
+            "mpc_left_wheel_torque": "-1.25",
+            "mpc_right_wheel_torque": "1.75",
+            "mpc_left_tp_command": "-12.5",
+            "mpc_right_tp_command": "18.0",
+            "mpc_left_wheel_delta": "-0.2",
+            "mpc_right_wheel_delta": "0.1",
+            "mpc_left_tp_delta": "-2.0",
+            "mpc_right_tp_delta": "1.0",
+            "mpc_solve_us": "340",
+            "compute_only": "1",
+            "control_enabled": "1",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.mpc_enable, 1.0)
+        self.assertAlmostEqual(sample.mpc_active, 1.0)
+        self.assertAlmostEqual(sample.mpc_failure_count, 2.0)
+        self.assertAlmostEqual(sample.mpc_saturation_count, 3.0)
+        self.assertAlmostEqual(sample.mpc_left_wheel_torque, -1.25)
+        self.assertAlmostEqual(sample.mpc_right_wheel_torque, 1.75)
+        self.assertAlmostEqual(sample.mpc_left_tp_command, -12.5)
+        self.assertAlmostEqual(sample.mpc_right_tp_command, 18.0)
+        self.assertAlmostEqual(sample.mpc_left_wheel_delta, -0.2)
+        self.assertAlmostEqual(sample.mpc_right_wheel_delta, 0.1)
+        self.assertAlmostEqual(sample.mpc_left_tp_delta, -2.0)
+        self.assertAlmostEqual(sample.mpc_right_tp_delta, 1.0)
+        self.assertAlmostEqual(sample.mpc_solve_us, 340.0)
+        self.assertAlmostEqual(sample.compute_only, 1.0)
+        self.assertAlmostEqual(sample.control_enabled, 1.0)
+
     def test_previous_format_layout_still_parses(self) -> None:
         """The 106-field layout predates gravity_sign and must keep working."""
         fields = [0.001] * 106

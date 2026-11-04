@@ -499,8 +499,8 @@ FORMAT_V25_PROFILE = Profile(
 
 # Legacy schema-22 descent slots.  The firmware now emits fixed zeros here so
 # older capture files and every earlier telemetry index remain compatible.
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V26_PROFILE = Profile(
+    name="format-v26",
     field_count=187,
     channels={
         **FORMAT_V25_PROFILE.channels,
@@ -514,6 +514,39 @@ FORMAT_PROFILE = Profile(
         "descent_contact_ms": 184,
         "descent_trigger_count": 185,
         "descent_abort_count": 186,
+    },
+)
+
+# Incremental-MPC diagnostics (schema 23).
+FORMAT_V27_PROFILE = Profile(
+    name="format-v27",
+    field_count=200,
+    channels={
+        **FORMAT_V26_PROFILE.channels,
+        "mpc_enable": 187,
+        "mpc_active": 188,
+        "mpc_failure_count": 189,
+        "mpc_saturation_count": 190,
+        "mpc_left_wheel_torque": 191,
+        "mpc_right_wheel_torque": 192,
+        "mpc_left_tp_command": 193,
+        "mpc_right_tp_command": 194,
+        "mpc_left_wheel_delta": 195,
+        "mpc_right_wheel_delta": 196,
+        "mpc_left_tp_delta": 197,
+        "mpc_right_tp_delta": 198,
+        "mpc_solve_us": 199,
+    },
+)
+
+# Bench compute-only mode and controller enable (schema 24).
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=202,
+    channels={
+        **FORMAT_V27_PROFILE.channels,
+        "compute_only": 200,
+        "control_enabled": 201,
     },
 )
 
@@ -549,6 +582,8 @@ PROFILES = {
     "format-v23": FORMAT_V23_PROFILE,
     "format-v24": FORMAT_V24_PROFILE,
     "format-v25": FORMAT_V25_PROFILE,
+    "format-v26": FORMAT_V26_PROFILE,
+    "format-v27": FORMAT_V27_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -576,6 +611,8 @@ FORMAT_LAYOUTS = (
     FORMAT_V23_PROFILE,
     FORMAT_V24_PROFILE,
     FORMAT_V25_PROFILE,
+    FORMAT_V26_PROFILE,
+    FORMAT_V27_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -604,6 +641,8 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V23_PROFILE.field_count: FORMAT_V23_PROFILE,
     FORMAT_V24_PROFILE.field_count: FORMAT_V24_PROFILE,
     FORMAT_V25_PROFILE.field_count: FORMAT_V25_PROFILE,
+    FORMAT_V26_PROFILE.field_count: FORMAT_V26_PROFILE,
+    FORMAT_V27_PROFILE.field_count: FORMAT_V27_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -778,6 +817,22 @@ CSV_FIELDS = [
     "descent_contact_ms",
     "descent_trigger_count",
     "descent_abort_count",
+    # Incremental-MPC diagnostics.  Appended last so old CSV columns do not move.
+    "mpc_enable",
+    "mpc_active",
+    "mpc_failure_count",
+    "mpc_saturation_count",
+    "mpc_left_wheel_torque",
+    "mpc_right_wheel_torque",
+    "mpc_left_tp_command",
+    "mpc_right_tp_command",
+    "mpc_left_wheel_delta",
+    "mpc_right_wheel_delta",
+    "mpc_left_tp_delta",
+    "mpc_right_tp_delta",
+    "mpc_solve_us",
+    "compute_only",
+    "control_enabled",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -960,6 +1015,22 @@ class KalmanSample:
     descent_contact_ms: float = INVALID_VALUE
     descent_trigger_count: float = INVALID_VALUE
     descent_abort_count: float = INVALID_VALUE
+    # Incremental-MPC diagnostics (schema 23).
+    mpc_enable: float = INVALID_VALUE
+    mpc_active: float = INVALID_VALUE
+    mpc_failure_count: float = INVALID_VALUE
+    mpc_saturation_count: float = INVALID_VALUE
+    mpc_left_wheel_torque: float = INVALID_VALUE
+    mpc_right_wheel_torque: float = INVALID_VALUE
+    mpc_left_tp_command: float = INVALID_VALUE
+    mpc_right_tp_command: float = INVALID_VALUE
+    mpc_left_wheel_delta: float = INVALID_VALUE
+    mpc_right_wheel_delta: float = INVALID_VALUE
+    mpc_left_tp_delta: float = INVALID_VALUE
+    mpc_right_tp_delta: float = INVALID_VALUE
+    mpc_solve_us: float = INVALID_VALUE
+    compute_only: float = INVALID_VALUE
+    control_enabled: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -1352,6 +1423,21 @@ def parse_vmcvoa_line(
         descent_contact_ms=channel("descent_contact_ms"),
         descent_trigger_count=channel("descent_trigger_count"),
         descent_abort_count=channel("descent_abort_count"),
+        mpc_enable=channel("mpc_enable"),
+        mpc_active=channel("mpc_active"),
+        mpc_failure_count=channel("mpc_failure_count"),
+        mpc_saturation_count=channel("mpc_saturation_count"),
+        mpc_left_wheel_torque=channel("mpc_left_wheel_torque"),
+        mpc_right_wheel_torque=channel("mpc_right_wheel_torque"),
+        mpc_left_tp_command=channel("mpc_left_tp_command"),
+        mpc_right_tp_command=channel("mpc_right_tp_command"),
+        mpc_left_wheel_delta=channel("mpc_left_wheel_delta"),
+        mpc_right_wheel_delta=channel("mpc_right_wheel_delta"),
+        mpc_left_tp_delta=channel("mpc_left_tp_delta"),
+        mpc_right_tp_delta=channel("mpc_right_tp_delta"),
+        mpc_solve_us=channel("mpc_solve_us"),
+        compute_only=channel("compute_only"),
+        control_enabled=channel("control_enabled"),
     )
     return profile, sample
 
@@ -2351,6 +2437,41 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 descent_abort_count=_safe_float(
                     row.get("descent_abort_count", "")
                 ),
+                mpc_enable=_safe_float(row.get("mpc_enable", "")),
+                mpc_active=_safe_float(row.get("mpc_active", "")),
+                mpc_failure_count=_safe_float(
+                    row.get("mpc_failure_count", "")
+                ),
+                mpc_saturation_count=_safe_float(
+                    row.get("mpc_saturation_count", "")
+                ),
+                mpc_left_wheel_torque=_safe_float(
+                    row.get("mpc_left_wheel_torque", "")
+                ),
+                mpc_right_wheel_torque=_safe_float(
+                    row.get("mpc_right_wheel_torque", "")
+                ),
+                mpc_left_tp_command=_safe_float(
+                    row.get("mpc_left_tp_command", "")
+                ),
+                mpc_right_tp_command=_safe_float(
+                    row.get("mpc_right_tp_command", "")
+                ),
+                mpc_left_wheel_delta=_safe_float(
+                    row.get("mpc_left_wheel_delta", "")
+                ),
+                mpc_right_wheel_delta=_safe_float(
+                    row.get("mpc_right_wheel_delta", "")
+                ),
+                mpc_left_tp_delta=_safe_float(
+                    row.get("mpc_left_tp_delta", "")
+                ),
+                mpc_right_tp_delta=_safe_float(
+                    row.get("mpc_right_tp_delta", "")
+                ),
+                mpc_solve_us=_safe_float(row.get("mpc_solve_us", "")),
+                compute_only=_safe_float(row.get("compute_only", "")),
+                control_enabled=_safe_float(row.get("control_enabled", "")),
             )
 
 
