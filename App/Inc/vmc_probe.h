@@ -3,6 +3,7 @@
 
 #include "can.h"
 #include "cmsis_os.h"
+#include "vmc_mpc.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -637,6 +638,9 @@ extern "C" {
 #define VMC_MPC_ENABLE_DEFAULT          0U
 #define VMC_MPC_WHEEL_DELTA_MAX_DEFAULT 0.20f
 #define VMC_MPC_LEG_DELTA_MAX_DEFAULT   2.00f
+#define VMC_MPC_WHEEL_AUTHORITY_DEFAULT 0.0f
+#define VMC_MPC_LEG_AUTHORITY_DEFAULT   1.0f
+#define VMC_MPC_AUTHORITY_RAMP_RATE_DEFAULT 0.5f
 /* Keep both controllers computing while all final actuator commands are zero. */
 #define VMC_COMPUTE_ONLY_DEFAULT        1U
 /* Slip LQR weight switching.
@@ -1167,32 +1171,32 @@ typedef struct {
 } vmc_joint_motor_t;
 
 typedef struct {
-  double phi1;
-  double phi4;
-  double d_phi1;
-  double d_phi4;
-  double length;
-  double phi0;
-  double d_length;
-  double d_phi0;
-  double dd_length;
-  double dd_theta;
-  double previous_d_length;
-  double previous_d_theta;
+  float phi1;
+  float phi4;
+  float d_phi1;
+  float d_phi4;
+  float length;
+  float phi0;
+  float d_length;
+  float d_phi0;
+  float dd_length;
+  float dd_theta;
+  float previous_d_length;
+  float previous_d_theta;
   uint8_t acceleration_valid;
-  double length_error;
-  double length_p_output;
-  double length_d_output;
-  double length_pid_output;
-  double phi0_error;
-  double phi0_p_output;
-  double phi0_d_output;
-  double phi0_pid_output;
-  double support_force_output;
-  double force_command;
-  double torque_phi0_command;
-  double joint_torque_ahead;
-  double joint_torque_back;
+  float length_error;
+  float length_p_output;
+  float length_d_output;
+  float length_pid_output;
+  float phi0_error;
+  float phi0_p_output;
+  float phi0_d_output;
+  float phi0_pid_output;
+  float support_force_output;
+  float force_command;
+  float torque_phi0_command;
+  float joint_torque_ahead;
+  float joint_torque_back;
 } vmc_leg_state_t;
 
 typedef struct {
@@ -1508,6 +1512,13 @@ typedef struct {
   uint8_t mpc_shadow_active;
   uint32_t mpc_failure_count;
   uint32_t mpc_saturation_count;
+  uint32_t mpc_rate_limit_count;
+  uint32_t mpc_torque_limit_count;
+  float mpc_wheel_authority;
+  float mpc_leg_authority;
+  float mpc_wheel_authority_applied;
+  float mpc_leg_authority_applied;
+  float mpc_authority_ramp_rate;
   float mpc_left_wheel_torque;
   float mpc_right_wheel_torque;
   float mpc_left_tp_command;
@@ -1516,6 +1527,29 @@ typedef struct {
   float mpc_right_wheel_delta;
   float mpc_left_tp_delta;
   float mpc_right_tp_delta;
+  float mpc_left_wheel_raw;
+  float mpc_right_wheel_raw;
+  float mpc_left_tp_raw;
+  float mpc_right_tp_raw;
+  float mpc_leg_length;
+  float mpc_left_state_theta;
+  float mpc_left_state_dtheta;
+  float mpc_left_state_x;
+  float mpc_left_state_dx;
+  float mpc_left_state_phi;
+  float mpc_left_state_dphi;
+  float mpc_right_state_theta;
+  float mpc_right_state_dtheta;
+  float mpc_right_state_x;
+  float mpc_right_state_dx;
+  float mpc_right_state_phi;
+  float mpc_right_state_dphi;
+  float mpc_left_previous_wheel;
+  float mpc_left_previous_tp;
+  float mpc_right_previous_wheel;
+  float mpc_right_previous_tp;
+  float mpc_left_plan[VMC_MPC_DECISION_COUNT];
+  float mpc_right_plan[VMC_MPC_DECISION_COUNT];
   uint32_t mpc_solve_us;
   /* Slip LQR weight switching.  While one side's slip latch is set, that
    * side's leg-angle feedback is scaled up so the posture term dominates the
@@ -1544,68 +1578,68 @@ typedef struct {
   float leg_sync_kp;
   float leg_sync_kd;
   float leg_sync_torque_limit;
-  double leg_sync_error;
-  double leg_sync_rate_error;
-  double leg_sync_torque;
-  double lqr_theta;
-  double lqr_d_theta;
-  double lqr_d_theta_raw;
-  double theta_error_raw;
-  double theta_error;
-  double left_lqr_theta_error_raw;
-  double right_lqr_theta_error_raw;
-  double left_lqr_theta_error;
-  double right_lqr_theta_error;
-  double left_lqr_d_theta_raw;
-  double right_lqr_d_theta_raw;
-  double left_lqr_d_theta;
-  double right_lqr_d_theta;
-  double left_lqr_d_theta_limited;
-  double right_lqr_d_theta_limited;
-  double phi_error_raw;
-  double phi_error;
-  double dpitch_raw;
-  double dpitch_lpf;
-  double x_error;
-  double dx_error;
-  double dx_target;
-  double dx_raw;
-  double yaw_error_raw;
-  double yaw_error;
-  double yaw_rate_error;
-  double gimbal_follow_error_raw;
-  double gimbal_follow_error;
-  double gimbal_follow_p_output;
-  double gimbal_follow_d_output;
-  double gimbal_follow_output;
-  double left_wheel_theta_term;
-  double left_wheel_dtheta_term;
-  double left_wheel_x_term;
-  double left_wheel_dx_term;
-  double left_wheel_phi_term;
-  double left_wheel_dphi_term;
-  double left_tp_theta_term;
-  double left_tp_dtheta_term;
-  double left_tp_x_term;
-  double left_tp_dx_term;
-  double right_wheel_theta_term;
-  double right_wheel_dtheta_term;
-  double right_wheel_x_term;
-  double right_wheel_dx_term;
-  double right_wheel_phi_term;
-  double right_wheel_dphi_term;
-  double right_tp_theta_term;
-  double right_tp_dtheta_term;
-  double right_tp_x_term;
-  double right_tp_dx_term;
+  float leg_sync_error;
+  float leg_sync_rate_error;
+  float leg_sync_torque;
+  float lqr_theta;
+  float lqr_d_theta;
+  float lqr_d_theta_raw;
+  float theta_error_raw;
+  float theta_error;
+  float left_lqr_theta_error_raw;
+  float right_lqr_theta_error_raw;
+  float left_lqr_theta_error;
+  float right_lqr_theta_error;
+  float left_lqr_d_theta_raw;
+  float right_lqr_d_theta_raw;
+  float left_lqr_d_theta;
+  float right_lqr_d_theta;
+  float left_lqr_d_theta_limited;
+  float right_lqr_d_theta_limited;
+  float phi_error_raw;
+  float phi_error;
+  float dpitch_raw;
+  float dpitch_lpf;
+  float x_error;
+  float dx_error;
+  float dx_target;
+  float dx_raw;
+  float yaw_error_raw;
+  float yaw_error;
+  float yaw_rate_error;
+  float gimbal_follow_error_raw;
+  float gimbal_follow_error;
+  float gimbal_follow_p_output;
+  float gimbal_follow_d_output;
+  float gimbal_follow_output;
+  float left_wheel_theta_term;
+  float left_wheel_dtheta_term;
+  float left_wheel_x_term;
+  float left_wheel_dx_term;
+  float left_wheel_phi_term;
+  float left_wheel_dphi_term;
+  float left_tp_theta_term;
+  float left_tp_dtheta_term;
+  float left_tp_x_term;
+  float left_tp_dx_term;
+  float right_wheel_theta_term;
+  float right_wheel_dtheta_term;
+  float right_wheel_x_term;
+  float right_wheel_dx_term;
+  float right_wheel_phi_term;
+  float right_wheel_dphi_term;
+  float right_tp_theta_term;
+  float right_tp_dtheta_term;
+  float right_tp_x_term;
+  float right_tp_dx_term;
   /* Legacy field names; all values below are motor-shaft torque in N.m. */
-  double wheel_torque_raw;
-  double left_wheel_torque_raw;
-  double right_wheel_torque_raw;
-  double left_wheel_torque_limited;
-  double right_wheel_torque_limited;
-  double left_tp_raw;
-  double right_tp_raw;
+  float wheel_torque_raw;
+  float left_wheel_torque_raw;
+  float right_wheel_torque_raw;
+  float left_wheel_torque_limited;
+  float right_wheel_torque_limited;
+  float left_tp_raw;
+  float right_tp_raw;
   int16_t left_wheel_current_cmd;
   int16_t right_wheel_current_cmd;
   int16_t left_wheel_current_send;

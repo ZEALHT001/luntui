@@ -76,7 +76,7 @@ class SpinSpeedTest(unittest.TestCase):
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_balance_update")
         self.assertIn("vmc_balance.spin_mode_enabled != 0U", body)
         self.assertIn("vmc_balance.spin_speed_ramp_rate", body)
-        self.assertIn("active_speed_ramp_rate * vmc_loop_dt()", body)
+        self.assertIn("active_speed_ramp_rate * dt", body)
 
 
 if __name__ == "__main__":

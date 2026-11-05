@@ -112,11 +112,11 @@ class ForceObserverTest(unittest.TestCase):
         body = _function_body(PROBE_C.read_text(encoding="utf-8"),
                               "vmc_side_support_force")
         for term in (
-            "force * cos(theta)",
-            "torque_phi0 * sin(theta) / leg->length",
-            "2.0 * leg->d_length * d_theta * sin(theta)",
-            "leg->length * leg->dd_theta * sin(theta)",
-            "leg->length * d_theta * d_theta * cos(theta)",
+            "force * cosf(theta)",
+            "torque_phi0 * sinf(theta) / (float)leg->length",
+            "2.0f * (float)leg->d_length * d_theta * sinf(theta)",
+            "(float)leg->length * (float)leg->dd_theta * sinf(theta)",
+            "(float)leg->length * d_theta * d_theta * cosf(theta)",
             "VMC_WHEEL_MASS_KG * ddz_w",
             "force = -force",
         ):
@@ -172,7 +172,7 @@ class ForceObserverTest(unittest.TestCase):
         self.assertIn("-(vmc_balance.left_tp_theta_term +", control)
         self.assertIn("vmc_balance.left_tp_dtheta_term);", control)
         self.assertIn("airborne_posture != 0U", update)
-        self.assertIn("clamp_double(airborne_posture_tp", update)
+        self.assertIn("clamp_float(airborne_posture_tp", update)
 
     def test_unloaded_side_uses_shanhai_air_length(self) -> None:
         body = _function_body(PROBE_C.read_text(encoding="utf-8"),

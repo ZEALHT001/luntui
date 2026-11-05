@@ -18,12 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from derive_vmc_lqr_abk import (  # noqa: E402
+    MPC_INPUT_WEIGHT_SCALE,
     PRESETS,
     discrete_mpc_model,
     emit_mpc_model,
 )
 
-MPC_Q = np.diag([1.0, 100.0, 400.0, 100.0, 5000.0, 1.0])
+MPC_Q = np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0])
 
 
 class GeneratedModelTest(unittest.TestCase):
@@ -44,14 +45,16 @@ class GeneratedModelTest(unittest.TestCase):
         r = np.diag([20.0, 2.5])
         terminal = solve_discrete_are(a, b, q, r)
         horizon = 10
+        control_horizon = 10
         state_count = 6
-        decision_count = horizon * 2
+        decision_count = control_horizon * 2
 
         influence = np.zeros((horizon * state_count, decision_count))
         previous = np.zeros((state_count, decision_count))
         for step in range(horizon):
             current = a @ previous
-            current[:, step * 2 : step * 2 + 2] += b
+            if step < control_horizon:
+                current[:, step * 2 : step * 2 + 2] += b
             influence[step * state_count : (step + 1) * state_count] = current
             previous = current
 
@@ -60,12 +63,23 @@ class GeneratedModelTest(unittest.TestCase):
             block = terminal if step == horizon - 1 else q
             section = slice(step * state_count, (step + 1) * state_count)
             weights[section, section] = block
-        delta_weights = np.kron(np.eye(horizon), np.diag([1.0, 0.05]))
+        delta_weights = np.kron(
+            np.eye(control_horizon), np.diag([1.0, 0.05])
+        )
+        delta_vector = np.diag(delta_weights)
         hessian = influence.T @ weights @ influence + delta_weights
+        for step in range(horizon):
+            held_step = min(step, control_horizon - 1)
+            for input_index in range(2):
+                index = held_step * 2 + input_index
+                hessian[index, index] += (
+                    MPC_INPUT_WEIGHT_SCALE[input_index]
+                    * r[input_index, input_index]
+                )
         rho = 0.20
         inverse_regularized = np.linalg.inv(hessian + rho * np.eye(decision_count))
-        lower = np.tile([-5.5, -108.0], horizon)
-        upper = np.tile([5.5, 108.0], horizon)
+        lower = np.tile([-5.5, -108.0], control_horizon)
+        upper = np.tile([5.5, 108.0], control_horizon)
 
         def solve(state: np.ndarray, previous_input: np.ndarray) -> np.ndarray:
             base = state.copy()
@@ -77,9 +91,11 @@ class GeneratedModelTest(unittest.TestCase):
                 ] = base
             linear = (
                 influence.T @ weights @ base_prediction
-                - delta_weights @ np.tile(previous_input, horizon)
+                - delta_vector * np.tile(previous_input, control_horizon)
             )
-            z = np.clip(np.tile(previous_input, horizon), lower, upper)
+            z = np.clip(
+                np.tile(previous_input, control_horizon), lower, upper
+            )
             dual = np.zeros(decision_count)
             for _ in range(10):
                 u = inverse_regularized @ (rho * (z - dual) - linear)
@@ -102,7 +118,27 @@ class GeneratedModelTest(unittest.TestCase):
             self.assertLess(abs(state[2]), 0.1)
 
         tail_span = max(positions[-500:]) - min(positions[-500:])
-        self.assertLess(tail_span, 0.020)
+
+        lqr_gain = np.linalg.solve(
+            b.T @ terminal @ b + r, b.T @ terminal @ a
+        )
+        lqr_state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0])
+        lqr_positions: list[float] = []
+        for _ in range(3000):
+            applied = -lqr_gain @ lqr_state
+            # Apply the same Coulomb-friction approximation as the MPC run.
+            if abs(lqr_state[3]) < 0.01 and abs(applied[0]) < 1.2:
+                applied[0] = 0.0
+            lqr_state = a @ lqr_state + b @ applied
+            lqr_positions.append(float(lqr_state[2]))
+        lqr_tail_span = (
+            max(lqr_positions[-500:]) - min(lqr_positions[-500:])
+        )
+
+        # The aligned MPC inherits the LQR model's stiction limit cycle.  Guard
+        # against a regression relative to that baseline rather than retaining
+        # the old four-step controller's unrelated 20 mm result.
+        self.assertLess(tail_span, lqr_tail_span * 1.10 + 0.002)
 
 
 class FirmwareSolverTest(unittest.TestCase):
@@ -118,6 +154,41 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn(
             "vmc_probe_state.motion.kf_x + filtered_velocity * dt", source
         )
+        for signal in (
+            "left_lqr_theta_error",
+            "left_lqr_d_theta_limited",
+            "right_lqr_theta_error",
+            "right_lqr_d_theta_limited",
+        ):
+            self.assertIn(f"-({signal} *", source)
+        self.assertIn("-phi_error", source)
+        self.assertIn("-dpitch_lpf", source)
+        for signal in (
+            "mpc_left_state_theta",
+            "mpc_left_state_phi",
+            "mpc_right_state_theta",
+            "mpc_right_state_phi",
+            "mpc_left_previous_wheel",
+            "mpc_right_previous_tp",
+            "mpc_left_plan[plan_index]",
+            "mpc_right_plan[plan_index]",
+        ):
+            self.assertIn(signal, source)
+
+        rtt = (ROOT / "App" / "Src" / "vmc_lqr_rtt.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 28U", rtt)
+        for signal in (
+            "mpc_leg_length",
+            "mpc_left_state_dphi",
+            "mpc_right_state_dphi",
+            "mpc_left_previous_tp",
+            "mpc_right_previous_tp",
+            "b->mpc_left_plan[plan_index]",
+            "b->mpc_right_plan[plan_index]",
+        ):
+            self.assertIn(signal, rtt)
 
     def test_runtime_toggle_is_wired_through_the_tuner(self) -> None:
         parser = (ROOT / "App" / "Src" / "vmc_lqr_rtt.c").read_text(
@@ -132,12 +203,18 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn('"mpc_enable"', parser)
         self.assertIn('"mpc_shadow_enable"', parser)
         self.assertIn('"compute_only_enable"', parser)
+        self.assertIn('"mpc_wheel_authority"', parser)
+        self.assertIn('"mpc_leg_authority"', parser)
         self.assertIn('"mpc_enable"', server)
         self.assertIn('"mpc_shadow_enable"', server)
         self.assertIn('"compute_only_enable"', server)
+        self.assertIn('"mpc_wheel_authority"', server)
+        self.assertIn('"mpc_leg_authority"', server)
         self.assertIn('id="mpcEnable"', web)
         self.assertIn('id="mpcShadowEnable"', web)
         self.assertIn('id="computeOnlyEnable"', web)
+        self.assertIn('id="mpcWheelAuthority"', web)
+        self.assertIn('id="mpcLegAuthority"', web)
 
     def test_fixed_size_solver_builds_and_runs(self) -> None:
         compiler = (

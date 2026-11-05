@@ -172,6 +172,18 @@ compatibility but are zero on this branch because forward motion is wheel-only.
 | 199 | MPC solve time for both sides | microseconds |
 | 200 | compute-only bench mode | `1` means all final actuator outputs are zero |
 | 201 | controller enabled | `0` or `1` |
+| 202..203 | applied MPC wheel/Tp authority | `0..1` |
+| 204..205 | raw QP wheel torque, left/right | N.m, before rate limiting |
+| 206..207 | raw QP virtual-leg torque, left/right | N.m, before rate limiting |
+| 208 | MPC rate-limit count | count |
+| 209 | MPC torque-limit count | count |
+| 210 | average leg length used by the MPC model | m |
+| 211..216 | left MPC state: theta, dtheta, x, dx, phi, dphi | rad, rad/s, m, m/s, rad, rad/s |
+| 217..222 | right MPC state: theta, dtheta, x, dx, phi, dphi | rad, rad/s, m, m/s, rad, rad/s |
+| 223..224 | left previous MPC input, T and Tp | N.m |
+| 225..226 | right previous MPC input, T and Tp | N.m |
+| 227..246 | left pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
+| 247..266 | right pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
 
 Fields 157..173 publish the automatic stair climb: stage and abort reason show
 the state machine, ready/pre-impact/impact show how far the trigger progressed,
@@ -195,6 +207,25 @@ sum for both sides.
 Fields 200..201 were added with schema 24 for bench timing. `compute_only=1`
 means LQR and shadow MPC still execute but the wheel-current and joint-torque
 commands are forced to zero before transmission.
+
+Fields 202..209 were added with schema 25. They separate raw QP demand from the
+rate-limited command, publish the actual wheel/Tp authority ramp, and distinguish
+rate limiting from actuator torque saturation.
+
+Fields 210..226 were added with schema 26. They record the exact plant input and
+the previous incremental control passed to the QP, not values reconstructed
+from the rounded LQR torque terms. This makes the wheel-output discrepancy
+replayable offline and distinguishes a state/objective mismatch from a solver
+or rate-limiter problem.
+
+Fields 227..242 were added with schema 27. They record the exact warm-start
+plan supplied to the fixed five-iteration ADMM solver, in public T/Tp sign
+convention. Together with the state and previous input they make each sampled
+QP result reproducible even when telemetry runs slower than the control loop.
+
+Schema 28 expands the control horizon from four to ten steps, aligning the MPC
+stage cost with the LQR model. The two ten-pair plan blocks now occupy fields
+227..266.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of

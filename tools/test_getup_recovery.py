@@ -259,7 +259,7 @@ class ProfileTest(unittest.TestCase):
         leg_control = _body(source, "update_leg_length_control")
         for needle in (
             "kp_phi0 * phi0_error",
-            "-kd_phi0 * leg->d_phi0",
+            "-kd_phi0 * (float)leg->d_phi0",
             "phi0_torque_raw",
         ):
             with self.subTest(needle=needle):
@@ -772,7 +772,7 @@ class ControlIntegrationTest(unittest.TestCase):
     def test_upright_target_is_absolute_and_rate_limited(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_control_update")
         _has(body, "vmc_angle_nearest_to", "the upright angle is not wrap-safe")
-        _has(body, "VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch",
+        _has(body, "VMC_PHI0_VERTICAL_RAD + (float)vmc_probe_state.body.pitch",
              "theta is not being driven toward zero")
         _has(body, "VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS",
              "the final posture ramp has no rate limit")
@@ -839,7 +839,7 @@ class ControlIntegrationTest(unittest.TestCase):
     def test_ready_hard_switches_to_lqr_joint_and_wheel_output(self) -> None:
         source = SOURCE.read_text(encoding="utf-8")
         leg_control = _body(source, "update_leg_length_control")
-        _has(leg_control, "(use_lqr_tp != 0U) ? 0.0 : phi0_torque_raw",
+        _has(leg_control, "(use_lqr_tp != 0U) ? 0.0f : phi0_torque_raw",
              "the get-up joint PD is not hard-disabled at READY")
         _has(leg_control, "vmc_balance.left_tp_cmd",
              "the normal LQR joint torque is not used directly")

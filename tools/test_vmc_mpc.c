@@ -29,6 +29,9 @@ int main(void)
   check(output.valid != 0U, "zero-state output was not marked valid");
   check(fabsf(output.wheel_torque) < 1.0e-4f,
         "zero state produced nonzero wheel torque");
+  check(fabsf(output.previous_wheel_torque) < 1.0e-4f &&
+            fabsf(output.previous_virtual_leg_torque) < 1.0e-4f,
+        "zero-state previous inputs were not reported");
 
   vmc_mpc_reset(0U);
   vmc_mpc_prime(0U, 0.0f, 0.0f);
@@ -41,6 +44,22 @@ int main(void)
         "wheel delta exceeded its configured limit");
   check(fabsf(output.virtual_leg_delta) <= limits.leg_delta_max + 1.0e-5f,
         "leg delta exceeded its configured limit");
+  check(fabsf(output.previous_wheel_torque) < 1.0e-4f &&
+            fabsf(output.previous_virtual_leg_torque) < 1.0e-4f,
+        "forward-state previous inputs were not reported");
+
+  vmc_mpc_reset(0U);
+  vmc_mpc_prime(0U, 2.25f, 7.5f);
+  check(vmc_mpc_solve(0U, 0.28f, zero_state, &limits, &output) != 0U,
+        "primed-state solve failed");
+  check(fabsf(output.previous_wheel_torque - 2.25f) < 1.0e-5f &&
+            fabsf(output.previous_virtual_leg_torque - 7.5f) < 1.0e-5f,
+        "previous inputs did not preserve public T/Tp signs");
+  check(fabsf(output.initial_plan[0] - 2.25f) < 1.0e-5f &&
+            fabsf(output.initial_plan[1] - 7.5f) < 1.0e-5f &&
+            fabsf(output.initial_plan[6] - 2.25f) < 1.0e-5f &&
+            fabsf(output.initial_plan[7] - 7.5f) < 1.0e-5f,
+        "initial QP plan did not preserve public T/Tp signs");
 
   vmc_mpc_reset(1U);
   vmc_mpc_prime(1U, 0.0f, 0.0f);
@@ -103,8 +122,12 @@ int main(void)
         }
       }
     }
-    check(tail_max - tail_min < 0.020f,
-          "closed-loop stiction limit cycle exceeded 20 mm");
+    /* With the MPC stage cost aligned to the 10-step LQR model, this model
+     * inherits LQR's Coulomb-friction limit cycle.  The independent LQR
+     * baseline is about 25.7 mm at this leg length; fail on a material
+     * regression rather than the old four-step controller's 20 mm result. */
+    check(tail_max - tail_min < 0.030f,
+          "closed-loop stiction limit cycle exceeded the LQR baseline");
   }
   check(vmc_mpc_model_sample_time_s > 0.0022f &&
             vmc_mpc_model_sample_time_s < 0.0023f,

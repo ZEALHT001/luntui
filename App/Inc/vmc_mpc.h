@@ -10,9 +10,10 @@ extern "C" {
 #define VMC_MPC_STATE_COUNT 6U
 #define VMC_MPC_INPUT_COUNT 2U
 #define VMC_MPC_HORIZON      10U
+#define VMC_MPC_CONTROL_HORIZON VMC_MPC_HORIZON
 #define VMC_MPC_MODEL_POINTS 9U
 #define VMC_MPC_DECISION_COUNT \
-  (VMC_MPC_HORIZON * VMC_MPC_INPUT_COUNT)
+  (VMC_MPC_CONTROL_HORIZON * VMC_MPC_INPUT_COUNT)
 #define VMC_MPC_PREDICTION_STATES \
   (VMC_MPC_HORIZON * VMC_MPC_STATE_COUNT)
 
@@ -43,13 +44,20 @@ typedef struct {
   float virtual_leg_torque;
   float wheel_delta;
   float virtual_leg_delta;
+  float raw_wheel_torque;
+  float raw_virtual_leg_torque;
+  float previous_wheel_torque;
+  float previous_virtual_leg_torque;
+  float initial_plan[VMC_MPC_DECISION_COUNT];
   uint8_t valid;
   uint8_t saturated;
+  uint8_t rate_limited;
+  uint8_t torque_saturated;
 } vmc_mpc_output_t;
 
 typedef struct {
   float u_prev[VMC_MPC_INPUT_COUNT];
-  float plan[VMC_MPC_HORIZON * VMC_MPC_INPUT_COUNT];
+  float plan[VMC_MPC_DECISION_COUNT];
   uint8_t plan_valid;
   uint32_t solve_count;
   uint32_t failure_count;

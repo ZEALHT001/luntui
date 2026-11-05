@@ -540,13 +540,115 @@ FORMAT_V27_PROFILE = Profile(
 )
 
 # Bench compute-only mode and controller enable (schema 24).
-FORMAT_PROFILE = Profile(
-    name="format",
+FORMAT_V28_PROFILE = Profile(
+    name="format-v28",
     field_count=202,
     channels={
         **FORMAT_V27_PROFILE.channels,
         "compute_only": 200,
         "control_enabled": 201,
+    },
+)
+
+# MPC authority and raw-output diagnostics (schema 25).
+FORMAT_V29_PROFILE = Profile(
+    name="format-v29",
+    field_count=210,
+    channels={
+        **FORMAT_V28_PROFILE.channels,
+        "mpc_wheel_authority_applied": 202,
+        "mpc_leg_authority_applied": 203,
+        "mpc_left_wheel_raw": 204,
+        "mpc_right_wheel_raw": 205,
+        "mpc_left_tp_raw": 206,
+        "mpc_right_tp_raw": 207,
+        "mpc_rate_limit_count": 208,
+        "mpc_torque_limit_count": 209,
+    },
+)
+
+# Exact MPC plant inputs and incremental previous controls (schema 26).
+FORMAT_V30_PROFILE = Profile(
+    name="format-v30",
+    field_count=227,
+    channels={
+        **FORMAT_V29_PROFILE.channels,
+        "mpc_leg_length": 210,
+        "mpc_left_state_theta": 211,
+        "mpc_left_state_dtheta": 212,
+        "mpc_left_state_x": 213,
+        "mpc_left_state_dx": 214,
+        "mpc_left_state_phi": 215,
+        "mpc_left_state_dphi": 216,
+        "mpc_right_state_theta": 217,
+        "mpc_right_state_dtheta": 218,
+        "mpc_right_state_x": 219,
+        "mpc_right_state_dx": 220,
+        "mpc_right_state_phi": 221,
+        "mpc_right_state_dphi": 222,
+        "mpc_left_previous_wheel": 223,
+        "mpc_left_previous_tp": 224,
+        "mpc_right_previous_wheel": 225,
+        "mpc_right_previous_tp": 226,
+    },
+)
+
+# The complete 4x2 QP warm start (schema 27).
+FORMAT_V31_PROFILE = Profile(
+    name="format-v31",
+    field_count=243,
+    channels={
+        **FORMAT_V30_PROFILE.channels,
+        "mpc_left_plan0_wheel": 227,
+        "mpc_left_plan0_tp": 228,
+        "mpc_left_plan1_wheel": 229,
+        "mpc_left_plan1_tp": 230,
+        "mpc_left_plan2_wheel": 231,
+        "mpc_left_plan2_tp": 232,
+        "mpc_left_plan3_wheel": 233,
+        "mpc_left_plan3_tp": 234,
+        "mpc_right_plan0_wheel": 235,
+        "mpc_right_plan0_tp": 236,
+        "mpc_right_plan1_wheel": 237,
+        "mpc_right_plan1_tp": 238,
+        "mpc_right_plan2_wheel": 239,
+        "mpc_right_plan2_tp": 240,
+        "mpc_right_plan3_wheel": 241,
+        "mpc_right_plan3_tp": 242,
+    },
+)
+
+# A 10-step control horizon doubles the decision vector to 20 values per side
+# (schema 28).
+FORMAT_PROFILE = Profile(
+    name="format",
+    field_count=267,
+    channels={
+        **FORMAT_V31_PROFILE.channels,
+        "mpc_left_plan4_wheel": 243,
+        "mpc_left_plan4_tp": 244,
+        "mpc_left_plan5_wheel": 245,
+        "mpc_left_plan5_tp": 246,
+        "mpc_left_plan6_wheel": 247,
+        "mpc_left_plan6_tp": 248,
+        "mpc_left_plan7_wheel": 249,
+        "mpc_left_plan7_tp": 250,
+        "mpc_left_plan8_wheel": 251,
+        "mpc_left_plan8_tp": 252,
+        "mpc_left_plan9_wheel": 253,
+        "mpc_left_plan9_tp": 254,
+        "mpc_right_plan4_wheel": 255,
+        "mpc_right_plan4_tp": 256,
+        "mpc_right_plan5_wheel": 257,
+        "mpc_right_plan5_tp": 258,
+        "mpc_right_plan6_wheel": 259,
+        "mpc_right_plan6_tp": 260,
+        "mpc_right_plan7_wheel": 261,
+        "mpc_right_plan7_tp": 262,
+        "mpc_right_plan8_wheel": 263,
+        "mpc_right_plan8_tp": 264,
+        "mpc_right_plan9_wheel": 265,
+        "mpc_right_plan9_tp": 266,
     },
 )
 
@@ -584,6 +686,10 @@ PROFILES = {
     "format-v25": FORMAT_V25_PROFILE,
     "format-v26": FORMAT_V26_PROFILE,
     "format-v27": FORMAT_V27_PROFILE,
+    "format-v28": FORMAT_V28_PROFILE,
+    "format-v29": FORMAT_V29_PROFILE,
+    "format-v30": FORMAT_V30_PROFILE,
+    "format-v31": FORMAT_V31_PROFILE,
 }
 FORMAT_LAYOUTS = (
     FORMAT_LEGACY_PROFILE,
@@ -613,6 +719,10 @@ FORMAT_LAYOUTS = (
     FORMAT_V25_PROFILE,
     FORMAT_V26_PROFILE,
     FORMAT_V27_PROFILE,
+    FORMAT_V28_PROFILE,
+    FORMAT_V29_PROFILE,
+    FORMAT_V30_PROFILE,
+    FORMAT_V31_PROFILE,
     FORMAT_PROFILE,
 )
 PROFILE_BY_FIELD_COUNT = {
@@ -643,6 +753,10 @@ PROFILE_BY_FIELD_COUNT = {
     FORMAT_V25_PROFILE.field_count: FORMAT_V25_PROFILE,
     FORMAT_V26_PROFILE.field_count: FORMAT_V26_PROFILE,
     FORMAT_V27_PROFILE.field_count: FORMAT_V27_PROFILE,
+    FORMAT_V28_PROFILE.field_count: FORMAT_V28_PROFILE,
+    FORMAT_V29_PROFILE.field_count: FORMAT_V29_PROFILE,
+    FORMAT_V30_PROFILE.field_count: FORMAT_V30_PROFILE,
+    FORMAT_V31_PROFILE.field_count: FORMAT_V31_PROFILE,
     FORMAT_PROFILE.field_count: FORMAT_PROFILE,
 }
 
@@ -833,6 +947,71 @@ CSV_FIELDS = [
     "mpc_solve_us",
     "compute_only",
     "control_enabled",
+    "mpc_wheel_authority_applied",
+    "mpc_leg_authority_applied",
+    "mpc_left_wheel_raw",
+    "mpc_right_wheel_raw",
+    "mpc_left_tp_raw",
+    "mpc_right_tp_raw",
+    "mpc_rate_limit_count",
+    "mpc_torque_limit_count",
+    "mpc_leg_length",
+    "mpc_left_state_theta",
+    "mpc_left_state_dtheta",
+    "mpc_left_state_x",
+    "mpc_left_state_dx",
+    "mpc_left_state_phi",
+    "mpc_left_state_dphi",
+    "mpc_right_state_theta",
+    "mpc_right_state_dtheta",
+    "mpc_right_state_x",
+    "mpc_right_state_dx",
+    "mpc_right_state_phi",
+    "mpc_right_state_dphi",
+    "mpc_left_previous_wheel",
+    "mpc_left_previous_tp",
+    "mpc_right_previous_wheel",
+    "mpc_right_previous_tp",
+    "mpc_left_plan0_wheel",
+    "mpc_left_plan0_tp",
+    "mpc_left_plan1_wheel",
+    "mpc_left_plan1_tp",
+    "mpc_left_plan2_wheel",
+    "mpc_left_plan2_tp",
+    "mpc_left_plan3_wheel",
+    "mpc_left_plan3_tp",
+    "mpc_right_plan0_wheel",
+    "mpc_right_plan0_tp",
+    "mpc_right_plan1_wheel",
+    "mpc_right_plan1_tp",
+    "mpc_right_plan2_wheel",
+    "mpc_right_plan2_tp",
+    "mpc_right_plan3_wheel",
+    "mpc_right_plan3_tp",
+    "mpc_left_plan4_wheel",
+    "mpc_left_plan4_tp",
+    "mpc_left_plan5_wheel",
+    "mpc_left_plan5_tp",
+    "mpc_left_plan6_wheel",
+    "mpc_left_plan6_tp",
+    "mpc_left_plan7_wheel",
+    "mpc_left_plan7_tp",
+    "mpc_left_plan8_wheel",
+    "mpc_left_plan8_tp",
+    "mpc_left_plan9_wheel",
+    "mpc_left_plan9_tp",
+    "mpc_right_plan4_wheel",
+    "mpc_right_plan4_tp",
+    "mpc_right_plan5_wheel",
+    "mpc_right_plan5_tp",
+    "mpc_right_plan6_wheel",
+    "mpc_right_plan6_tp",
+    "mpc_right_plan7_wheel",
+    "mpc_right_plan7_tp",
+    "mpc_right_plan8_wheel",
+    "mpc_right_plan8_tp",
+    "mpc_right_plan9_wheel",
+    "mpc_right_plan9_tp",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -1031,6 +1210,74 @@ class KalmanSample:
     mpc_solve_us: float = INVALID_VALUE
     compute_only: float = INVALID_VALUE
     control_enabled: float = INVALID_VALUE
+    mpc_wheel_authority_applied: float = INVALID_VALUE
+    mpc_leg_authority_applied: float = INVALID_VALUE
+    mpc_left_wheel_raw: float = INVALID_VALUE
+    mpc_right_wheel_raw: float = INVALID_VALUE
+    mpc_left_tp_raw: float = INVALID_VALUE
+    mpc_right_tp_raw: float = INVALID_VALUE
+    mpc_rate_limit_count: float = INVALID_VALUE
+    mpc_torque_limit_count: float = INVALID_VALUE
+    # Exact solver inputs and the previous control used by the incremental
+    # objective (schema 26).
+    mpc_leg_length: float = INVALID_VALUE
+    mpc_left_state_theta: float = INVALID_VALUE
+    mpc_left_state_dtheta: float = INVALID_VALUE
+    mpc_left_state_x: float = INVALID_VALUE
+    mpc_left_state_dx: float = INVALID_VALUE
+    mpc_left_state_phi: float = INVALID_VALUE
+    mpc_left_state_dphi: float = INVALID_VALUE
+    mpc_right_state_theta: float = INVALID_VALUE
+    mpc_right_state_dtheta: float = INVALID_VALUE
+    mpc_right_state_x: float = INVALID_VALUE
+    mpc_right_state_dx: float = INVALID_VALUE
+    mpc_right_state_phi: float = INVALID_VALUE
+    mpc_right_state_dphi: float = INVALID_VALUE
+    mpc_left_previous_wheel: float = INVALID_VALUE
+    mpc_left_previous_tp: float = INVALID_VALUE
+    mpc_right_previous_wheel: float = INVALID_VALUE
+    mpc_right_previous_tp: float = INVALID_VALUE
+    # Pre-solve QP decisions, public T/Tp signs (schema 27).
+    mpc_left_plan0_wheel: float = INVALID_VALUE
+    mpc_left_plan0_tp: float = INVALID_VALUE
+    mpc_left_plan1_wheel: float = INVALID_VALUE
+    mpc_left_plan1_tp: float = INVALID_VALUE
+    mpc_left_plan2_wheel: float = INVALID_VALUE
+    mpc_left_plan2_tp: float = INVALID_VALUE
+    mpc_left_plan3_wheel: float = INVALID_VALUE
+    mpc_left_plan3_tp: float = INVALID_VALUE
+    mpc_right_plan0_wheel: float = INVALID_VALUE
+    mpc_right_plan0_tp: float = INVALID_VALUE
+    mpc_right_plan1_wheel: float = INVALID_VALUE
+    mpc_right_plan1_tp: float = INVALID_VALUE
+    mpc_right_plan2_wheel: float = INVALID_VALUE
+    mpc_right_plan2_tp: float = INVALID_VALUE
+    mpc_right_plan3_wheel: float = INVALID_VALUE
+    mpc_right_plan3_tp: float = INVALID_VALUE
+    mpc_left_plan4_wheel: float = INVALID_VALUE
+    mpc_left_plan4_tp: float = INVALID_VALUE
+    mpc_left_plan5_wheel: float = INVALID_VALUE
+    mpc_left_plan5_tp: float = INVALID_VALUE
+    mpc_left_plan6_wheel: float = INVALID_VALUE
+    mpc_left_plan6_tp: float = INVALID_VALUE
+    mpc_left_plan7_wheel: float = INVALID_VALUE
+    mpc_left_plan7_tp: float = INVALID_VALUE
+    mpc_left_plan8_wheel: float = INVALID_VALUE
+    mpc_left_plan8_tp: float = INVALID_VALUE
+    mpc_left_plan9_wheel: float = INVALID_VALUE
+    mpc_left_plan9_tp: float = INVALID_VALUE
+    mpc_right_plan4_wheel: float = INVALID_VALUE
+    mpc_right_plan4_tp: float = INVALID_VALUE
+    mpc_right_plan5_wheel: float = INVALID_VALUE
+    mpc_right_plan5_tp: float = INVALID_VALUE
+    mpc_right_plan6_wheel: float = INVALID_VALUE
+    mpc_right_plan6_tp: float = INVALID_VALUE
+    mpc_right_plan7_wheel: float = INVALID_VALUE
+    mpc_right_plan7_tp: float = INVALID_VALUE
+    mpc_right_plan8_wheel: float = INVALID_VALUE
+    mpc_right_plan8_tp: float = INVALID_VALUE
+    mpc_right_plan9_wheel: float = INVALID_VALUE
+    mpc_right_plan9_tp: float = INVALID_VALUE
 
 
 def sample_time_s(sample: KalmanSample) -> float:
@@ -1438,6 +1685,71 @@ def parse_vmcvoa_line(
         mpc_solve_us=channel("mpc_solve_us"),
         compute_only=channel("compute_only"),
         control_enabled=channel("control_enabled"),
+        mpc_wheel_authority_applied=channel("mpc_wheel_authority_applied"),
+        mpc_leg_authority_applied=channel("mpc_leg_authority_applied"),
+        mpc_left_wheel_raw=channel("mpc_left_wheel_raw"),
+        mpc_right_wheel_raw=channel("mpc_right_wheel_raw"),
+        mpc_left_tp_raw=channel("mpc_left_tp_raw"),
+        mpc_right_tp_raw=channel("mpc_right_tp_raw"),
+        mpc_rate_limit_count=channel("mpc_rate_limit_count"),
+        mpc_torque_limit_count=channel("mpc_torque_limit_count"),
+        mpc_leg_length=channel("mpc_leg_length"),
+        mpc_left_state_theta=channel("mpc_left_state_theta"),
+        mpc_left_state_dtheta=channel("mpc_left_state_dtheta"),
+        mpc_left_state_x=channel("mpc_left_state_x"),
+        mpc_left_state_dx=channel("mpc_left_state_dx"),
+        mpc_left_state_phi=channel("mpc_left_state_phi"),
+        mpc_left_state_dphi=channel("mpc_left_state_dphi"),
+        mpc_right_state_theta=channel("mpc_right_state_theta"),
+        mpc_right_state_dtheta=channel("mpc_right_state_dtheta"),
+        mpc_right_state_x=channel("mpc_right_state_x"),
+        mpc_right_state_dx=channel("mpc_right_state_dx"),
+        mpc_right_state_phi=channel("mpc_right_state_phi"),
+        mpc_right_state_dphi=channel("mpc_right_state_dphi"),
+        mpc_left_previous_wheel=channel("mpc_left_previous_wheel"),
+        mpc_left_previous_tp=channel("mpc_left_previous_tp"),
+        mpc_right_previous_wheel=channel("mpc_right_previous_wheel"),
+        mpc_right_previous_tp=channel("mpc_right_previous_tp"),
+        mpc_left_plan0_wheel=channel("mpc_left_plan0_wheel"),
+        mpc_left_plan0_tp=channel("mpc_left_plan0_tp"),
+        mpc_left_plan1_wheel=channel("mpc_left_plan1_wheel"),
+        mpc_left_plan1_tp=channel("mpc_left_plan1_tp"),
+        mpc_left_plan2_wheel=channel("mpc_left_plan2_wheel"),
+        mpc_left_plan2_tp=channel("mpc_left_plan2_tp"),
+        mpc_left_plan3_wheel=channel("mpc_left_plan3_wheel"),
+        mpc_left_plan3_tp=channel("mpc_left_plan3_tp"),
+        mpc_right_plan0_wheel=channel("mpc_right_plan0_wheel"),
+        mpc_right_plan0_tp=channel("mpc_right_plan0_tp"),
+        mpc_right_plan1_wheel=channel("mpc_right_plan1_wheel"),
+        mpc_right_plan1_tp=channel("mpc_right_plan1_tp"),
+        mpc_right_plan2_wheel=channel("mpc_right_plan2_wheel"),
+        mpc_right_plan2_tp=channel("mpc_right_plan2_tp"),
+        mpc_right_plan3_wheel=channel("mpc_right_plan3_wheel"),
+        mpc_right_plan3_tp=channel("mpc_right_plan3_tp"),
+        mpc_left_plan4_wheel=channel("mpc_left_plan4_wheel"),
+        mpc_left_plan4_tp=channel("mpc_left_plan4_tp"),
+        mpc_left_plan5_wheel=channel("mpc_left_plan5_wheel"),
+        mpc_left_plan5_tp=channel("mpc_left_plan5_tp"),
+        mpc_left_plan6_wheel=channel("mpc_left_plan6_wheel"),
+        mpc_left_plan6_tp=channel("mpc_left_plan6_tp"),
+        mpc_left_plan7_wheel=channel("mpc_left_plan7_wheel"),
+        mpc_left_plan7_tp=channel("mpc_left_plan7_tp"),
+        mpc_left_plan8_wheel=channel("mpc_left_plan8_wheel"),
+        mpc_left_plan8_tp=channel("mpc_left_plan8_tp"),
+        mpc_left_plan9_wheel=channel("mpc_left_plan9_wheel"),
+        mpc_left_plan9_tp=channel("mpc_left_plan9_tp"),
+        mpc_right_plan4_wheel=channel("mpc_right_plan4_wheel"),
+        mpc_right_plan4_tp=channel("mpc_right_plan4_tp"),
+        mpc_right_plan5_wheel=channel("mpc_right_plan5_wheel"),
+        mpc_right_plan5_tp=channel("mpc_right_plan5_tp"),
+        mpc_right_plan6_wheel=channel("mpc_right_plan6_wheel"),
+        mpc_right_plan6_tp=channel("mpc_right_plan6_tp"),
+        mpc_right_plan7_wheel=channel("mpc_right_plan7_wheel"),
+        mpc_right_plan7_tp=channel("mpc_right_plan7_tp"),
+        mpc_right_plan8_wheel=channel("mpc_right_plan8_wheel"),
+        mpc_right_plan8_tp=channel("mpc_right_plan8_tp"),
+        mpc_right_plan9_wheel=channel("mpc_right_plan9_wheel"),
+        mpc_right_plan9_tp=channel("mpc_right_plan9_tp"),
     )
     return profile, sample
 
@@ -2472,6 +2784,193 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 mpc_solve_us=_safe_float(row.get("mpc_solve_us", "")),
                 compute_only=_safe_float(row.get("compute_only", "")),
                 control_enabled=_safe_float(row.get("control_enabled", "")),
+                mpc_wheel_authority_applied=_safe_float(
+                    row.get("mpc_wheel_authority_applied", "")
+                ),
+                mpc_leg_authority_applied=_safe_float(
+                    row.get("mpc_leg_authority_applied", "")
+                ),
+                mpc_left_wheel_raw=_safe_float(
+                    row.get("mpc_left_wheel_raw", "")
+                ),
+                mpc_right_wheel_raw=_safe_float(
+                    row.get("mpc_right_wheel_raw", "")
+                ),
+                mpc_left_tp_raw=_safe_float(row.get("mpc_left_tp_raw", "")),
+                mpc_right_tp_raw=_safe_float(row.get("mpc_right_tp_raw", "")),
+                mpc_rate_limit_count=_safe_float(
+                    row.get("mpc_rate_limit_count", "")
+                ),
+                mpc_torque_limit_count=_safe_float(
+                    row.get("mpc_torque_limit_count", "")
+                ),
+                mpc_leg_length=_safe_float(row.get("mpc_leg_length", "")),
+                mpc_left_state_theta=_safe_float(
+                    row.get("mpc_left_state_theta", "")
+                ),
+                mpc_left_state_dtheta=_safe_float(
+                    row.get("mpc_left_state_dtheta", "")
+                ),
+                mpc_left_state_x=_safe_float(row.get("mpc_left_state_x", "")),
+                mpc_left_state_dx=_safe_float(
+                    row.get("mpc_left_state_dx", "")
+                ),
+                mpc_left_state_phi=_safe_float(
+                    row.get("mpc_left_state_phi", "")
+                ),
+                mpc_left_state_dphi=_safe_float(
+                    row.get("mpc_left_state_dphi", "")
+                ),
+                mpc_right_state_theta=_safe_float(
+                    row.get("mpc_right_state_theta", "")
+                ),
+                mpc_right_state_dtheta=_safe_float(
+                    row.get("mpc_right_state_dtheta", "")
+                ),
+                mpc_right_state_x=_safe_float(
+                    row.get("mpc_right_state_x", "")
+                ),
+                mpc_right_state_dx=_safe_float(
+                    row.get("mpc_right_state_dx", "")
+                ),
+                mpc_right_state_phi=_safe_float(
+                    row.get("mpc_right_state_phi", "")
+                ),
+                mpc_right_state_dphi=_safe_float(
+                    row.get("mpc_right_state_dphi", "")
+                ),
+                mpc_left_previous_wheel=_safe_float(
+                    row.get("mpc_left_previous_wheel", "")
+                ),
+                mpc_left_previous_tp=_safe_float(
+                    row.get("mpc_left_previous_tp", "")
+                ),
+                mpc_right_previous_wheel=_safe_float(
+                    row.get("mpc_right_previous_wheel", "")
+                ),
+                mpc_right_previous_tp=_safe_float(
+                    row.get("mpc_right_previous_tp", "")
+                ),
+                mpc_left_plan0_wheel=_safe_float(
+                    row.get("mpc_left_plan0_wheel", "")
+                ),
+                mpc_left_plan0_tp=_safe_float(
+                    row.get("mpc_left_plan0_tp", "")
+                ),
+                mpc_left_plan1_wheel=_safe_float(
+                    row.get("mpc_left_plan1_wheel", "")
+                ),
+                mpc_left_plan1_tp=_safe_float(
+                    row.get("mpc_left_plan1_tp", "")
+                ),
+                mpc_left_plan2_wheel=_safe_float(
+                    row.get("mpc_left_plan2_wheel", "")
+                ),
+                mpc_left_plan2_tp=_safe_float(
+                    row.get("mpc_left_plan2_tp", "")
+                ),
+                mpc_left_plan3_wheel=_safe_float(
+                    row.get("mpc_left_plan3_wheel", "")
+                ),
+                mpc_left_plan3_tp=_safe_float(
+                    row.get("mpc_left_plan3_tp", "")
+                ),
+                mpc_right_plan0_wheel=_safe_float(
+                    row.get("mpc_right_plan0_wheel", "")
+                ),
+                mpc_right_plan0_tp=_safe_float(
+                    row.get("mpc_right_plan0_tp", "")
+                ),
+                mpc_right_plan1_wheel=_safe_float(
+                    row.get("mpc_right_plan1_wheel", "")
+                ),
+                mpc_right_plan1_tp=_safe_float(
+                    row.get("mpc_right_plan1_tp", "")
+                ),
+                mpc_right_plan2_wheel=_safe_float(
+                    row.get("mpc_right_plan2_wheel", "")
+                ),
+                mpc_right_plan2_tp=_safe_float(
+                    row.get("mpc_right_plan2_tp", "")
+                ),
+                mpc_right_plan3_wheel=_safe_float(
+                    row.get("mpc_right_plan3_wheel", "")
+                ),
+                mpc_right_plan3_tp=_safe_float(
+                    row.get("mpc_right_plan3_tp", "")
+                ),
+                mpc_left_plan4_wheel=_safe_float(
+                    row.get("mpc_left_plan4_wheel", "")
+                ),
+                mpc_left_plan4_tp=_safe_float(
+                    row.get("mpc_left_plan4_tp", "")
+                ),
+                mpc_left_plan5_wheel=_safe_float(
+                    row.get("mpc_left_plan5_wheel", "")
+                ),
+                mpc_left_plan5_tp=_safe_float(
+                    row.get("mpc_left_plan5_tp", "")
+                ),
+                mpc_left_plan6_wheel=_safe_float(
+                    row.get("mpc_left_plan6_wheel", "")
+                ),
+                mpc_left_plan6_tp=_safe_float(
+                    row.get("mpc_left_plan6_tp", "")
+                ),
+                mpc_left_plan7_wheel=_safe_float(
+                    row.get("mpc_left_plan7_wheel", "")
+                ),
+                mpc_left_plan7_tp=_safe_float(
+                    row.get("mpc_left_plan7_tp", "")
+                ),
+                mpc_left_plan8_wheel=_safe_float(
+                    row.get("mpc_left_plan8_wheel", "")
+                ),
+                mpc_left_plan8_tp=_safe_float(
+                    row.get("mpc_left_plan8_tp", "")
+                ),
+                mpc_left_plan9_wheel=_safe_float(
+                    row.get("mpc_left_plan9_wheel", "")
+                ),
+                mpc_left_plan9_tp=_safe_float(
+                    row.get("mpc_left_plan9_tp", "")
+                ),
+                mpc_right_plan4_wheel=_safe_float(
+                    row.get("mpc_right_plan4_wheel", "")
+                ),
+                mpc_right_plan4_tp=_safe_float(
+                    row.get("mpc_right_plan4_tp", "")
+                ),
+                mpc_right_plan5_wheel=_safe_float(
+                    row.get("mpc_right_plan5_wheel", "")
+                ),
+                mpc_right_plan5_tp=_safe_float(
+                    row.get("mpc_right_plan5_tp", "")
+                ),
+                mpc_right_plan6_wheel=_safe_float(
+                    row.get("mpc_right_plan6_wheel", "")
+                ),
+                mpc_right_plan6_tp=_safe_float(
+                    row.get("mpc_right_plan6_tp", "")
+                ),
+                mpc_right_plan7_wheel=_safe_float(
+                    row.get("mpc_right_plan7_wheel", "")
+                ),
+                mpc_right_plan7_tp=_safe_float(
+                    row.get("mpc_right_plan7_tp", "")
+                ),
+                mpc_right_plan8_wheel=_safe_float(
+                    row.get("mpc_right_plan8_wheel", "")
+                ),
+                mpc_right_plan8_tp=_safe_float(
+                    row.get("mpc_right_plan8_tp", "")
+                ),
+                mpc_right_plan9_wheel=_safe_float(
+                    row.get("mpc_right_plan9_wheel", "")
+                ),
+                mpc_right_plan9_tp=_safe_float(
+                    row.get("mpc_right_plan9_tp", "")
+                ),
             )
 
 

@@ -4,12 +4,18 @@
 #include <string.h>
 
 #define VMC_MPC_SIDE_COUNT 2U
-#define VMC_MPC_ADMM_ITERATIONS 10U
+#define VMC_MPC_ADMM_ITERATIONS 5U
 #define VMC_MPC_ADMM_RHO        0.20f
 #define VMC_MPC_SOLVER_TOLERANCE 1.0e-3f
 
+#if defined(__GNUC__) && defined(__arm__)
+#define VMC_MPC_FAST_RAM __attribute__((section(".ccmram")))
+#else
+#define VMC_MPC_FAST_RAM
+#endif
+
 static const float vmc_mpc_q[VMC_MPC_STATE_COUNT] = {
-    1.0f, 100.0f, 400.0f, 100.0f, 5000.0f, 1.0f};
+    1.0f, 100.0f, 400.0f, 30.0f, 5000.0f, 1.0f};
 static const float vmc_mpc_delta_weight[VMC_MPC_INPUT_COUNT] = {
     1.0f, 0.05f};
 
@@ -17,11 +23,13 @@ static vmc_mpc_axis_state_t vmc_mpc_axis[VMC_MPC_SIDE_COUNT];
 
 /* G and H are interpolated from the Flash schedule once per solve_pair() call.
  * The factor is then shared by both sides. */
-static float vmc_mpc_g[VMC_MPC_PREDICTION_STATES][VMC_MPC_DECISION_COUNT];
-static float vmc_mpc_base_left[VMC_MPC_PREDICTION_STATES];
-static float vmc_mpc_base_right[VMC_MPC_PREDICTION_STATES];
+static float
+    vmc_mpc_g[VMC_MPC_PREDICTION_STATES][VMC_MPC_DECISION_COUNT]
+        VMC_MPC_FAST_RAM;
+static float vmc_mpc_base_left[VMC_MPC_PREDICTION_STATES] VMC_MPC_FAST_RAM;
+static float vmc_mpc_base_right[VMC_MPC_PREDICTION_STATES] VMC_MPC_FAST_RAM;
 static float vmc_mpc_h_factor[VMC_MPC_DECISION_COUNT]
-                            [VMC_MPC_DECISION_COUNT];
+                            [VMC_MPC_DECISION_COUNT] VMC_MPC_FAST_RAM;
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -148,7 +156,7 @@ static void add_admm_regularization(void)
   uint32_t step;
   uint32_t column;
 
-  for (step = 0U; step < VMC_MPC_HORIZON; step++) {
+  for (step = 0U; step < VMC_MPC_CONTROL_HORIZON; step++) {
     for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
       const uint32_t index = step * VMC_MPC_INPUT_COUNT + column;
       vmc_mpc_h_factor[index][index] += VMC_MPC_ADMM_RHO;
@@ -272,6 +280,7 @@ static float variable_maximum(const vmc_mpc_limits_t *limits, uint32_t index)
 static uint8_t solve_box_qp(
     vmc_mpc_axis_state_t *axis, const float f[VMC_MPC_DECISION_COUNT],
     const vmc_mpc_limits_t *limits,
+    float initial_plan[VMC_MPC_DECISION_COUNT],
     float solution[VMC_MPC_DECISION_COUNT])
 {
   float z[VMC_MPC_DECISION_COUNT];
@@ -289,11 +298,12 @@ static uint8_t solve_box_qp(
     solution[VMC_MPC_DECISION_COUNT - 2U] = axis->u_prev[0];
     solution[VMC_MPC_DECISION_COUNT - 1U] = axis->u_prev[1];
   } else {
-    for (row = 0U; row < VMC_MPC_HORIZON; row++) {
+    for (row = 0U; row < VMC_MPC_CONTROL_HORIZON; row++) {
       solution[2U * row] = axis->u_prev[0];
       solution[2U * row + 1U] = axis->u_prev[1];
     }
   }
+  memcpy(initial_plan, solution, sizeof(float) * VMC_MPC_DECISION_COUNT);
   for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
     z[row] = clamp_float(solution[row], variable_minimum(limits, row),
                          variable_maximum(limits, row));
@@ -333,19 +343,23 @@ static uint8_t solve_box_qp(
 
 static uint8_t finalize_output(
     vmc_mpc_axis_state_t *axis, const float solution[VMC_MPC_DECISION_COUNT],
+    const float initial_plan[VMC_MPC_DECISION_COUNT],
     const vmc_mpc_limits_t *limits, vmc_mpc_output_t *output)
 {
   float previous_input[VMC_MPC_INPUT_COUNT];
+  float bounded_solution[VMC_MPC_INPUT_COUNT];
   float next_input[VMC_MPC_INPUT_COUNT];
   float requested_delta[VMC_MPC_INPUT_COUNT];
   uint8_t saturated = 0U;
 
   previous_input[0] = axis->u_prev[0];
   previous_input[1] = axis->u_prev[1];
-  next_input[0] = clamp_float(solution[0], limits->wheel_torque_min,
-                              limits->wheel_torque_max);
-  next_input[1] = clamp_float(solution[1], limits->leg_torque_min,
-                              limits->leg_torque_max);
+  bounded_solution[0] = clamp_float(solution[0], limits->wheel_torque_min,
+                                    limits->wheel_torque_max);
+  bounded_solution[1] = clamp_float(solution[1], limits->leg_torque_min,
+                                    limits->leg_torque_max);
+  next_input[0] = bounded_solution[0];
+  next_input[1] = bounded_solution[1];
   requested_delta[0] = next_input[0] - previous_input[0];
   requested_delta[1] = next_input[1] - previous_input[1];
   next_input[0] =
@@ -361,8 +375,10 @@ static uint8_t finalize_output(
   next_input[1] = clamp_float(next_input[1], limits->leg_torque_min,
                               limits->leg_torque_max);
 
-  if (fabsf(next_input[0] - solution[0]) > VMC_MPC_SOLVER_TOLERANCE ||
-      fabsf(next_input[1] - solution[1]) > VMC_MPC_SOLVER_TOLERANCE) {
+  if (fabsf(next_input[0] - bounded_solution[0]) >
+          VMC_MPC_SOLVER_TOLERANCE ||
+      fabsf(next_input[1] - bounded_solution[1]) >
+          VMC_MPC_SOLVER_TOLERANCE) {
     saturated = 1U;
   }
   memcpy(axis->plan, solution, sizeof(axis->plan));
@@ -383,6 +399,23 @@ static uint8_t finalize_output(
   output->virtual_leg_torque = -next_input[1];
   output->wheel_delta = next_input[0] - previous_input[0];
   output->virtual_leg_delta = next_input[1] - previous_input[1];
+  output->raw_wheel_torque = solution[0];
+  output->raw_virtual_leg_torque = -solution[1];
+  output->previous_wheel_torque = previous_input[0];
+  output->previous_virtual_leg_torque = -previous_input[1];
+  for (uint32_t index = 0U; index < VMC_MPC_DECISION_COUNT; index++) {
+    output->initial_plan[index] =
+        (index % VMC_MPC_INPUT_COUNT == 0U) ? initial_plan[index]
+                                          : -initial_plan[index];
+  }
+  output->rate_limited = saturated;
+  output->torque_saturated =
+      (bounded_solution[0] != solution[0] ||
+       bounded_solution[1] != solution[1])
+          ? 1U
+          : 0U;
+  output->saturated =
+      (output->rate_limited != 0U || output->torque_saturated != 0U) ? 1U : 0U;
   output->valid = 1U;
   output->saturated = saturated;
   return 1U;
@@ -408,7 +441,7 @@ void vmc_mpc_prime(uint8_t side, float wheel_torque,
   axis = &vmc_mpc_axis[side];
   axis->u_prev[0] = wheel_torque;
   axis->u_prev[1] = -virtual_leg_torque;
-  for (i = 0U; i < VMC_MPC_HORIZON; i++) {
+  for (i = 0U; i < VMC_MPC_CONTROL_HORIZON; i++) {
     axis->plan[2U * i] = axis->u_prev[0];
     axis->plan[2U * i + 1U] = axis->u_prev[1];
   }
@@ -425,6 +458,8 @@ uint8_t vmc_mpc_solve_pair(
   float b[VMC_MPC_STATE_COUNT][VMC_MPC_INPUT_COUNT];
   float terminal_cost[VMC_MPC_STATE_COUNT][VMC_MPC_STATE_COUNT];
   float f[VMC_MPC_DECISION_COUNT];
+  float left_initial_plan[VMC_MPC_DECISION_COUNT];
+  float right_initial_plan[VMC_MPC_DECISION_COUNT];
   float left_solution[VMC_MPC_DECISION_COUNT];
   float right_solution[VMC_MPC_DECISION_COUNT];
   uint32_t state_index;
@@ -456,14 +491,16 @@ uint8_t vmc_mpc_solve_pair(
   }
 
   build_rhs(vmc_mpc_base_left, vmc_mpc_axis[0].u_prev, f, terminal_cost);
-  (void)solve_box_qp(&vmc_mpc_axis[0], f, limits, left_solution);
-  left_valid =
-      finalize_output(&vmc_mpc_axis[0], left_solution, limits, left_output);
+  (void)solve_box_qp(&vmc_mpc_axis[0], f, limits, left_initial_plan,
+                     left_solution);
+  left_valid = finalize_output(&vmc_mpc_axis[0], left_solution,
+                               left_initial_plan, limits, left_output);
 
   build_rhs(vmc_mpc_base_right, vmc_mpc_axis[1].u_prev, f, terminal_cost);
-  (void)solve_box_qp(&vmc_mpc_axis[1], f, limits, right_solution);
-  right_valid =
-      finalize_output(&vmc_mpc_axis[1], right_solution, limits, right_output);
+  (void)solve_box_qp(&vmc_mpc_axis[1], f, limits, right_initial_plan,
+                     right_solution);
+  right_valid = finalize_output(&vmc_mpc_axis[1], right_solution,
+                                right_initial_plan, limits, right_output);
   return (left_valid != 0U && right_valid != 0U) ? 1U : 0U;
 }
 

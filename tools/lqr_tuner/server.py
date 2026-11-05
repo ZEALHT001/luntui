@@ -82,6 +82,9 @@ _BALANCE_PARAM_FALLBACK = {
     "mpc_enable": 0.0,
     "mpc_shadow_enable": 1.0,
     "compute_only_enable": 1.0,
+    "mpc_wheel_authority": 0.0,
+    "mpc_leg_authority": 1.0,
+    "mpc_authority_ramp_rate": 0.5,
     "disturbance_observer_enable": 0.0,
     # These act as "rate * dt" terms, and dt is now the measured control period
     # (~2.22 ms) rather than the old assumed 1 ms.  Values are scaled by 0.45 to
@@ -233,6 +236,9 @@ BALANCE_PARAM_DEFAULT_MACROS: dict[str, tuple[str, str]] = {
     "mpc_enable": ("VMC_MPC_ENABLE_DEFAULT", "uint"),
     "mpc_shadow_enable": ("VMC_MPC_SHADOW_ENABLE_DEFAULT", "uint"),
     "compute_only_enable": ("VMC_COMPUTE_ONLY_DEFAULT", "uint"),
+    "mpc_wheel_authority": ("VMC_MPC_WHEEL_AUTHORITY_DEFAULT", "float"),
+    "mpc_leg_authority": ("VMC_MPC_LEG_AUTHORITY_DEFAULT", "float"),
+    "mpc_authority_ramp_rate": ("VMC_MPC_AUTHORITY_RAMP_RATE_DEFAULT", "float"),
     "disturbance_observer_enable": ("VMC_BALANCE_DISTURBANCE_OBSERVER_ENABLE_DEFAULT", "uint"),
     "disturbance_observer_gain": ("VMC_BALANCE_DISTURBANCE_OBSERVER_GAIN_DEFAULT", "float"),
     "disturbance_observer_leak": ("VMC_BALANCE_DISTURBANCE_OBSERVER_LEAK_DEFAULT", "float"),
