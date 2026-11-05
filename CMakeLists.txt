@@ -58,14 +58,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/RTT/SEGGER_RTT.c
 )
 
-# Keep the control hot path, LQR schedule and telemetry formatter out of the
-# size-optimised build.  The M4 runs these every control cycle, so speed is
-# more valuable than the modest additional Flash use.
-set_source_files_properties(
-    App/Src/vmc_probe.c
-    App/Src/vmc_lqr.c
-    App/Src/vmc_mpc.c
-    App/Src/vmc_lqr_rtt.c
+# Keep the fixed-size MPC solver's dense loops out of the size-optimised build.
+set_source_files_properties(App/Src/vmc_mpc.c
     PROPERTIES COMPILE_OPTIONS "-O3")
 
 # Add include paths

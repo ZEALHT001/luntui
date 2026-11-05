@@ -422,7 +422,7 @@ class ControlIntegrationTest(unittest.TestCase):
         _has(leg_control, "vmc_stair_is_active() == 0U",
              "LQR Tp still overrides the stair phi0 PD")
         _has(leg_control,
-             "vmc_rad_format(target_phi0 - (float)leg->phi0)",
+             "vmc_rad_format((float)(target_phi0 - leg->phi0))",
              "the stair phi0 error is not wrap-safe")
         wheel_control = _body(
             SOURCE.read_text(encoding="utf-8"), "vmc_wheel_control_update"

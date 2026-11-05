@@ -140,11 +140,11 @@ class ApplicationTest(unittest.TestCase):
 
     def test_both_outputs_are_scaled(self) -> None:
         """The reference scales the wheel row AND the joint row."""
-        _has(self.body, "(float)vmc_probe_state.lqr.left_k[0] *",
+        _has(self.body, "vmc_probe_state.lqr.left_k[0] * (left_lqr_theta_error * left_theta_scale)",
              "the left wheel row is not scaled")
-        _has(self.body, "(float)vmc_probe_state.lqr.left_k[1] *",
+        _has(self.body, "vmc_probe_state.lqr.left_k[1] * (left_lqr_theta_error * left_theta_scale)",
              "the left virtual-leg row is not scaled")
-        _has(self.body, "(float)vmc_probe_state.lqr.right_k[1] *",
+        _has(self.body, "vmc_probe_state.lqr.right_k[1] *",
              "the right virtual-leg row is not scaled")
 
     def test_each_side_uses_its_own_latch(self) -> None:
@@ -156,14 +156,14 @@ class ApplicationTest(unittest.TestCase):
 
     def test_scale_is_one_when_not_slipping(self) -> None:
         """A scale of 1.0 is the identity, so the disabled path is exact."""
-        self.assertGreaterEqual(self.body.count("? slip_theta_scale : 1.0f"), 1)
-        self.assertGreaterEqual(self.body.count("? slip_dtheta_scale : 1.0f"), 1)
+        self.assertGreaterEqual(self.body.count("? slip_theta_scale : 1.0"), 1)
+        self.assertGreaterEqual(self.body.count("? slip_dtheta_scale : 1.0"), 1)
 
     def test_scale_is_bounded(self) -> None:
         """A malformed runtime value must not be able to blow up the gains."""
-        _has(self.body, "clamp_float(vmc_balance.slip_lqr_theta_scale, 0.0f, 10.0f)",
+        _has(self.body, "clamp_double(vmc_balance.slip_lqr_theta_scale, 0.0, 10.0)",
              "the angle scale is not clamped")
-        _has(self.body, "clamp_float(vmc_balance.slip_lqr_dtheta_scale, 0.0f, 10.0f)",
+        _has(self.body, "clamp_double(vmc_balance.slip_lqr_dtheta_scale, 0.0, 10.0)",
              "the rate scale is not clamped")
 
     def test_disabled_and_while_jumping_is_inert(self) -> None:

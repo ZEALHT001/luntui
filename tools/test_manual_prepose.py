@@ -198,7 +198,7 @@ class ManualPreposeTest(unittest.TestCase):
             "vmc_balance.tp_output_enable != 0U &&\n"
             "       manual_pd_hold == 0U",
             "if (manual_pd_hold != 0U) {\n"
-            "    leg_sync_torque = 0.0f;",
+            "    leg_sync_torque = 0.0;",
             "airborne_posture != 0U &&\n"
             "       manual_pd_hold == 0U",
         ):
@@ -211,8 +211,8 @@ class ManualPreposeTest(unittest.TestCase):
             "right_target_phi0 = vmc_control.manual_prepose_phi0_right;",
             "vmc_control.manual_prepose_active != 0U ||\n"
             "      vmc_control.manual_prepose_exit_length_check_active != 0U",
-            "left_target_length =\n        (float)vmc_control.manual_prepose_length_left;",
-            "right_target_length =\n        (float)vmc_control.manual_prepose_length_right;",
+            "left_target_length =\n        (double)vmc_control.manual_prepose_length_left;",
+            "right_target_length =\n        (double)vmc_control.manual_prepose_length_right;",
             "vmc_control.manual_prepose_active == 0U &&\n"
             "         vmc_control.manual_prepose_exit_length_check_active == 0U &&\n"
             "         vmc_getup_is_active() == 0U",

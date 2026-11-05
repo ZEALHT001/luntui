@@ -18,12 +18,12 @@ volatile vmc_control_t vmc_control;
 volatile vmc_wheel_control_t vmc_wheel_control;
 volatile vmc_balance_t vmc_balance;
 volatile uint8_t vmc_getup_fully_fallen;
-static float vmc_lqr_d_theta_lpf;
-static float vmc_lqr_left_d_theta_lpf;
-static float vmc_lqr_right_d_theta_lpf;
-static float vmc_dpitch_lpf;
-static float vmc_speed_dx_prev;
-static float vmc_speed_accel_lpf;
+static double vmc_lqr_d_theta_lpf;
+static double vmc_lqr_left_d_theta_lpf;
+static double vmc_lqr_right_d_theta_lpf;
+static double vmc_dpitch_lpf;
+static double vmc_speed_dx_prev;
+static double vmc_speed_accel_lpf;
 static uint8_t vmc_speed_accel_initialized;
 static uint8_t vmc_remote_source_last;
 static float vmc_yaw_last_wrapped;
@@ -459,18 +459,6 @@ static double apply_soft_deadband(double value, double deadband)
     return value + deadband;
   }
   return 0.0;
-}
-
-static float apply_soft_deadband_float(float value, float deadband)
-{
-  deadband = clamp_float(deadband, 0.0f, 0.20f);
-  if (value > deadband) {
-    return value - deadband;
-  }
-  if (value < -deadband) {
-    return value + deadband;
-  }
-  return 0.0f;
 }
 
 static double apply_zero_deadband(double value, double deadband)
@@ -1074,19 +1062,6 @@ static uint8_t vmc_manual_prepose_exit_length_ready(void)
 }
 
 static double vmc_step_towards(double current, double target, double step)
-{
-  if (current < target) {
-    current += step;
-    return (current > target) ? target : current;
-  }
-  if (current > target) {
-    current -= step;
-    return (current < target) ? target : current;
-  }
-  return current;
-}
-
-static float vmc_step_towards_float(float current, float target, float step)
 {
   if (current < target) {
     current += step;
@@ -4029,26 +4004,26 @@ static uint8_t vmc_manual_prepose_allows_wheel_output(void)
  * linkage has no gas-spring term in vmc_leg_force(), so the inverse of that
  * same command Jacobian supplies the equivalent F/Tp directly. */
 static uint8_t vmc_leg_force_from_measurement(
-    volatile vmc_leg_state_t *leg, float ahead_direction,
-    float back_direction, float *force, float *torque_phi0)
+    volatile vmc_leg_state_t *leg, double ahead_direction,
+    double back_direction, double *force, double *torque_phi0)
 {
-  float joint_torque[2];
+  double joint_torque[2];
 
-  if (ahead_direction == 0.0f || back_direction == 0.0f) {
+  if (ahead_direction == 0.0 || back_direction == 0.0) {
     return 0U;
   }
   joint_torque[0] =
-      ((leg == &vmc_probe_state.left_leg)
-           ? vmc_probe_state.joint_left_ahead.torque
-           : vmc_probe_state.joint_right_ahead.torque) /
+      (double)((leg == &vmc_probe_state.left_leg)
+                   ? vmc_probe_state.joint_left_ahead.torque
+                   : vmc_probe_state.joint_right_ahead.torque) /
       ahead_direction;
   joint_torque[1] =
-      ((leg == &vmc_probe_state.left_leg)
-           ? vmc_probe_state.joint_left_back.torque
-           : vmc_probe_state.joint_right_back.torque) /
+      (double)((leg == &vmc_probe_state.left_leg)
+                   ? vmc_probe_state.joint_left_back.torque
+                   : vmc_probe_state.joint_right_back.torque) /
       back_direction;
-  return vmc_leg_virtual_force_float(
-      joint_torque, (float)leg->phi1, (float)leg->phi4, force, torque_phi0);
+  return vmc_leg_virtual_force(joint_torque, leg->phi1, leg->phi4, force,
+                               torque_phi0);
 }
 
 /* Shanhai Observer_GetFN().  theta is body-relative and has the opposite sign
@@ -4058,21 +4033,21 @@ static uint8_t vmc_side_support_force(uint8_t side, float *normal_force)
   const uint8_t left = (side == VMC_AIRBORNE_SIDE_LEFT) ? 1U : 0U;
   volatile vmc_leg_state_t *leg =
       left != 0U ? &vmc_probe_state.left_leg : &vmc_probe_state.right_leg;
-  const float ahead_direction =
-      left != 0U ? (float)VMC_DIR_LEFT_AHEAD : (float)VMC_DIR_RIGHT_AHEAD;
-  const float back_direction =
-      left != 0U ? (float)VMC_DIR_LEFT_BACK : (float)VMC_DIR_RIGHT_BACK;
-  const float theta = vmc_rad_format(
-      VMC_PHI0_VERTICAL_RAD - (float)leg->phi0 -
-      vmc_probe_state.body.pitch);
-  const float d_theta =
-      -((float)leg->d_phi0 + vmc_probe_state.body.pitch_rate);
-  float force;
-  float torque_phi0;
-  float p;
-  float ddz_w;
+  const double ahead_direction =
+      left != 0U ? (double)VMC_DIR_LEFT_AHEAD : (double)VMC_DIR_RIGHT_AHEAD;
+  const double back_direction =
+      left != 0U ? (double)VMC_DIR_LEFT_BACK : (double)VMC_DIR_RIGHT_BACK;
+  const double theta =
+      (double)vmc_rad_format((float)(
+          VMC_PHI0_VERTICAL_RAD - leg->phi0 - vmc_probe_state.body.pitch));
+  const double d_theta =
+      -(leg->d_phi0 + (double)vmc_probe_state.body.pitch_rate);
+  double force;
+  double torque_phi0;
+  double p;
+  double ddz_w;
 
-  if (leg->length <= 0.01f ||
+  if (leg->length <= 0.01 ||
       vmc_leg_force_from_measurement(leg, ahead_direction, back_direction,
                                      &force, &torque_phi0) == 0U) {
     return 0U;
@@ -4083,16 +4058,15 @@ static uint8_t vmc_side_support_force(uint8_t side, float *normal_force)
    * opposite positive-compression convention.  Tp has the same sign in both
    * paths, while theta above already uses Shanhai's body-relative sign. */
   force = -force;
-  p = force * cosf(theta) +
-      torque_phi0 * sinf(theta) / (float)leg->length;
-  ddz_w = vmc_probe_state.body.world_az_lin -
-          (float)leg->dd_length * cosf(theta) +
-          2.0f * (float)leg->d_length * d_theta * sinf(theta) +
-          (float)leg->length * (float)leg->dd_theta * sinf(theta) +
-          (float)leg->length * d_theta * d_theta * cosf(theta);
-  *normal_force =
-      p + VMC_WHEEL_MASS_KG * VMC_GRAVITY_ACCEL +
-      VMC_WHEEL_MASS_KG * ddz_w;
+  p = force * cos(theta) + torque_phi0 * sin(theta) / leg->length;
+  ddz_w = (double)vmc_probe_state.body.world_az_lin -
+          leg->dd_length * cos(theta) +
+          2.0 * leg->d_length * d_theta * sin(theta) +
+          leg->length * leg->dd_theta * sin(theta) +
+          leg->length * d_theta * d_theta * cos(theta);
+  *normal_force = (float)(
+      p + (double)VMC_WHEEL_MASS_KG * (double)VMC_GRAVITY_ACCEL +
+      (double)VMC_WHEEL_MASS_KG * ddz_w);
   return 1U;
 }
 
@@ -4491,105 +4465,91 @@ void vmc_balance_init(void)
 void vmc_balance_update(void)
 {
   const volatile vmc_motion_state_t *motion = &vmc_probe_state.motion;
-  const float dt = (float)vmc_loop_dt();
-  const float kf_x = (float)motion->kf_x;
-  const float kf_dx = (float)motion->kf_dx;
-  const float motion_left_theta = (float)motion->left_theta;
-  const float motion_right_theta = (float)motion->right_theta;
-  const float motion_left_d_theta = (float)motion->left_d_theta;
-  const float motion_right_d_theta = (float)motion->right_d_theta;
-  const float motion_phi = (float)motion->phi;
-  const float motion_d_phi = (float)motion->d_phi;
-  const float lqr_theta =
+  const double lqr_theta =
       ((vmc_probe_state.left_leg.phi0 - VMC_PHI0_VERTICAL_RAD) +
        (vmc_probe_state.right_leg.phi0 - VMC_PHI0_VERTICAL_RAD)) *
-          0.5f -
+          0.5 -
       vmc_probe_state.body.pitch;
-  const float lqr_d_theta_raw =
-      (vmc_probe_state.left_leg.d_phi0 + vmc_probe_state.right_leg.d_phi0) *
-          0.5f -
+  const double lqr_d_theta_raw =
+      (vmc_probe_state.left_leg.d_phi0 + vmc_probe_state.right_leg.d_phi0) * 0.5 -
       vmc_probe_state.body.pitch_rate;
-  const float dtheta_alpha =
-      clamp_float(vmc_balance.dtheta_lpf_alpha, 0.001f, 1.0f);
-  const float lqr_d_theta =
+  const double dtheta_alpha =
+      clamp_double(vmc_balance.dtheta_lpf_alpha, 0.001, 1.0);
+  const double lqr_d_theta =
       vmc_lqr_d_theta_lpf + dtheta_alpha * (lqr_d_theta_raw - vmc_lqr_d_theta_lpf);
   vmc_lqr_d_theta_lpf = lqr_d_theta;
-  const float speed_deadband =
-      clamp_float(vmc_balance.speed_deadband, 0.0f, 0.5f);
-  const float speed_target =
+  const double speed_deadband =
+      clamp_double(vmc_balance.speed_deadband, 0.0, 0.5);
+  const double speed_target =
       (vmc_balance.speed_control_enable != 0U)
-          ? clamp_float(vmc_balance.speed_target,
-                        -clamp_float(vmc_balance.speed_target_max, 0.0f, 3.0f),
-                        clamp_float(vmc_balance.speed_target_max, 0.0f, 3.0f))
-          : 0.0f;
+          ? clamp_double(vmc_balance.speed_target,
+                         -clamp_double(vmc_balance.speed_target_max, 0.0, 3.0),
+                         clamp_double(vmc_balance.speed_target_max, 0.0, 3.0))
+          : 0.0;
   const uint8_t stick_speed_active =
-      (vmc_balance.speed_control_enable != 0U &&
-       fabsf(speed_target) > speed_deadband)
-          ? 1U
-          : 0U;
+      (vmc_balance.speed_control_enable != 0U && fabs(speed_target) > speed_deadband) ? 1U : 0U;
   const uint8_t released_from_speed =
       (stick_speed_active == 0U && vmc_balance.speed_stop_hold_active != 0U) ? 1U : 0U;
-  float speed_target_ramped = vmc_balance.speed_target_ramped;
+  double speed_target_ramped = vmc_balance.speed_target_ramped;
   if (released_from_speed != 0U) {
     /* On release, brake from the measured velocity instead of carrying a
        stale ramped command into the parking controller. */
-    speed_target_ramped = 0.0f;
+    speed_target_ramped = 0.0;
   }
-  const float active_speed_ramp_rate =
+  const double active_speed_ramp_rate =
       (vmc_balance.spin_mode_enabled != 0U)
-          ? clamp_float(vmc_balance.spin_speed_ramp_rate, 0.0f, 10.0f)
-          : clamp_float(vmc_balance.speed_ramp_rate, 0.0f, 10.0f);
-  const float speed_ramp_step = active_speed_ramp_rate * dt;
-  const float dx_target =
-      vmc_step_towards_float(speed_target_ramped, speed_target, speed_ramp_step);
-  const float stop_speed_threshold =
-      clamp_float(vmc_balance.stop_speed_threshold, 0.0f, 1.0f);
+          ? clamp_double(vmc_balance.spin_speed_ramp_rate, 0.0, 10.0)
+          : clamp_double(vmc_balance.speed_ramp_rate, 0.0, 10.0);
+  const double speed_ramp_step = active_speed_ramp_rate * vmc_loop_dt();
+  const double dx_target =
+      vmc_step_towards(speed_target_ramped, speed_target, speed_ramp_step);
+  const double stop_speed_threshold =
+      clamp_double(vmc_balance.stop_speed_threshold, 0.0, 1.0);
 
-  const float speed_pitch_limit =
-      clamp_float(vmc_balance.speed_pitch_limit, 0.0f, 0.5f);
+  const double speed_pitch_limit =
+      clamp_double(vmc_balance.speed_pitch_limit, 0.0, 0.5);
   /* Estimate actual body acceleration for braking-only Pitch feedforward.
    * The previous implementation used dx_target directly, which also tilted
    * the body during normal cruising.  Only the component opposing the
    * current measured velocity is retained, so this term is active during
    * braking and fades out when the chassis settles. */
-  float speed_accel = 0.0f;
-  float braking_accel = 0.0f;
+  double speed_accel = 0.0;
+  double braking_accel = 0.0;
   if (vmc_control.enabled != 0U &&
       vmc_probe_state.feedback_timeout_active == 0U) {
     if (vmc_speed_accel_initialized == 0U) {
-      vmc_speed_dx_prev = kf_dx;
+      vmc_speed_dx_prev = motion->kf_dx;
       vmc_speed_accel_initialized = 1U;
     }
-    speed_accel = (kf_dx - vmc_speed_dx_prev) / dt;
-    vmc_speed_dx_prev = kf_dx;
-    speed_accel = clamp_float(speed_accel, -20.0f, 20.0f);
+    speed_accel = (motion->kf_dx - vmc_speed_dx_prev) / vmc_loop_dt();
+    vmc_speed_dx_prev = motion->kf_dx;
+    speed_accel = clamp_double(speed_accel, -20.0, 20.0);
     /* A fixed light LPF suppresses encoder/KF quantization without adding a
      * user-facing parameter to the existing tuning protocol. */
     vmc_speed_accel_lpf +=
-        0.20f * (speed_accel - vmc_speed_accel_lpf);
-    if (fabsf(kf_dx) > speed_deadband &&
-        kf_dx * vmc_speed_accel_lpf < 0.0f) {
+        0.20 * (speed_accel - vmc_speed_accel_lpf);
+    if (fabs(motion->kf_dx) > speed_deadband &&
+        motion->kf_dx * vmc_speed_accel_lpf < 0.0) {
       braking_accel = vmc_speed_accel_lpf;
     }
   } else {
-    vmc_speed_dx_prev = kf_dx;
-    vmc_speed_accel_lpf = 0.0f;
+    vmc_speed_dx_prev = motion->kf_dx;
+    vmc_speed_accel_lpf = 0.0;
     vmc_speed_accel_initialized = 0U;
   }
-  const float speed_pitch_target =
-      clamp_float(braking_accel *
-                      clamp_float(vmc_balance.speed_pitch_gain, -1.0f, 1.0f),
-                  -speed_pitch_limit,
-                  speed_pitch_limit);
-  const float speed_pitch_step =
-      clamp_float(vmc_balance.speed_pitch_ramp_rate, 0.0f, 5.0f) * dt;
-  const float speed_pitch_offset =
-      vmc_step_towards_float(vmc_balance.speed_pitch_offset,
-                             speed_pitch_target,
-                             speed_pitch_step);
-  const float pitch_target_base = vmc_balance.phi_offset + speed_pitch_offset;
-  float pitch_target = pitch_target_base;
-  float phi_error_raw;
+  const double speed_pitch_target =
+      clamp_double(braking_accel * clamp_double(vmc_balance.speed_pitch_gain, -1.0, 1.0),
+                   -speed_pitch_limit,
+                   speed_pitch_limit);
+  const double speed_pitch_step =
+      clamp_double(vmc_balance.speed_pitch_ramp_rate, 0.0, 5.0) * vmc_loop_dt();
+  const double speed_pitch_offset =
+      vmc_step_towards(vmc_balance.speed_pitch_offset,
+                       speed_pitch_target,
+                       speed_pitch_step);
+  const double pitch_target_base = vmc_balance.phi_offset + speed_pitch_offset;
+  double pitch_target = pitch_target_base;
+  double phi_error_raw;
   if (vmc_balance.disturbance_observer_enable != 0U &&
       vmc_balance.mpc_enable == 0U &&
       vmc_balance.speed_control_enable != 0U &&
@@ -4598,17 +4558,17 @@ void vmc_balance_update(void)
       vmc_balance.wheel_output_enable != 0U &&
       vmc_probe_state.feedback_timeout_active == 0U &&
       vmc_getup_is_active() == 0U) {
-    const float observer_gain =
-        clamp_float(vmc_balance.disturbance_observer_gain, -20.0f, 20.0f);
-    const float observer_leak =
-        clamp_float(vmc_balance.disturbance_observer_leak, 0.0f, 2.0f);
-    const float observer_limit =
-        clamp_float(vmc_balance.disturbance_observer_limit, 0.0f, 0.5f);
-    const float observer_speed_limit =
-        clamp_float(vmc_balance.disturbance_observer_speed_limit, 0.01f, 2.0f);
-    const float observer_delay =
-        clamp_float(vmc_balance.disturbance_observer_delay, 0.0f, 5.0f);
-    float observer_output = clamp_float(
+    const double observer_gain =
+        clamp_double(vmc_balance.disturbance_observer_gain, -20.0, 20.0);
+    const double observer_leak =
+        clamp_double(vmc_balance.disturbance_observer_leak, 0.0, 2.0);
+    const double observer_limit =
+        clamp_double(vmc_balance.disturbance_observer_limit, 0.0, 0.5);
+    const double observer_speed_limit =
+        clamp_double(vmc_balance.disturbance_observer_speed_limit, 0.01, 2.0);
+    const double observer_delay =
+        clamp_double(vmc_balance.disturbance_observer_delay, 0.0, 5.0);
+    double observer_output = clamp_double(
         vmc_balance.disturbance_observer_output, -observer_limit, observer_limit);
 
     /* Learn the static balance trim only while the forward stick is released.
@@ -4617,20 +4577,20 @@ void vmc_balance_update(void)
      * During commanded travel, keep applying the learned trim but freeze the
      * estimator so acceleration and braking do not wind it up. */
     if (stick_speed_active == 0U) {
-      const float speed_error = -kf_dx;
-      vmc_balance.disturbance_observer_neutral_time = clamp_float(
-          vmc_balance.disturbance_observer_neutral_time + dt,
-          0.0f,
-          observer_delay + 1.0f);
-      if (vmc_balance.disturbance_observer_neutral_time >= observer_delay &&
-          fabsf(speed_error) <= observer_speed_limit) {
+      const double speed_error = -motion->kf_dx;
+      vmc_balance.disturbance_observer_neutral_time = (float)clamp_double(
+          vmc_balance.disturbance_observer_neutral_time + vmc_loop_dt(),
+          0.0,
+          observer_delay + 1.0);
+      if ((double)vmc_balance.disturbance_observer_neutral_time >= observer_delay &&
+          fabs(speed_error) <= observer_speed_limit) {
         vmc_balance.disturbance_observer_active = 1U;
-        vmc_balance.disturbance_observer_residual = speed_error;
+        vmc_balance.disturbance_observer_residual = (float)speed_error;
         observer_output +=
             (observer_gain * speed_error - observer_leak * observer_output) *
-            dt;
+            vmc_loop_dt();
         observer_output =
-            clamp_float(observer_output, -observer_limit, observer_limit);
+            clamp_double(observer_output, -observer_limit, observer_limit);
       } else {
         vmc_balance.disturbance_observer_active = 0U;
         vmc_balance.disturbance_observer_residual = 0.0f;
@@ -4640,7 +4600,7 @@ void vmc_balance_update(void)
       vmc_balance.disturbance_observer_active = 0U;
       vmc_balance.disturbance_observer_residual = 0.0f;
     }
-    vmc_balance.disturbance_observer_output = observer_output;
+    vmc_balance.disturbance_observer_output = (float)observer_output;
   } else {
     vmc_balance.disturbance_observer_output = 0.0f;
     vmc_balance.disturbance_observer_residual = 0.0f;
@@ -4648,83 +4608,78 @@ void vmc_balance_update(void)
     vmc_balance.disturbance_observer_active = 0U;
   }
   pitch_target +=
-      vmc_balance.disturbance_observer_output *
-      clamp_float(vmc_balance.disturbance_observer_pitch_gain, -2.0f, 2.0f);
-  phi_error_raw = motion_phi - pitch_target;
-  const float phi_error =
-      apply_soft_deadband_float(phi_error_raw, vmc_balance.phi_deadband);
-  const float dpitch_raw = motion_d_phi;
-  const float dpitch_alpha =
-      clamp_float(vmc_balance.dpitch_lpf_alpha, 0.001f, 1.0f);
-  const float dpitch_lpf =
+      (double)vmc_balance.disturbance_observer_output *
+      clamp_double(vmc_balance.disturbance_observer_pitch_gain, -2.0, 2.0);
+  phi_error_raw = motion->phi - pitch_target;
+  const double phi_error =
+      apply_soft_deadband(phi_error_raw, vmc_balance.phi_deadband);
+  const double dpitch_raw = motion->d_phi;
+  const double dpitch_alpha = clamp_double(vmc_balance.dpitch_lpf_alpha, 0.001, 1.0);
+  const double dpitch_lpf =
       vmc_dpitch_lpf + dpitch_alpha * (dpitch_raw - vmc_dpitch_lpf);
   vmc_dpitch_lpf = dpitch_lpf;
 
-  vmc_balance.speed_target_ramped = dx_target;
-  vmc_balance.speed_pitch_offset = speed_pitch_offset;
-  float x_error = 0.0f;
-  float dx_feedback_target = dx_target;
+  vmc_balance.speed_target_ramped = (float)dx_target;
+  vmc_balance.speed_pitch_offset = (float)speed_pitch_offset;
+  double x_error = 0.0;
+  double dx_feedback_target = dx_target;
   if (stick_speed_active != 0U) {
     /* Cruise mode: keep the parking anchor at the current position and only
        feed velocity error into LQR, matching the MuJoCo controller. */
     vmc_balance.speed_stop_hold_active = 1U;
-    vmc_balance.x_offset = kf_x;
-    x_error = 0.0f;
+    vmc_balance.x_offset = (float)motion->kf_x;
+    x_error = 0.0;
   } else {
     if (released_from_speed != 0U) {
       /* Capture the release position exactly once.  The next command will
          recapture it again, so reverse motion never inherits an old anchor. */
-      vmc_balance.x_offset = kf_x;
+      vmc_balance.x_offset = (float)motion->kf_x;
       vmc_balance.speed_target_ramped = 0.0f;
       vmc_balance.speed_pitch_offset = 0.0f;
       vmc_balance.speed_stop_hold_active = 0U;
     }
     /* Parking mode: hold the last anchor, but drag it if stretch exceeds the
        allowed spring travel so the robot does not reverse hard to an old point. */
-    const float x_hold_max_stretch =
-        clamp_float(vmc_balance.x_hold_max_stretch, 0.0f,
-                    VMC_BODY_MOTION_X_LIMIT_DEFAULT);
-    dx_feedback_target = 0.0f;
-    x_error = kf_x - vmc_balance.x_offset;
+    const double x_hold_max_stretch =
+        clamp_double(vmc_balance.x_hold_max_stretch, 0.0, VMC_BODY_MOTION_X_LIMIT_DEFAULT);
+    dx_feedback_target = 0.0;
+    x_error = motion->kf_x - vmc_balance.x_offset;
     if (x_error > x_hold_max_stretch) {
-      vmc_balance.x_offset = kf_x - x_hold_max_stretch;
+      vmc_balance.x_offset = (float)(motion->kf_x - x_hold_max_stretch);
       x_error = x_hold_max_stretch;
     } else if (x_error < -x_hold_max_stretch) {
-      vmc_balance.x_offset = kf_x + x_hold_max_stretch;
+      vmc_balance.x_offset = (float)(motion->kf_x + x_hold_max_stretch);
       x_error = -x_hold_max_stretch;
     }
-    if (fabsf(kf_dx) <= stop_speed_threshold &&
-        fabsf(dx_target) <= speed_deadband) {
+    if (fabs(motion->kf_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {
       vmc_balance.speed_stop_hold_active = 0U;
     }
   }
 
   if (vmc_balance.dx_feedback_enable == 0U || vmc_balance.x_feedback_enable == 0U) {
-    x_error = 0.0f;
+    x_error = 0.0;
   }
-  const float x_feedback_raw =
-      x_error * clamp_float(vmc_balance.x_feedback_gain, -200.0f, 200.0f);
-  const float x_feedback_limit =
-      clamp_float(vmc_balance.x_feedback_limit, 0.0f,
-                  VMC_BODY_MOTION_X_LIMIT_DEFAULT);
-  const float x_feedback_error =
-      clamp_float(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
-  const float dx_raw =
-      (vmc_balance.dx_feedback_enable != 0U)
-          ? (kf_dx - dx_feedback_target) *
-                clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f)
-          : 0.0f;
-  const float dx_feedback_limit =
-      clamp_float(vmc_balance.dx_feedback_limit, 0.0f, 30.0f);
-  const float dx_error =
-      clamp_float(dx_raw, -dx_feedback_limit, dx_feedback_limit);
+  const double x_feedback_raw =
+      x_error * clamp_double(vmc_balance.x_feedback_gain, -200.0, 200.0);
+  const double x_feedback_limit =
+      clamp_double(vmc_balance.x_feedback_limit, 0.0, VMC_BODY_MOTION_X_LIMIT_DEFAULT);
+  const double x_feedback_error =
+      clamp_double(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
+  const double dx_raw = (vmc_balance.dx_feedback_enable != 0U)
+                            ? (motion->kf_dx - dx_feedback_target) *
+                                  clamp_double(vmc_balance.dx_feedback_gain, -200.0, 200.0)
+                            : 0.0;
+  const double dx_feedback_limit =
+      clamp_double(vmc_balance.dx_feedback_limit, 0.0, 30.0);
+  const double dx_error =
+      clamp_double(dx_raw, -dx_feedback_limit, dx_feedback_limit);
   /* Shifting the virtual-leg theta target moves the wheel contact point under
    * the combined chassis/gimbal centre of mass.  This provides substantially
    * more static balancing authority than body-pitch trim alone. */
-  float theta_target =
+  double theta_target =
       vmc_balance.pitch_offset +
-      vmc_balance.disturbance_observer_output *
-          clamp_float(vmc_balance.disturbance_observer_theta_gain, -2.0f, 2.0f);
+      (double)vmc_balance.disturbance_observer_output *
+          clamp_double(vmc_balance.disturbance_observer_theta_gain, -2.0, 2.0);
   if (vmc_stair_is_active() != 0U) {
     /* The stair action now owns the legs through the absolute phi0 PD.  Keep
      * the wheel-side theta target at the measured average so the balance loop
@@ -4732,46 +4687,42 @@ void vmc_balance_update(void)
      * remain active and still provide wheel balance. */
     theta_target = lqr_theta;
   }
-  vmc_control.stair_theta_ramped = theta_target;
-  const float theta_error_raw = lqr_theta - theta_target;
-  const float theta_error =
-      apply_soft_deadband_float(theta_error_raw, vmc_balance.theta_deadband);
-  const float left_lqr_theta_error_raw = motion_left_theta - theta_target;
-  const float right_lqr_theta_error_raw = motion_right_theta - theta_target;
-  const float left_lqr_theta_error =
-      apply_soft_deadband_float(left_lqr_theta_error_raw,
-                                vmc_balance.theta_deadband);
-  const float right_lqr_theta_error =
-      apply_soft_deadband_float(right_lqr_theta_error_raw,
-                                vmc_balance.theta_deadband);
-  const float left_lqr_d_theta_raw = motion_left_d_theta;
-  const float right_lqr_d_theta_raw = motion_right_d_theta;
-  const float left_lqr_d_theta =
+  vmc_control.stair_theta_ramped = (float)theta_target;
+  const double theta_error_raw = lqr_theta - theta_target;
+  const double theta_error =
+      apply_soft_deadband(theta_error_raw, vmc_balance.theta_deadband);
+  const double left_lqr_theta_error_raw = motion->left_theta - theta_target;
+  const double right_lqr_theta_error_raw = motion->right_theta - theta_target;
+  const double left_lqr_theta_error =
+      apply_soft_deadband(left_lqr_theta_error_raw, vmc_balance.theta_deadband);
+  const double right_lqr_theta_error =
+      apply_soft_deadband(right_lqr_theta_error_raw, vmc_balance.theta_deadband);
+  const double left_lqr_d_theta_raw = motion->left_d_theta;
+  const double right_lqr_d_theta_raw = motion->right_d_theta;
+  const double left_lqr_d_theta =
       vmc_lqr_left_d_theta_lpf +
       dtheta_alpha * (left_lqr_d_theta_raw - vmc_lqr_left_d_theta_lpf);
-  const float right_lqr_d_theta =
+  const double right_lqr_d_theta =
       vmc_lqr_right_d_theta_lpf +
       dtheta_alpha * (right_lqr_d_theta_raw - vmc_lqr_right_d_theta_lpf);
   vmc_lqr_left_d_theta_lpf = left_lqr_d_theta;
   vmc_lqr_right_d_theta_lpf = right_lqr_d_theta;
-  const float lqr_dtheta_gain =
-      clamp_float(vmc_balance.lqr_dtheta_gain, -10.0f, 10.0f);
-  const float lqr_dtheta_deadband =
-      clamp_float(vmc_balance.lqr_dtheta_deadband, 0.0f, 5.0f);
-  const float lqr_dtheta_limit =
-      clamp_float(vmc_balance.lqr_dtheta_limit, 0.0f, 50.0f);
-  const float left_lqr_d_theta_limited =
-      clamp_float(apply_soft_deadband_float(left_lqr_d_theta,
-                                            lqr_dtheta_deadband) *
-                      lqr_dtheta_gain,
-                  -lqr_dtheta_limit,
-                  lqr_dtheta_limit);
-  const float right_lqr_d_theta_limited =
-      clamp_float(apply_soft_deadband_float(right_lqr_d_theta,
-                                            lqr_dtheta_deadband) *
-                      lqr_dtheta_gain,
-                  -lqr_dtheta_limit,
-                  lqr_dtheta_limit);
+  const double lqr_dtheta_gain =
+      clamp_double(vmc_balance.lqr_dtheta_gain, -10.0, 10.0);
+  const double lqr_dtheta_deadband =
+      clamp_double(vmc_balance.lqr_dtheta_deadband, 0.0, 5.0);
+  const double lqr_dtheta_limit =
+      clamp_double(vmc_balance.lqr_dtheta_limit, 0.0, 50.0);
+  const double left_lqr_d_theta_limited =
+      clamp_double(apply_soft_deadband(left_lqr_d_theta, lqr_dtheta_deadband) *
+                       lqr_dtheta_gain,
+                   -lqr_dtheta_limit,
+                   lqr_dtheta_limit);
+  const double right_lqr_d_theta_limited =
+      clamp_double(apply_soft_deadband(right_lqr_d_theta, lqr_dtheta_deadband) *
+                       lqr_dtheta_gain,
+                   -lqr_dtheta_limit,
+                   lqr_dtheta_limit);
   /* Slip weight switching: scale the leg-ANGLE feedback of whichever side is
    * slipping so the posture term dominates its control output.  This is the
    * posture half of the Nanhang sentry response; see
@@ -4784,96 +4735,86 @@ void vmc_balance_update(void)
       (vmc_balance.slip_lqr_enable != 0U &&
        vmc_control.enabled != 0U &&
        vmc_jump_joint_lqr_active() == 0U) != 0U;
-  const float slip_theta_scale =
-      clamp_float(vmc_balance.slip_lqr_theta_scale, 0.0f, 10.0f);
-  const float slip_dtheta_scale =
-      clamp_float(vmc_balance.slip_lqr_dtheta_scale, 0.0f, 10.0f);
+  const double slip_theta_scale =
+      clamp_double(vmc_balance.slip_lqr_theta_scale, 0.0, 10.0);
+  const double slip_dtheta_scale =
+      clamp_double(vmc_balance.slip_lqr_dtheta_scale, 0.0, 10.0);
   const uint8_t left_slipping =
       (slip_weight_enabled != 0U && body_motion_kf_slip_left != 0U) ? 1U : 0U;
   const uint8_t right_slipping =
       (slip_weight_enabled != 0U && body_motion_kf_slip_right != 0U) ? 1U : 0U;
-  const float left_theta_scale =
-      (left_slipping != 0U) ? slip_theta_scale : 1.0f;
-  const float left_dtheta_scale =
-      (left_slipping != 0U) ? slip_dtheta_scale : 1.0f;
-  const float right_theta_scale =
-      (right_slipping != 0U) ? slip_theta_scale : 1.0f;
-  const float right_dtheta_scale =
-      (right_slipping != 0U) ? slip_dtheta_scale : 1.0f;
-  vmc_balance.slip_lqr_applied_left = left_theta_scale;
-  vmc_balance.slip_lqr_applied_right = right_theta_scale;
-  const float left_wheel_theta_term =
-      (float)vmc_probe_state.lqr.left_k[0] *
-      (left_lqr_theta_error * left_theta_scale);
-  const float left_wheel_dtheta_term =
-      (float)vmc_probe_state.lqr.left_k[2] *
+  const double left_theta_scale =
+      (left_slipping != 0U) ? slip_theta_scale : 1.0;
+  const double left_dtheta_scale =
+      (left_slipping != 0U) ? slip_dtheta_scale : 1.0;
+  const double right_theta_scale =
+      (right_slipping != 0U) ? slip_theta_scale : 1.0;
+  const double right_dtheta_scale =
+      (right_slipping != 0U) ? slip_dtheta_scale : 1.0;
+  vmc_balance.slip_lqr_applied_left = (float)left_theta_scale;
+  vmc_balance.slip_lqr_applied_right = (float)right_theta_scale;
+  const double left_wheel_theta_term =
+      vmc_probe_state.lqr.left_k[0] * (left_lqr_theta_error * left_theta_scale);
+  const double left_wheel_dtheta_term =
+      vmc_probe_state.lqr.left_k[2] *
       (left_lqr_d_theta_limited * left_dtheta_scale);
-  const float left_wheel_x_term =
-      (float)vmc_probe_state.lqr.left_k[4] * x_feedback_error;
-  const float left_wheel_dx_term =
-      (float)vmc_probe_state.lqr.left_k[6] * dx_error;
-  const float left_wheel_phi_term =
-      (float)vmc_probe_state.lqr.left_k[8] * phi_error;
-  const float left_wheel_dphi_term =
-      (float)vmc_probe_state.lqr.left_k[10] * dpitch_lpf;
-  const float right_wheel_theta_term =
-      (float)vmc_probe_state.lqr.right_k[0] *
+  const double left_wheel_x_term = vmc_probe_state.lqr.left_k[4] * x_feedback_error;
+  const double left_wheel_dx_term = vmc_probe_state.lqr.left_k[6] * dx_error;
+  const double left_wheel_phi_term = vmc_probe_state.lqr.left_k[8] * phi_error;
+  const double left_wheel_dphi_term = vmc_probe_state.lqr.left_k[10] * dpitch_lpf;
+  const double right_wheel_theta_term =
+      vmc_probe_state.lqr.right_k[0] *
       (right_lqr_theta_error * right_theta_scale);
-  const float right_wheel_dtheta_term =
-      (float)vmc_probe_state.lqr.right_k[2] *
+  const double right_wheel_dtheta_term =
+      vmc_probe_state.lqr.right_k[2] *
       (right_lqr_d_theta_limited * right_dtheta_scale);
-  const float right_wheel_x_term =
-      (float)vmc_probe_state.lqr.right_k[4] * x_feedback_error;
-  const float right_wheel_dx_term =
-      (float)vmc_probe_state.lqr.right_k[6] * dx_error;
-  const float right_wheel_phi_term =
-      (float)vmc_probe_state.lqr.right_k[8] * phi_error;
-  const float right_wheel_dphi_term =
-      (float)vmc_probe_state.lqr.right_k[10] * dpitch_lpf;
-  const float left_wheel_lqr =
+  const double right_wheel_x_term = vmc_probe_state.lqr.right_k[4] * x_feedback_error;
+  const double right_wheel_dx_term = vmc_probe_state.lqr.right_k[6] * dx_error;
+  const double right_wheel_phi_term = vmc_probe_state.lqr.right_k[8] * phi_error;
+  const double right_wheel_dphi_term = vmc_probe_state.lqr.right_k[10] * dpitch_lpf;
+  const double left_wheel_lqr =
       left_wheel_theta_term +
       left_wheel_dtheta_term +
       left_wheel_x_term +
       left_wheel_dx_term +
       left_wheel_phi_term +
       left_wheel_dphi_term;
-  const float right_wheel_lqr =
+  const double right_wheel_lqr =
       right_wheel_theta_term +
       right_wheel_dtheta_term +
       right_wheel_x_term +
       right_wheel_dx_term +
       right_wheel_phi_term +
       right_wheel_dphi_term;
-  const float left_tp_theta_term =
-      (float)vmc_probe_state.lqr.left_k[1] *
-      (left_lqr_theta_error * left_theta_scale);
-  const float left_tp_dtheta_term =
-      (float)vmc_probe_state.lqr.left_k[3] *
+  const double left_tp_theta_term =
+      vmc_probe_state.lqr.left_k[1] * (left_lqr_theta_error * left_theta_scale);
+  const double left_tp_dtheta_term =
+      vmc_probe_state.lqr.left_k[3] *
       (left_lqr_d_theta_limited * left_dtheta_scale);
-  const float right_tp_theta_term =
-      (float)vmc_probe_state.lqr.right_k[1] *
+  const double right_tp_theta_term =
+      vmc_probe_state.lqr.right_k[1] *
       (right_lqr_theta_error * right_theta_scale);
-  const float right_tp_dtheta_term =
-      (float)vmc_probe_state.lqr.right_k[3] *
+  const double right_tp_dtheta_term =
+      vmc_probe_state.lqr.right_k[3] *
       (right_lqr_d_theta_limited * right_dtheta_scale);
-  const float tp_x_gain = clamp_float(vmc_balance.tp_x_gain, -2.0f, 2.0f);
-  const float left_tp_x_term =
-      tp_x_gain * (float)vmc_probe_state.lqr.left_k[5] * x_feedback_error;
-  const float left_tp_dx_term =
-      tp_x_gain * (float)vmc_probe_state.lqr.left_k[7] * dx_error;
-  const float right_tp_x_term =
-      tp_x_gain * (float)vmc_probe_state.lqr.right_k[5] * x_feedback_error;
-  const float right_tp_dx_term =
-      tp_x_gain * (float)vmc_probe_state.lqr.right_k[7] * dx_error;
-  const float tp_phi_gain = clamp_float(vmc_balance.tp_phi_gain, -2.0f, 2.0f);
-  const float left_tp_phi_term =
-      tp_phi_gain * (float)vmc_probe_state.lqr.left_k[9] * phi_error;
-  const float left_tp_dphi_term =
-      tp_phi_gain * (float)vmc_probe_state.lqr.left_k[11] * dpitch_lpf;
-  const float right_tp_phi_term =
-      tp_phi_gain * (float)vmc_probe_state.lqr.right_k[9] * phi_error;
-  const float right_tp_dphi_term =
-      tp_phi_gain * (float)vmc_probe_state.lqr.right_k[11] * dpitch_lpf;
+  const double tp_x_gain = clamp_double(vmc_balance.tp_x_gain, -2.0, 2.0);
+  const double left_tp_x_term =
+      tp_x_gain * vmc_probe_state.lqr.left_k[5] * x_feedback_error;
+  const double left_tp_dx_term =
+      tp_x_gain * vmc_probe_state.lqr.left_k[7] * dx_error;
+  const double right_tp_x_term =
+      tp_x_gain * vmc_probe_state.lqr.right_k[5] * x_feedback_error;
+  const double right_tp_dx_term =
+      tp_x_gain * vmc_probe_state.lqr.right_k[7] * dx_error;
+  const double tp_phi_gain = clamp_double(vmc_balance.tp_phi_gain, -2.0, 2.0);
+  const double left_tp_phi_term =
+      tp_phi_gain * vmc_probe_state.lqr.left_k[9] * phi_error;
+  const double left_tp_dphi_term =
+      tp_phi_gain * vmc_probe_state.lqr.left_k[11] * dpitch_lpf;
+  const double right_tp_phi_term =
+      tp_phi_gain * vmc_probe_state.lqr.right_k[9] * phi_error;
+  const double right_tp_dphi_term =
+      tp_phi_gain * vmc_probe_state.lqr.right_k[11] * dpitch_lpf;
   /* Anti-splay (leg synchronisation).
    *
    * Body roll reaches both legs as a common-mode theta error, so every other
@@ -4899,8 +4840,8 @@ void vmc_balance_update(void)
    * Also deliberately inert while the get-up or jump state machines own the
    * legs: those sequences command both legs from their own profiles and are
    * tuned without this term. */
-  const float leg_sync_limit =
-      clamp_float(vmc_balance.leg_sync_torque_limit, 0.0f, VMC_LEG_TP_MAX);
+  const double leg_sync_limit =
+      clamp_double(vmc_balance.leg_sync_torque_limit, 0.0, VMC_LEG_TP_MAX);
   /* The channel-9 knob selects the gear band.  The stair length override can
    * deliberately hold the legs near 0.16 m after a trigger, so exclude that
    * latched state as well. */
@@ -4923,26 +4864,26 @@ void vmc_balance_update(void)
            0U)
           ? 1U
           : 0U;
-  const float leg_sync_error =
+  const double leg_sync_error =
       left_lqr_theta_error_raw - right_lqr_theta_error_raw;
-  const float leg_sync_rate_error = left_lqr_d_theta - right_lqr_d_theta;
-  const float leg_sync_torque =
+  const double leg_sync_rate_error = left_lqr_d_theta - right_lqr_d_theta;
+  const double leg_sync_torque =
       (leg_sync_active != 0U)
-          ? clamp_float(clamp_float(vmc_balance.leg_sync_kp, 0.0f, 500.0f) *
-                            leg_sync_error +
-                        clamp_float(vmc_balance.leg_sync_kd, 0.0f, 50.0f) *
-                            leg_sync_rate_error,
-                        -leg_sync_limit,
-                        leg_sync_limit)
-          : 0.0f;
-  const float left_tp_lqr =
+          ? clamp_double(clamp_double(vmc_balance.leg_sync_kp, 0.0, 500.0) *
+                             leg_sync_error +
+                         clamp_double(vmc_balance.leg_sync_kd, 0.0, 50.0) *
+                             leg_sync_rate_error,
+                         -leg_sync_limit,
+                         leg_sync_limit)
+          : 0.0;
+  const double left_tp_lqr =
       -(left_tp_theta_term +
         left_tp_dtheta_term +
         left_tp_x_term +
         left_tp_dx_term +
         left_tp_phi_term +
         left_tp_dphi_term);
-  const float right_tp_lqr =
+  const double right_tp_lqr =
       -(right_tp_theta_term +
         right_tp_dtheta_term +
         right_tp_x_term +
@@ -4952,18 +4893,18 @@ void vmc_balance_update(void)
   int16_t wheel_limit = vmc_balance.wheel_current_limit;
   /* LQR T and its limit are motor-shaft torque.  The model already reflects
    * the drivetrain relationship, so do not apply another ratio here. */
-  const float motor_torque_limit =
+  const double motor_torque_limit =
       (vmc_balance.wheel_torque_limit < 0.0f)
-          ? -vmc_balance.wheel_torque_limit
-          : vmc_balance.wheel_torque_limit;
+          ? -(double)vmc_balance.wheel_torque_limit
+          : (double)vmc_balance.wheel_torque_limit;
   float tp_limit =
       clamp_float_abs(vmc_balance.tp_limit, VMC_LEG_TP_MAX);
-  const float wheel_torque_to_current =
+  const double wheel_torque_to_current =
       vmc_balance.wheel_torque_to_current * vmc_balance.wheel_current_gain;
-  float left_wheel_raw = left_wheel_lqr;
-  float right_wheel_raw = right_wheel_lqr;
-  float left_tp_raw = left_tp_lqr;
-  float right_tp_raw = right_tp_lqr;
+  double left_wheel_raw = left_wheel_lqr;
+  double right_wheel_raw = right_wheel_lqr;
+  double left_tp_raw = left_tp_lqr;
+  double right_tp_raw = right_tp_lqr;
   const uint8_t mpc_apply_requested =
       (vmc_balance.mpc_enable != 0U &&
        vmc_control.enabled != 0U &&
@@ -4988,32 +4929,32 @@ void vmc_balance_update(void)
   if (mpc_compute_requested != 0U) {
     const uint32_t mpc_start_us = vmc_loop_now_us();
     const vmc_mpc_limits_t mpc_limits = {
-        -motor_torque_limit,
-        motor_torque_limit,
+        (float)-motor_torque_limit,
+        (float)motor_torque_limit,
         -tp_limit,
         tp_limit,
         VMC_MPC_WHEEL_DELTA_MAX_DEFAULT,
         VMC_MPC_LEG_DELTA_MAX_DEFAULT};
-    const float mpc_x_error =
-        clamp_float(x_error, -x_feedback_limit, x_feedback_limit);
-    const float mpc_dx_error =
-        clamp_float(kf_dx - dx_feedback_target,
-                    -dx_feedback_limit,
-                    dx_feedback_limit);
+    const double mpc_x_error =
+        clamp_double(x_error, -x_feedback_limit, x_feedback_limit);
+    const double mpc_dx_error =
+        clamp_double(motion->kf_dx - dx_feedback_target,
+                     -dx_feedback_limit,
+                     dx_feedback_limit);
     const float left_mpc_state[VMC_MPC_STATE_COUNT] = {
-        -(left_lqr_theta_error * left_theta_scale),
-        -(left_lqr_d_theta_limited * left_dtheta_scale),
-        mpc_x_error,
-        mpc_dx_error,
-        -phi_error,
-        -dpitch_lpf};
+        (float)(-(left_lqr_theta_error * left_theta_scale)),
+        (float)(-(left_lqr_d_theta_limited * left_dtheta_scale)),
+        (float)mpc_x_error,
+        (float)mpc_dx_error,
+        (float)(-phi_error),
+        (float)(-dpitch_lpf)};
     const float right_mpc_state[VMC_MPC_STATE_COUNT] = {
-        -(right_lqr_theta_error * right_theta_scale),
-        -(right_lqr_d_theta_limited * right_dtheta_scale),
-        mpc_x_error,
-        mpc_dx_error,
-        -phi_error,
-        -dpitch_lpf};
+        (float)(-(right_lqr_theta_error * right_theta_scale)),
+        (float)(-(right_lqr_d_theta_limited * right_dtheta_scale)),
+        (float)mpc_x_error,
+        (float)mpc_dx_error,
+        (float)(-phi_error),
+        (float)(-dpitch_lpf)};
     vmc_mpc_output_t left_mpc;
     vmc_mpc_output_t right_mpc;
 
@@ -5044,36 +4985,36 @@ void vmc_balance_update(void)
     vmc_balance.mpc_solve_us = vmc_loop_now_us() - mpc_start_us;
     if (mpc_left_valid != 0U && mpc_right_valid != 0U) {
       if (mpc_apply_requested != 0U) {
-        const float wheel_target =
-            clamp_float(vmc_balance.mpc_wheel_authority, 0.0f, 1.0f);
-        const float leg_target =
-            clamp_float(vmc_balance.mpc_leg_authority, 0.0f, 1.0f);
-        const float authority_step =
-            clamp_float(vmc_balance.mpc_authority_ramp_rate, 0.0f, 10.0f) *
-            dt;
-        const float wheel_authority =
-            vmc_step_towards_float(vmc_balance.mpc_wheel_authority_applied,
-                                   wheel_target, authority_step);
-        const float leg_authority =
-            vmc_step_towards_float(vmc_balance.mpc_leg_authority_applied,
-                                   leg_target, authority_step);
+        const double wheel_target =
+            clamp_double(vmc_balance.mpc_wheel_authority, 0.0, 1.0);
+        const double leg_target =
+            clamp_double(vmc_balance.mpc_leg_authority, 0.0, 1.0);
+        const double authority_step =
+            clamp_double(vmc_balance.mpc_authority_ramp_rate, 0.0, 10.0) *
+            vmc_loop_dt();
+        const double wheel_authority =
+            vmc_step_towards(vmc_balance.mpc_wheel_authority_applied,
+                             wheel_target, authority_step);
+        const double leg_authority =
+            vmc_step_towards(vmc_balance.mpc_leg_authority_applied,
+                             leg_target, authority_step);
 
         left_wheel_raw =
-            (1.0f - wheel_authority) * left_wheel_lqr +
+            (1.0 - wheel_authority) * left_wheel_lqr +
             wheel_authority * left_mpc.wheel_torque;
         right_wheel_raw =
-            (1.0f - wheel_authority) * right_wheel_lqr +
+            (1.0 - wheel_authority) * right_wheel_lqr +
             wheel_authority * right_mpc.wheel_torque;
         left_tp_raw =
-            (1.0f - leg_authority) * left_tp_lqr +
+            (1.0 - leg_authority) * left_tp_lqr +
             leg_authority * left_mpc.virtual_leg_torque;
         right_tp_raw =
-            (1.0f - leg_authority) * right_tp_lqr +
+            (1.0 - leg_authority) * right_tp_lqr +
             leg_authority * right_mpc.virtual_leg_torque;
-        vmc_balance.mpc_wheel_authority_applied = wheel_authority;
-        vmc_balance.mpc_leg_authority_applied = leg_authority;
+        vmc_balance.mpc_wheel_authority_applied = (float)wheel_authority;
+        vmc_balance.mpc_leg_authority_applied = (float)leg_authority;
         vmc_balance.mpc_active =
-            (wheel_authority > 0.0f || leg_authority > 0.0f) ? 1U : 0U;
+            (wheel_authority > 0.0 || leg_authority > 0.0) ? 1U : 0U;
       } else {
         vmc_balance.mpc_active = 0U;
         vmc_balance.mpc_wheel_authority_applied = 0.0f;
@@ -5190,10 +5131,10 @@ void vmc_balance_update(void)
       vmc_balance.mpc_right_plan[plan_index] = 0.0f;
     }
   }
-  const float left_wheel_limited =
-      clamp_float(left_wheel_raw, -motor_torque_limit, motor_torque_limit);
-  const float right_wheel_limited =
-      clamp_float(right_wheel_raw, -motor_torque_limit, motor_torque_limit);
+  const double left_wheel_limited =
+      clamp_double(left_wheel_raw, -motor_torque_limit, motor_torque_limit);
+  const double right_wheel_limited =
+      clamp_double(right_wheel_raw, -motor_torque_limit, motor_torque_limit);
   int16_t left_current;
   int16_t right_current;
 
@@ -5251,7 +5192,7 @@ void vmc_balance_update(void)
   vmc_balance.right_tp_dtheta_term = right_tp_dtheta_term;
   vmc_balance.right_tp_x_term = right_tp_x_term;
   vmc_balance.right_tp_dx_term = right_tp_dx_term;
-  vmc_balance.wheel_torque_raw = (left_wheel_raw + right_wheel_raw) * 0.5f;
+  vmc_balance.wheel_torque_raw = (left_wheel_raw + right_wheel_raw) * 0.5;
   vmc_balance.left_wheel_torque_raw = left_wheel_raw;
   vmc_balance.right_wheel_torque_raw = right_wheel_raw;
   vmc_balance.left_wheel_torque_limited = left_wheel_limited;
@@ -5271,8 +5212,8 @@ void vmc_balance_update(void)
       (int16_t)(VMC_WHEEL_LEFT_CMD_DIRECTION * left_current);
   vmc_balance.right_wheel_current_send =
       (int16_t)(VMC_WHEEL_RIGHT_CMD_DIRECTION * right_current);
-  vmc_balance.left_tp_cmd = clamp_float_abs(left_tp_raw, tp_limit);
-  vmc_balance.right_tp_cmd = clamp_float_abs(right_tp_raw, tp_limit);
+  vmc_balance.left_tp_cmd = clamp_float_abs((float)left_tp_raw, tp_limit);
+  vmc_balance.right_tp_cmd = clamp_float_abs((float)right_tp_raw, tp_limit);
   vmc_probe_state.balance = vmc_balance;
 }
 
@@ -5607,8 +5548,8 @@ void vmc_can_poll_joints_zero(void)
 
 void vmc_update_leg_state(void)
 {
-  float length;
-  float phi0;
+  double length;
+  double phi0;
 
   vmc_probe_state.left_leg.phi1 =
       joint_model_angle(vmc_probe_state.joint_left_back.position,
@@ -5620,9 +5561,8 @@ void vmc_update_leg_state(void)
                         VMC_REF_RAW_LEFT_AHEAD,
                         VMC_REF_MODEL_PHI4,
                         VMC_DIR_LEFT_AHEAD);
-  vmc_leg_position_float((float)vmc_probe_state.left_leg.phi1,
-                         (float)vmc_probe_state.left_leg.phi4,
-                         &length, &phi0);
+  vmc_leg_position(vmc_probe_state.left_leg.phi1, vmc_probe_state.left_leg.phi4,
+                   &length, &phi0);
   vmc_probe_state.left_leg.length = length;
   vmc_probe_state.left_leg.phi0 = phi0;
 
@@ -5636,9 +5576,8 @@ void vmc_update_leg_state(void)
                         VMC_REF_RAW_RIGHT_BACK,
                         VMC_REF_MODEL_PHI1,
                         VMC_DIR_RIGHT_BACK);
-  vmc_leg_position_float((float)vmc_probe_state.right_leg.phi1,
-                         (float)vmc_probe_state.right_leg.phi4,
-                         &length, &phi0);
+  vmc_leg_position(vmc_probe_state.right_leg.phi1, vmc_probe_state.right_leg.phi4,
+                   &length, &phi0);
   vmc_probe_state.right_leg.length = length;
   vmc_probe_state.right_leg.phi0 = phi0;
 
@@ -5646,11 +5585,9 @@ void vmc_update_leg_state(void)
       joint_model_speed(vmc_probe_state.joint_left_back.speed, VMC_DIR_LEFT_BACK);
   vmc_probe_state.left_leg.d_phi4 =
       joint_model_speed(vmc_probe_state.joint_left_ahead.speed, VMC_DIR_LEFT_AHEAD);
-  vmc_leg_speed_float((float)vmc_probe_state.left_leg.d_phi1,
-                      (float)vmc_probe_state.left_leg.d_phi4,
-                      (float)vmc_probe_state.left_leg.phi1,
-                      (float)vmc_probe_state.left_leg.phi4,
-                      &length, &phi0);
+  vmc_leg_speed(vmc_probe_state.left_leg.d_phi1, vmc_probe_state.left_leg.d_phi4,
+                vmc_probe_state.left_leg.phi1, vmc_probe_state.left_leg.phi4,
+                &length, &phi0);
   vmc_probe_state.left_leg.d_length = length;
   vmc_probe_state.left_leg.d_phi0 = phi0;
 
@@ -5658,11 +5595,9 @@ void vmc_update_leg_state(void)
       joint_model_speed(vmc_probe_state.joint_right_ahead.speed, VMC_DIR_RIGHT_AHEAD);
   vmc_probe_state.right_leg.d_phi1 =
       joint_model_speed(vmc_probe_state.joint_right_back.speed, VMC_DIR_RIGHT_BACK);
-  vmc_leg_speed_float((float)vmc_probe_state.right_leg.d_phi1,
-                      (float)vmc_probe_state.right_leg.d_phi4,
-                      (float)vmc_probe_state.right_leg.phi1,
-                      (float)vmc_probe_state.right_leg.phi4,
-                      &length, &phi0);
+  vmc_leg_speed(vmc_probe_state.right_leg.d_phi1, vmc_probe_state.right_leg.d_phi4,
+                vmc_probe_state.right_leg.phi1, vmc_probe_state.right_leg.phi4,
+                &length, &phi0);
   vmc_probe_state.right_leg.d_length = length;
   vmc_probe_state.right_leg.d_phi0 = phi0;
 
@@ -5682,14 +5617,14 @@ void vmc_update_leg_state(void)
       return;
     }
 
-    const float dt = (float)vmc_loop_dt();
-    const float alpha = VMC_LEG_ACCEL_FILTER_ALPHA_DEFAULT;
-    const float left_theta_rate =
+    const double dt = vmc_loop_dt();
+    const double alpha = VMC_LEG_ACCEL_FILTER_ALPHA_DEFAULT;
+    const double left_theta_rate =
         -(vmc_probe_state.left_leg.d_phi0 +
-          vmc_probe_state.body.pitch_rate);
-    const float right_theta_rate =
+          (double)vmc_probe_state.body.pitch_rate);
+    const double right_theta_rate =
         -(vmc_probe_state.right_leg.d_phi0 +
-          vmc_probe_state.body.pitch_rate);
+          (double)vmc_probe_state.body.pitch_rate);
 
     if (vmc_probe_state.left_leg.acceleration_valid == 0U) {
       vmc_probe_state.left_leg.previous_d_length =
@@ -5699,11 +5634,11 @@ void vmc_update_leg_state(void)
       vmc_probe_state.left_leg.dd_theta = 0.0;
       vmc_probe_state.left_leg.acceleration_valid = 1U;
     } else {
-      const float dd_length_raw =
+      const double dd_length_raw =
           (vmc_probe_state.left_leg.d_length -
            vmc_probe_state.left_leg.previous_d_length) /
           dt;
-      const float dd_theta_raw =
+      const double dd_theta_raw =
           (left_theta_rate - vmc_probe_state.left_leg.previous_d_theta) / dt;
       vmc_probe_state.left_leg.dd_length +=
           alpha * (dd_length_raw - vmc_probe_state.left_leg.dd_length);
@@ -5722,11 +5657,11 @@ void vmc_update_leg_state(void)
       vmc_probe_state.right_leg.dd_theta = 0.0;
       vmc_probe_state.right_leg.acceleration_valid = 1U;
     } else {
-      const float dd_length_raw =
+      const double dd_length_raw =
           (vmc_probe_state.right_leg.d_length -
            vmc_probe_state.right_leg.previous_d_length) /
           dt;
-      const float dd_theta_raw =
+      const double dd_theta_raw =
           (right_theta_rate - vmc_probe_state.right_leg.previous_d_theta) / dt;
       vmc_probe_state.right_leg.dd_length +=
           alpha * (dd_length_raw - vmc_probe_state.right_leg.dd_length);
@@ -5964,48 +5899,47 @@ static void clear_leg_command(volatile vmc_leg_state_t *leg)
 }
 
 static void update_leg_length_control(volatile vmc_leg_state_t *leg,
-                                      float target_length,
-                                      float kp_length,
-                                      float kd_length,
-                                      float max_force,
-                                      float target_phi0,
-                                      float kp_phi0,
-                                      float kd_phi0,
-                                      float max_phi0_torque,
-                                      float support_force,
-                                      float leg_sync_torque,
-                                      float ahead_direction,
-                                      float back_direction,
-                                      float phi0_torque_feedforward,
+                                      double target_length,
+                                      double kp_length,
+                                      double kd_length,
+                                      double max_force,
+                                      double target_phi0,
+                                      double kp_phi0,
+                                      double kd_phi0,
+                                      double max_phi0_torque,
+                                      double support_force,
+                                      double leg_sync_torque,
+                                      double ahead_direction,
+                                      double back_direction,
+                                      double phi0_torque_feedforward,
                                       uint8_t airborne_posture,
-                                      float airborne_posture_tp)
+                                      double airborne_posture_tp)
 {
-  float joint_torque[2];
+  double joint_torque[2];
   const uint8_t manual_pd_hold =
       (vmc_control.manual_prepose_active != 0U ||
        vmc_control.manual_prepose_exit_length_check_active != 0U)
           ? 1U
           : 0U;
-  const float length_error = target_length - (float)leg->length;
-  const float p_output = kp_length * length_error;
-  const float d_output = -kd_length * (float)leg->d_length;
-  const float pid_output = VMC_LEG_LENGTH_PID_DIRECTION * (p_output + d_output);
-  const float support_output = VMC_LEG_SUPPORT_FORCE_DIRECTION * support_force;
-  const float force =
-      clamp_float(pid_output + support_output, -max_force, max_force);
-  const float phi0_error =
+  const double length_error = target_length - leg->length;
+  const double p_output = kp_length * length_error;
+  const double d_output = -kd_length * leg->d_length;
+  const double pid_output = VMC_LEG_LENGTH_PID_DIRECTION * (p_output + d_output);
+  const double support_output = VMC_LEG_SUPPORT_FORCE_DIRECTION * support_force;
+  const double force = clamp_double(pid_output + support_output, -max_force, max_force);
+  const double phi0_error =
       (vmc_stair_is_active() != 0U ||
        manual_pd_hold != 0U)
-          ? vmc_rad_format(target_phi0 - (float)leg->phi0)
-          : target_phi0 - (float)leg->phi0;
-  const float phi0_p_output = kp_phi0 * phi0_error;
-  const float phi0_d_output = -kd_phi0 * (float)leg->d_phi0;
-  const float phi0_pid_output =
+          ? (double)vmc_rad_format((float)(target_phi0 - leg->phi0))
+          : target_phi0 - leg->phi0;
+  const double phi0_p_output = kp_phi0 * phi0_error;
+  const double phi0_d_output = -kd_phi0 * leg->d_phi0;
+  const double phi0_pid_output =
       VMC_LEG_PHI0_PID_DIRECTION * (phi0_p_output + phi0_d_output);
-  const float phi0_torque_raw =
-      clamp_float(phi0_pid_output + phi0_torque_feedforward,
-                  -max_phi0_torque,
-                  max_phi0_torque);
+  const double phi0_torque_raw =
+      clamp_double(phi0_pid_output + phi0_torque_feedforward,
+                   -max_phi0_torque,
+                   max_phi0_torque);
   const uint8_t use_lqr_tp =
       (vmc_balance.tp_output_enable != 0U &&
        manual_pd_hold == 0U &&
@@ -6015,27 +5949,27 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
         vmc_jump_joint_lqr_active() != 0U))
           ? 1U
           : 0U;
-  const float phi0_torque =
-      (use_lqr_tp != 0U) ? 0.0f : phi0_torque_raw;
-  const float lqr_tp_torque =
+  const double phi0_torque =
+      (use_lqr_tp != 0U) ? 0.0 : phi0_torque_raw;
+  const double lqr_tp_torque =
       (use_lqr_tp != 0U)
           ? ((leg == &vmc_probe_state.left_leg)
-                 ? vmc_balance.left_tp_cmd
-                 : vmc_balance.right_tp_cmd) *
-                (float)vmc_stair_release_scale()
-          : 0.0f;
+                 ? (double)vmc_balance.left_tp_cmd
+                 : (double)vmc_balance.right_tp_cmd)
+                * vmc_stair_release_scale()
+          : 0.0;
   if (manual_pd_hold != 0U) {
-    leg_sync_torque = 0.0f;
+    leg_sync_torque = 0.0;
   }
-  const float phi0_torque_total =
+  const double phi0_torque_total =
       (airborne_posture != 0U &&
        manual_pd_hold == 0U)
-          ? clamp_float(airborne_posture_tp,
-                        -max_phi0_torque,
-                        max_phi0_torque)
-          : clamp_float(phi0_torque + lqr_tp_torque + leg_sync_torque,
-                        -max_phi0_torque,
-                        max_phi0_torque);
+          ? clamp_double(airborne_posture_tp,
+                         -max_phi0_torque,
+                         max_phi0_torque)
+          : clamp_double(phi0_torque + lqr_tp_torque + leg_sync_torque,
+                         -max_phi0_torque,
+                         max_phi0_torque);
 
   leg->length_error = length_error;
   leg->length_p_output = p_output;
@@ -6049,8 +5983,7 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
   leg->force_command = force;
   leg->torque_phi0_command = phi0_torque_total;
 
-  vmc_leg_force_float(force, phi0_torque_total, (float)leg->phi1,
-                      (float)leg->phi4, joint_torque);
+  vmc_leg_force(force, leg->torque_phi0_command, leg->phi1, leg->phi4, joint_torque);
 
   /* Final per-joint bound.  vmc_leg_force() has no limit of its own, and the
    * force path alone (max_force is 500 N, about 0.147 N.m per N at the
@@ -6058,12 +5991,11 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
    * both joints by the same factor so the commanded (force, Tp) direction is
    * preserved; clipping one joint on its own would silently rotate the leg. */
   {
-    const float joint_peak =
-        (fabsf(joint_torque[0]) > fabsf(joint_torque[1]))
-            ? fabsf(joint_torque[0])
-            : fabsf(joint_torque[1]);
-    if (joint_peak > VMC_DM_J8009_TMAX) {
-      const float scale = VMC_DM_J8009_TMAX / joint_peak;
+    const double joint_peak =
+        (fabs(joint_torque[0]) > fabs(joint_torque[1])) ? fabs(joint_torque[0])
+                                                        : fabs(joint_torque[1]);
+    if (joint_peak > (double)VMC_DM_J8009_TMAX) {
+      const double scale = (double)VMC_DM_J8009_TMAX / joint_peak;
       joint_torque[0] *= scale;
       joint_torque[1] *= scale;
     }
@@ -6075,35 +6007,34 @@ static void update_leg_length_control(volatile vmc_leg_state_t *leg,
 
 void vmc_control_update(void)
 {
-  const float dt = (float)vmc_loop_dt();
-  float target_length;
-  float ramped_target_length;
-  float max_force;
-  float left_max_force;
-  float right_max_force;
-  float left_target_phi0;
-  float right_target_phi0;
-  float left_phi0_speed_target;
-  float right_phi0_speed_target;
-  float left_phi0_feedforward;
-  float right_phi0_feedforward;
-  float max_phi0_torque;
-  float left_max_phi0_torque;
-  float right_max_phi0_torque;
-  float support_force;
-  float left_support_force;
-  float right_support_force;
-  float roll_error;
-  float roll_comp_desired;
-  float roll_comp_offset;
-  float roll_comp_limit;
-  float left_target_length;
-  float right_target_length;
-  float length_ramp_rate;
-  float kp_length;
-  float kd_length;
-  float kp_phi0;
-  float kd_phi0;
+  double target_length;
+  double ramped_target_length;
+  double max_force;
+  double left_max_force;
+  double right_max_force;
+  double left_target_phi0;
+  double right_target_phi0;
+  double left_phi0_speed_target;
+  double right_phi0_speed_target;
+  double left_phi0_feedforward;
+  double right_phi0_feedforward;
+  double max_phi0_torque;
+  double left_max_phi0_torque;
+  double right_max_phi0_torque;
+  double support_force;
+  double left_support_force;
+  double right_support_force;
+  double roll_error;
+  double roll_comp_desired;
+  double roll_comp_offset;
+  double roll_comp_limit;
+  double left_target_length;
+  double right_target_length;
+  double length_ramp_rate;
+  double kp_length;
+  double kd_length;
+  double kp_phi0;
+  double kd_phi0;
   uint8_t jump_override;
   uint8_t stair_override;
   uint8_t jump_force_profile;
@@ -6113,8 +6044,8 @@ void vmc_control_update(void)
   uint8_t getup_sync_torque_profile;
   uint8_t left_airborne_posture;
   uint8_t right_airborne_posture;
-  float left_airborne_tp;
-  float right_airborne_tp;
+  double left_airborne_tp;
+  double right_airborne_tp;
 
   vmc_update_remote_target_length();
   vmc_update_getup_state();
@@ -6163,20 +6094,20 @@ void vmc_control_update(void)
   }
 
   if (vmc_control.ramp_active == 0U) {
-    vmc_control.ramped_target_length = (float)clamp_float(
+    vmc_control.ramped_target_length = (float)clamp_double(
         (vmc_probe_state.left_leg.length + vmc_probe_state.right_leg.length) * 0.5,
         VMC_LEG_LENGTH_MIN,
         VMC_LEG_LENGTH_MAX);
     vmc_control.ramp_active = 1U;
   }
 
-  target_length = clamp_float(vmc_control.target_length,
+  target_length = clamp_double(vmc_control.target_length,
                                VMC_LEG_LENGTH_MIN,
                                VMC_LEG_LENGTH_MAX);
   if (vmc_control.manual_prepose_active != 0U) {
     target_length =
-        ((float)vmc_control.manual_prepose_length_left +
-         (float)vmc_control.manual_prepose_length_right) *
+        ((double)vmc_control.manual_prepose_length_left +
+         (double)vmc_control.manual_prepose_length_right) *
         0.5;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_BRACE ||
       vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
@@ -6215,25 +6146,25 @@ void vmc_control_update(void)
     length_ramp_rate =
         (stair_override != 0U ||
          vmc_control.stair_length_override_active != 0U)
-            ? clamp_float(vmc_control.stair_length_ramp_rate, 0.0, 1.0)
+            ? clamp_double(vmc_control.stair_length_ramp_rate, 0.0, 1.0)
             : ((vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN_SYNC)
-                   ? clamp_float(VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE, 0.0, 1.0)
+                   ? clamp_double(VMC_GETUP_BODY_FAN_SYNC_LENGTH_RATE, 0.0, 1.0)
                    : ((getup_force_profile != 0U)
-                          ? clamp_float(VMC_GETUP_LENGTH_RAMP_RATE, 0.0, 1.0)
-                          : clamp_float(vmc_control.length_ramp_rate,
+                          ? clamp_double(VMC_GETUP_LENGTH_RAMP_RATE, 0.0, 1.0)
+                          : clamp_double(vmc_control.length_ramp_rate,
                                          0.0,
                                          1.0)));
     ramped_target_length =
-        vmc_step_towards_float(vmc_control.ramped_target_length,
+        vmc_step_towards(vmc_control.ramped_target_length,
                          target_length,
-                         length_ramp_rate * dt);
+                         length_ramp_rate * vmc_loop_dt());
   }
   vmc_control.ramped_target_length = (float)ramped_target_length;
 
   roll_comp_limit =
-      clamp_float(vmc_control.roll_comp_limit, 0.0,
-                   (float)VMC_ROLL_LENGTH_COMP_LIMIT_MAX);
-  roll_error = (float)vmc_probe_state.body.roll - (float)vmc_control.roll_target;
+      clamp_double(vmc_control.roll_comp_limit, 0.0,
+                   (double)VMC_ROLL_LENGTH_COMP_LIMIT_MAX);
+  roll_error = (double)vmc_probe_state.body.roll - (double)vmc_control.roll_target;
   roll_comp_desired =
       (vmc_control.roll_comp_enable != 0U &&
        vmc_control.manual_prepose_active == 0U &&
@@ -6244,30 +6175,30 @@ void vmc_control_update(void)
        vmc_control.stair_length_override_active == 0U &&
        vmc_probe_state.body.imu_valid != 0U &&
        vmc_probe_state.body.imu_connected != 0U)
-          ? clamp_float(roll_error * (float)vmc_control.roll_comp_gain,
+          ? clamp_double(roll_error * (double)vmc_control.roll_comp_gain,
                          -roll_comp_limit,
                          roll_comp_limit)
           : 0.0;
-  roll_comp_offset = vmc_step_towards_float(
+  roll_comp_offset = vmc_step_towards(
       vmc_control.roll_comp_offset,
       roll_comp_desired,
-      clamp_float(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) * dt);
+      clamp_double(vmc_control.roll_comp_ramp_rate, 0.0, 1.0) * vmc_loop_dt());
   vmc_control.roll_comp_offset = (float)roll_comp_offset;
 
   left_target_length =
-      clamp_float(ramped_target_length + roll_comp_offset,
+      clamp_double(ramped_target_length + roll_comp_offset,
                    VMC_LEG_LENGTH_MIN,
                    VMC_LEG_LENGTH_MAX);
   right_target_length =
-      clamp_float(ramped_target_length - roll_comp_offset,
+      clamp_double(ramped_target_length - roll_comp_offset,
                    VMC_LEG_LENGTH_MIN,
                    VMC_LEG_LENGTH_MAX);
 
   /* Shanhai substitutes a 0.30 m air target on an unloaded side.  Keep this
    * inside normal drive only; jump, stair and get-up own their targets. */
   {
-    const float normal_left_target_length = left_target_length;
-    const float normal_right_target_length = right_target_length;
+    const double normal_left_target_length = left_target_length;
+    const double normal_right_target_length = right_target_length;
     const uint8_t airborne_control_allowed =
         (vmc_control.manual_prepose_active == 0U &&
          vmc_control.manual_prepose_exit_length_check_active == 0U &&
@@ -6296,37 +6227,37 @@ void vmc_control_update(void)
     right_airborne_tp =
         -(vmc_balance.right_tp_theta_term +
           vmc_balance.right_tp_dtheta_term);
-    const float airborne_length_step =
-        clamp_float(VMC_AIRBORNE_LENGTH_RAMP_RATE_DEFAULT, 0.0, 2.0) *
-        dt;
+    const double airborne_length_step =
+        clamp_double(VMC_AIRBORNE_LENGTH_RAMP_RATE_DEFAULT, 0.0, 2.0) *
+        vmc_loop_dt();
     if (left_airborne_posture != 0U) {
       left_target_length =
-          vmc_step_towards_float(vmc_control.left_target_length,
+          vmc_step_towards(vmc_control.left_target_length,
                            VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT,
                            airborne_length_step);
     } else if (vmc_probe_state.airborne_side_length_returning
                    [VMC_AIRBORNE_SIDE_LEFT] != 0U) {
       left_target_length =
-          vmc_step_towards_float(vmc_control.left_target_length,
+          vmc_step_towards(vmc_control.left_target_length,
                            left_target_length,
                            airborne_length_step);
-      if (fabsf(left_target_length - normal_left_target_length) <= 1.0e-4) {
+      if (fabs(left_target_length - normal_left_target_length) <= 1.0e-4) {
         vmc_probe_state.airborne_side_length_returning
             [VMC_AIRBORNE_SIDE_LEFT] = 0U;
       }
     }
     if (right_airborne_posture != 0U) {
       right_target_length =
-          vmc_step_towards_float(vmc_control.right_target_length,
+          vmc_step_towards(vmc_control.right_target_length,
                            VMC_AIRBORNE_LEG_LENGTH_TARGET_DEFAULT,
                            airborne_length_step);
     } else if (vmc_probe_state.airborne_side_length_returning
                    [VMC_AIRBORNE_SIDE_RIGHT] != 0U) {
       right_target_length =
-          vmc_step_towards_float(vmc_control.right_target_length,
+          vmc_step_towards(vmc_control.right_target_length,
                            right_target_length,
                            airborne_length_step);
-      if (fabsf(right_target_length - normal_right_target_length) <= 1.0e-4) {
+      if (fabs(right_target_length - normal_right_target_length) <= 1.0e-4) {
         vmc_probe_state.airborne_side_length_returning
             [VMC_AIRBORNE_SIDE_RIGHT] = 0U;
       }
@@ -6335,23 +6266,23 @@ void vmc_control_update(void)
 
   if (vmc_control.manual_prepose_active != 0U) {
     left_target_length =
-        (float)vmc_control.manual_prepose_length_left;
+        (double)vmc_control.manual_prepose_length_left;
     right_target_length =
-        (float)vmc_control.manual_prepose_length_right;
+        (double)vmc_control.manual_prepose_length_right;
   }
 
   if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     /* Keep each leg at its own captured length.  A completed leg must not be
      * passive: with zero force it can extend under the spring/gravity while
      * the other leg is still being turned through its dead point. */
-    left_target_length = (float)vmc_control.getup_left_hold_length;
-    right_target_length = (float)vmc_control.getup_right_hold_length;
+    left_target_length = (double)vmc_control.getup_left_hold_length;
+    right_target_length = (double)vmc_control.getup_right_hold_length;
   }
 
-  left_target_length = clamp_float(left_target_length,
+  left_target_length = clamp_double(left_target_length,
                                     VMC_LEG_LENGTH_MIN,
                                     VMC_LEG_LENGTH_MAX);
-  right_target_length = clamp_float(right_target_length,
+  right_target_length = clamp_double(right_target_length,
                                      VMC_LEG_LENGTH_MIN,
                                      VMC_LEG_LENGTH_MAX);
   vmc_control.left_target_length = (float)left_target_length;
@@ -6367,26 +6298,26 @@ void vmc_control_update(void)
           ? 1U
           : 0U;
   if (getup_force_profile != 0U) {
-    kp_length = clamp_float(VMC_GETUP_LENGTH_KP, 0.0, 5000.0);
-    kd_length = clamp_float(VMC_GETUP_LENGTH_KD, 0.0, 1000.0);
+    kp_length = clamp_double(VMC_GETUP_LENGTH_KP, 0.0, 5000.0);
+    kd_length = clamp_double(VMC_GETUP_LENGTH_KD, 0.0, 1000.0);
     max_force =
-        clamp_float(VMC_GETUP_FORCE_MAX, 0.0, VMC_LEG_FORCE_MAX_DEFAULT);
+        clamp_double(VMC_GETUP_FORCE_MAX, 0.0, VMC_LEG_FORCE_MAX_DEFAULT);
   } else if (jump_force_profile != 0U) {
-    kp_length = clamp_float(vmc_control.jump_kp_length, 0.0, 5000.0);
-    kd_length = clamp_float(vmc_control.jump_kd_length, 0.0, 1000.0);
-    max_force = clamp_float(vmc_control.jump_max_force,
+    kp_length = clamp_double(vmc_control.jump_kp_length, 0.0, 5000.0);
+    kd_length = clamp_double(vmc_control.jump_kd_length, 0.0, 1000.0);
+    max_force = clamp_double(vmc_control.jump_max_force,
                              0.0,
                              VMC_LEG_FORCE_MAX_DEFAULT);
   } else if (stair_force_profile != 0U) {
-    kp_length = clamp_float(vmc_control.stair_kp_length, 0.0, 5000.0);
-    kd_length = clamp_float(vmc_control.stair_kd_length, 0.0, 1000.0);
-    max_force = clamp_float(vmc_control.stair_max_force,
+    kp_length = clamp_double(vmc_control.stair_kp_length, 0.0, 5000.0);
+    kd_length = clamp_double(vmc_control.stair_kd_length, 0.0, 1000.0);
+    max_force = clamp_double(vmc_control.stair_max_force,
                              0.0,
                              VMC_LEG_FORCE_MAX_DEFAULT);
   } else {
-    kp_length = clamp_float(vmc_control.kp_length, 0.0, 5000.0);
-    kd_length = clamp_float(vmc_control.kd_length, 0.0, 1000.0);
-    max_force = clamp_float(vmc_control.max_force,
+    kp_length = clamp_double(vmc_control.kp_length, 0.0, 5000.0);
+    kd_length = clamp_double(vmc_control.kd_length, 0.0, 1000.0);
+    max_force = clamp_double(vmc_control.max_force,
                              0.0,
                              VMC_LEG_FORCE_MAX_DEFAULT);
   }
@@ -6407,63 +6338,63 @@ void vmc_control_update(void)
       left_target_phi0 = vmc_probe_state.left_leg.phi0;
       right_target_phi0 = vmc_probe_state.right_leg.phi0;
     } else {
-      const float speed_limit = clamp_float(
+      const double speed_limit = clamp_double(
           VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS, 0.0, 5.0);
-      const float phase_kp =
-          clamp_float(VMC_GETUP_BODY_FAN_SYNC_PHASE_KP, 0.0, 20.0);
+      const double phase_kp =
+          clamp_double(VMC_GETUP_BODY_FAN_SYNC_PHASE_KP, 0.0, 20.0);
 
       /* Torque-level synchronization: hold one leg's absolute phi0 and
        * derive the other leg's velocity from the remaining phase error. */
       left_target_phi0 = vmc_probe_state.left_leg.phi0;
       right_target_phi0 = vmc_probe_state.right_leg.phi0;
       if (vmc_control.getup_body_fan_sync_leader_side == 1U) {
-        const float follower_delta = vmc_angle_forward_to(
+        const double follower_delta = vmc_angle_forward_to(
             vmc_probe_state.left_leg.phi0,
             vmc_probe_state.right_leg.phi0,
             vmc_control.getup_turn_direction) -
             vmc_probe_state.right_leg.phi0;
 
         right_phi0_speed_target =
-            clamp_float(phase_kp * follower_delta,
+            clamp_double(phase_kp * follower_delta,
                          -speed_limit,
                          speed_limit);
       } else if (vmc_control.getup_body_fan_sync_leader_side == 2U) {
-        const float follower_delta = vmc_angle_forward_to(
+        const double follower_delta = vmc_angle_forward_to(
             vmc_probe_state.right_leg.phi0,
             vmc_probe_state.left_leg.phi0,
             vmc_control.getup_turn_direction) -
             vmc_probe_state.left_leg.phi0;
 
         left_phi0_speed_target =
-            clamp_float(phase_kp * follower_delta,
+            clamp_double(phase_kp * follower_delta,
                          -speed_limit,
                          speed_limit);
       } else {
-        const float left_target =
-            (float)VMC_PHI0_VERTICAL_RAD +
-            (float)vmc_probe_state.body.pitch +
-            (float)vmc_control.getup_body_fan_sync_theta_left;
-        const float right_target =
-            (float)VMC_PHI0_VERTICAL_RAD +
-            (float)vmc_probe_state.body.pitch +
-            (float)vmc_control.getup_body_fan_sync_theta_right;
-        const float left_delta =
+        const double left_target =
+            (double)VMC_PHI0_VERTICAL_RAD +
+            (double)vmc_probe_state.body.pitch +
+            (double)vmc_control.getup_body_fan_sync_theta_left;
+        const double right_target =
+            (double)VMC_PHI0_VERTICAL_RAD +
+            (double)vmc_probe_state.body.pitch +
+            (double)vmc_control.getup_body_fan_sync_theta_right;
+        const double left_delta =
             vmc_angle_forward_to(
                 left_target, vmc_probe_state.left_leg.phi0,
                 vmc_control.getup_turn_direction) -
             vmc_probe_state.left_leg.phi0;
-        const float right_delta =
+        const double right_delta =
             vmc_angle_forward_to(
                 right_target, vmc_probe_state.right_leg.phi0,
                 vmc_control.getup_turn_direction) -
             vmc_probe_state.right_leg.phi0;
 
         left_phi0_speed_target =
-            clamp_float(phase_kp * left_delta,
+            clamp_double(phase_kp * left_delta,
                          -speed_limit,
                          speed_limit);
         right_phi0_speed_target =
-            clamp_float(phase_kp * right_delta,
+            clamp_double(phase_kp * right_delta,
                          -speed_limit,
                          speed_limit);
       }
@@ -6477,73 +6408,73 @@ void vmc_control_update(void)
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_ALIGN ||
              vmc_control.getup_state == VMC_GETUP_STATE_BODY_FLIP ||
              vmc_control.getup_state == VMC_GETUP_STATE_TURN) {
-    const float phi0_lead =
+    const double phi0_lead =
         (vmc_control.getup_state == VMC_GETUP_STATE_TURN)
             ? VMC_GETUP_PHI0_LEAD_RAD
             : VMC_GETUP_FAN_PHI0_LEAD_RAD;
     /* TURN and BODY_FLIP intentionally set both directions to the same value.
      * BODY_ALIGN sets them independently. */
     left_target_phi0 = vmc_probe_state.left_leg.phi0 +
-                       (float)vmc_control.getup_left_direction *
+                       (double)vmc_control.getup_left_direction *
                            phi0_lead;
     right_target_phi0 = vmc_probe_state.right_leg.phi0 +
-                        (float)vmc_control.getup_right_direction *
+                        (double)vmc_control.getup_right_direction *
                             phi0_lead;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_LEG_RECOVER) {
     if (vmc_control.getup_left_done != 0U) {
-      const float left_theta_error = vmc_rad_format((float)(
+      const double left_theta_error = vmc_rad_format((float)(
           vmc_control.getup_left_hold_theta -
           vmc_probe_state.motion.left_theta));
       left_target_phi0 = vmc_probe_state.left_leg.phi0 + left_theta_error;
     } else {
       left_target_phi0 = vmc_probe_state.left_leg.phi0 +
-                         (float)vmc_control.getup_left_direction *
+                         (double)vmc_control.getup_left_direction *
                              VMC_GETUP_FAN_PHI0_LEAD_RAD;
     }
     if (vmc_control.getup_right_done != 0U) {
-      const float right_theta_error = vmc_rad_format((float)(
+      const double right_theta_error = vmc_rad_format((float)(
           vmc_control.getup_right_hold_theta -
           vmc_probe_state.motion.right_theta));
       right_target_phi0 = vmc_probe_state.right_leg.phi0 + right_theta_error;
     } else {
       right_target_phi0 = vmc_probe_state.right_leg.phi0 +
-                          (float)vmc_control.getup_right_direction *
+                          (double)vmc_control.getup_right_direction *
                               VMC_GETUP_FAN_PHI0_LEAD_RAD;
     }
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_SHRINK) {
-    const float left_theta_error = vmc_rad_format((float)(
+    const double left_theta_error = vmc_rad_format((float)(
         vmc_control.getup_shrink_target_theta_left -
         vmc_probe_state.motion.left_theta));
-    const float right_theta_error = vmc_rad_format((float)(
+    const double right_theta_error = vmc_rad_format((float)(
         vmc_control.getup_shrink_target_theta_right -
         vmc_probe_state.motion.right_theta));
     left_target_phi0 = vmc_probe_state.left_leg.phi0 + left_theta_error;
     right_target_phi0 = vmc_probe_state.right_leg.phi0 + right_theta_error;
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER) {
-    const float target_absolute =
-        (float)VMC_PHI0_VERTICAL_RAD +
-        (float)vmc_probe_state.body.pitch;
+    const double target_absolute =
+        (double)VMC_PHI0_VERTICAL_RAD +
+        (double)vmc_probe_state.body.pitch;
 
     left_target_phi0 = vmc_angle_nearest_to(
         target_absolute, vmc_probe_state.left_leg.phi0);
     right_target_phi0 = vmc_angle_nearest_to(
         target_absolute, vmc_probe_state.right_leg.phi0);
   } else if (vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT) {
-    const float left_raw_target = vmc_angle_nearest_to(
-        (float)VMC_PHI0_VERTICAL_RAD + (float)vmc_probe_state.body.pitch,
+    const double left_raw_target = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch,
         vmc_probe_state.left_leg.phi0);
-    const float right_raw_target = vmc_angle_nearest_to(
-        (float)VMC_PHI0_VERTICAL_RAD + (float)vmc_probe_state.body.pitch,
+    const double right_raw_target = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD + (double)vmc_probe_state.body.pitch,
         vmc_probe_state.right_leg.phi0);
-    const float upright_step =
-        clamp_float(VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS, 0.0, 5.0) *
-        dt;
+    const double upright_step =
+        clamp_double(VMC_GETUP_UPRIGHT_PHI0_RATE_RADPS, 0.0, 5.0) *
+        vmc_loop_dt();
 
-    vmc_control.getup_upright_phi0_left = (float)vmc_step_towards_float(
+    vmc_control.getup_upright_phi0_left = (float)vmc_step_towards(
         vmc_control.getup_upright_phi0_left,
         left_raw_target,
         upright_step);
-    vmc_control.getup_upright_phi0_right = (float)vmc_step_towards_float(
+    vmc_control.getup_upright_phi0_right = (float)vmc_step_towards(
         vmc_control.getup_upright_phi0_right,
         right_raw_target,
         upright_step);
@@ -6552,23 +6483,23 @@ void vmc_control_update(void)
   }
   if (vmc_control.manual_prepose_active == 0U &&
       vmc_stair_is_active() != 0U) {
-    const float stair_phi0_ramp_rate =
+    const double stair_phi0_ramp_rate =
         (vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
-            ? clamp_float(vmc_control.stair_lift_phi0_ramp_rate, 0.0, 20.0)
-            : clamp_float(vmc_control.stair_phi0_ramp_rate, 0.0, 20.0);
-    const float stair_phi0_step =
-        stair_phi0_ramp_rate * dt;
+            ? clamp_double(vmc_control.stair_lift_phi0_ramp_rate, 0.0, 20.0)
+            : clamp_double(vmc_control.stair_phi0_ramp_rate, 0.0, 20.0);
+    const double stair_phi0_step =
+        stair_phi0_ramp_rate * vmc_loop_dt();
     /* Match Shanhai's body-relative theta poses: first lift to 90 degrees,
      * then retract to the 60 degree climbing pose.  Convert the desired
      * world-frame theta back to the absolute phi0 command every cycle. */
-    const float stair_phi0_command = vmc_angle_nearest_to(
-        (float)VMC_PHI0_VERTICAL_RAD +
-            (float)vmc_probe_state.body.pitch +
+    const double stair_phi0_command = vmc_angle_nearest_to(
+        (double)VMC_PHI0_VERTICAL_RAD +
+            (double)vmc_probe_state.body.pitch +
             ((vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
-                 ? (float)vmc_control.stair_lift_theta
-                 : (float)vmc_control.stair_retract_theta),
+                 ? (double)vmc_control.stair_lift_theta
+                 : (double)vmc_control.stair_retract_theta),
         (vmc_control.stair_phi0_ramped));
-    vmc_control.stair_phi0_ramped = (float)vmc_step_towards_float(
+    vmc_control.stair_phi0_ramped = (float)vmc_step_towards(
         vmc_control.stair_phi0_ramped,
         stair_phi0_command,
         stair_phi0_step);
@@ -6578,9 +6509,9 @@ void vmc_control_update(void)
   left_phi0_feedforward = 0.0;
   right_phi0_feedforward = 0.0;
   if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
-    const float fan_speed_target =
-        (float)vmc_control.getup_turn_direction *
-        (float)VMC_GETUP_BODY_FAN_SPEED_RADPS;
+    const double fan_speed_target =
+        (double)vmc_control.getup_turn_direction *
+        (double)VMC_GETUP_BODY_FAN_SPEED_RADPS;
 
     left_phi0_feedforward = vmc_body_fan_speed_torque(
         fan_speed_target,
@@ -6597,7 +6528,7 @@ void vmc_control_update(void)
         VMC_GETUP_BODY_FAN_SPEED_KP,
         VMC_GETUP_BODY_FAN_SPEED_TORQUE_MAX);
   } else if (getup_sync_torque_profile != 0U) {
-    const float sync_speed_limit = clamp_float(
+    const double sync_speed_limit = clamp_double(
         VMC_GETUP_BODY_FAN_SYNC_RATE_RADPS, 0.0, 5.0);
 
     left_phi0_feedforward = vmc_body_fan_speed_torque(
@@ -6627,22 +6558,22 @@ void vmc_control_update(void)
       getup_sync_torque_profile != 0U) {
     const uint8_t body_fan =
         (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) ? 1U : 0U;
-    const float rise_rate =
+    const double rise_rate =
         (body_fan != 0U)
-            ? (float)VMC_GETUP_BODY_FAN_TORQUE_FF_RISE_RATE
-            : (float)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_RISE_RATE;
-    const float fall_rate =
+            ? (double)VMC_GETUP_BODY_FAN_TORQUE_FF_RISE_RATE
+            : (double)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_RISE_RATE;
+    const double fall_rate =
         (body_fan != 0U)
-            ? (float)VMC_GETUP_BODY_FAN_TORQUE_FF_FALL_RATE
-            : (float)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_FALL_RATE;
+            ? (double)VMC_GETUP_BODY_FAN_TORQUE_FF_FALL_RATE
+            : (double)VMC_GETUP_BODY_FAN_SYNC_TORQUE_FF_FALL_RATE;
 
     left_phi0_feedforward = vmc_getup_phi0_feedforward_slew(
-        (float)vmc_control.getup_phi0_feedforward_left,
+        (double)vmc_control.getup_phi0_feedforward_left,
         left_phi0_feedforward,
         rise_rate,
         fall_rate);
     right_phi0_feedforward = vmc_getup_phi0_feedforward_slew(
-        (float)vmc_control.getup_phi0_feedforward_right,
+        (double)vmc_control.getup_phi0_feedforward_right,
         right_phi0_feedforward,
         rise_rate,
         fall_rate);
@@ -6656,38 +6587,38 @@ void vmc_control_update(void)
   }
   vmc_control.getup_target_phi0_left = (float)left_target_phi0;
   vmc_control.getup_target_phi0_right = (float)right_target_phi0;
-  max_phi0_torque = clamp_float(vmc_control.max_phi0_torque,
+  max_phi0_torque = clamp_double(vmc_control.max_phi0_torque,
                                  0.0,
                                  VMC_LEG_TP_MAX);
-  kp_phi0 = clamp_float(vmc_control.kp_phi0, 0.0, 500.0);
-  kd_phi0 = clamp_float(vmc_control.kd_phi0, 0.0, 50.0);
+  kp_phi0 = clamp_double(vmc_control.kp_phi0, 0.0, 500.0);
+  kd_phi0 = clamp_double(vmc_control.kd_phi0, 0.0, 50.0);
   if (getup_force_profile != 0U) {
     if (vmc_control.getup_partial_active != 0U &&
         (vmc_control.getup_state == VMC_GETUP_STATE_FOLDED_LOWER ||
          vmc_control.getup_state == VMC_GETUP_STATE_UPRIGHT)) {
       max_phi0_torque =
-          clamp_float(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
-      kp_phi0 = clamp_float(VMC_GETUP_PARTIAL_PHI0_KP, 0.0, 500.0);
-      kd_phi0 = clamp_float(VMC_GETUP_PHI0_KD, 0.0, 50.0);
+          clamp_double(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
+      kp_phi0 = clamp_double(VMC_GETUP_PARTIAL_PHI0_KP, 0.0, 500.0);
+      kd_phi0 = clamp_double(VMC_GETUP_PHI0_KD, 0.0, 50.0);
     } else if (vmc_control.getup_state == VMC_GETUP_STATE_BODY_FAN) {
-      max_phi0_torque = clamp_float(
+      max_phi0_torque = clamp_double(
           VMC_GETUP_BODY_FAN_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
-      kp_phi0 = clamp_float(VMC_GETUP_BODY_FAN_PHI0_KP, 0.0, 500.0);
-      kd_phi0 = clamp_float(VMC_GETUP_BODY_FAN_PHI0_KD, 0.0, 50.0);
+      kp_phi0 = clamp_double(VMC_GETUP_BODY_FAN_PHI0_KP, 0.0, 500.0);
+      kd_phi0 = clamp_double(VMC_GETUP_BODY_FAN_PHI0_KD, 0.0, 50.0);
     } else if (getup_sync_torque_profile != 0U) {
-      max_phi0_torque = clamp_float(
+      max_phi0_torque = clamp_double(
           VMC_GETUP_BODY_FAN_SYNC_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
       kp_phi0 = 0.0;
       kd_phi0 = 0.0;
     } else {
       max_phi0_torque =
-          clamp_float(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
-      kp_phi0 = clamp_float(
+          clamp_double(VMC_GETUP_PHI0_TORQUE_MAX, 0.0, VMC_LEG_TP_MAX);
+      kp_phi0 = clamp_double(
           (getup_fan_profile != 0U) ? VMC_GETUP_FAN_PHI0_KP
                                     : VMC_GETUP_PHI0_KP,
           0.0,
           500.0);
-      kd_phi0 = clamp_float(
+      kd_phi0 = clamp_double(
           (getup_fan_profile != 0U) ? VMC_GETUP_FAN_PHI0_KD
                                     : VMC_GETUP_PHI0_KD,
           0.0,
@@ -6695,32 +6626,32 @@ void vmc_control_update(void)
     }
   } else if (vmc_control.manual_prepose_active == 0U &&
              vmc_stair_is_active() != 0U) {
-    kp_phi0 = clamp_float(vmc_control.stair_phi0_kp, 0.0, 500.0);
-    kd_phi0 = clamp_float(vmc_control.stair_phi0_kd, 0.0, 50.0);
+    kp_phi0 = clamp_double(vmc_control.stair_phi0_kp, 0.0, 500.0);
+    kd_phi0 = clamp_double(vmc_control.stair_phi0_kd, 0.0, 50.0);
   }
   left_max_phi0_torque = max_phi0_torque;
   right_max_phi0_torque = max_phi0_torque;
   if (getup_force_profile != 0U) {
-    support_force = clamp_float(VMC_GETUP_SUPPORT_FORCE,
+    support_force = clamp_double(VMC_GETUP_SUPPORT_FORCE,
                                  -VMC_LEG_SUPPORT_FORCE_MAX,
                                  VMC_LEG_SUPPORT_FORCE_MAX);
   } else if (jump_force_profile != 0U) {
-    support_force = clamp_float(vmc_control.jump_support_force,
+    support_force = clamp_double(vmc_control.jump_support_force,
                                  -VMC_LEG_SUPPORT_FORCE_MAX,
                                  VMC_LEG_SUPPORT_FORCE_MAX);
   } else if (stair_force_profile != 0U) {
-    const float stair_support =
+    const double stair_support =
         (vmc_control.stair_stage == VMC_STAIR_STAGE_LIFT)
-            ? (float)vmc_control.stair_lift_support_force
+            ? (double)vmc_control.stair_lift_support_force
             : ((vmc_control.stair_stage == VMC_STAIR_STAGE_RETRACT ||
                 vmc_control.stair_stage == VMC_STAIR_STAGE_SETTLE)
-                   ? (float)vmc_control.stair_retract_support_force
+                   ? (double)vmc_control.stair_retract_support_force
                    : 0.0);
-    support_force = clamp_float(stair_support,
+    support_force = clamp_double(stair_support,
                                  -VMC_LEG_SUPPORT_FORCE_MAX,
                                  VMC_LEG_SUPPORT_FORCE_MAX);
   } else {
-    support_force = clamp_float(vmc_control.support_force,
+    support_force = clamp_double(vmc_control.support_force,
                                  -VMC_LEG_SUPPORT_FORCE_MAX,
                                  VMC_LEG_SUPPORT_FORCE_MAX);
   }
