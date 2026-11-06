@@ -63,6 +63,7 @@ static uint32_t vmc_loop_deadline_us;
 static float vmc_lqr_gain_cache_length;
 static uint32_t vmc_lqr_gain_cache_age;
 static uint8_t vmc_lqr_gain_cache_valid;
+static float vmc_mpc_x_integral;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
  * UP to emergency-stop and then DOWN again before control can re-enable. */
 static uint8_t vmc_fall_rearm_required;
@@ -72,6 +73,8 @@ static uint8_t vmc_fall_prev_fully_fallen;
 
 #define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02f
 #define VMC_LQR_GAIN_REFRESH_CYCLES   45U
+#define VMC_MPC_X_INTEGRAL_LIMIT       0.10f
+#define VMC_MPC_X_INTEGRAL_LEAK        0.99995f
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
@@ -4532,6 +4535,7 @@ void vmc_balance_init(void)
   vmc_balance.mpc_left_tp_raw = 0.0f;
   vmc_balance.mpc_right_tp_raw = 0.0f;
   vmc_balance.mpc_leg_length = 0.0f;
+  vmc_balance.mpc_x_integral = 0.0f;
   vmc_balance.mpc_left_state_theta = 0.0f;
   vmc_balance.mpc_left_state_dtheta = 0.0f;
   vmc_balance.mpc_left_state_x = 0.0f;
@@ -4554,6 +4558,7 @@ void vmc_balance_init(void)
     vmc_balance.mpc_right_plan[plan_index] = 0.0f;
   }
   vmc_balance.mpc_solve_us = 0U;
+  vmc_mpc_x_integral = 0.0f;
   vmc_mpc_reset(0U);
   vmc_mpc_reset(1U);
   body_motion_kf_slip_initialized = 0U;
@@ -5072,25 +5077,33 @@ void vmc_balance_update(void)
         clamp_float((float)motion->kf_dx - dx_feedback_target,
                     -dx_feedback_limit,
                     dx_feedback_limit);
+    vmc_mpc_x_integral =
+        clamp_float(vmc_mpc_x_integral * VMC_MPC_X_INTEGRAL_LEAK +
+                        mpc_x_error * (float)vmc_loop_dt(),
+                    -VMC_MPC_X_INTEGRAL_LIMIT,
+                    VMC_MPC_X_INTEGRAL_LIMIT);
     const float left_mpc_state[VMC_MPC_STATE_COUNT] = {
         -(left_lqr_theta_error * left_theta_scale),
         -(left_lqr_d_theta_limited * left_dtheta_scale),
         mpc_x_error,
         mpc_dx_error,
         -phi_error,
-        -dpitch_lpf};
+        -dpitch_lpf,
+        vmc_mpc_x_integral};
     const float right_mpc_state[VMC_MPC_STATE_COUNT] = {
         -(right_lqr_theta_error * right_theta_scale),
         -(right_lqr_d_theta_limited * right_dtheta_scale),
         mpc_x_error,
         mpc_dx_error,
         -phi_error,
-        -dpitch_lpf};
+        -dpitch_lpf,
+        vmc_mpc_x_integral};
     vmc_mpc_output_t left_mpc;
     vmc_mpc_output_t right_mpc;
 
     vmc_balance.mpc_leg_length =
         (float)vmc_probe_state.motion.leg_length_avg;
+    vmc_balance.mpc_x_integral = vmc_mpc_x_integral;
     vmc_balance.mpc_left_state_theta = left_mpc_state[0];
     vmc_balance.mpc_left_state_dtheta = left_mpc_state[1];
     vmc_balance.mpc_left_state_x = left_mpc_state[2];
@@ -5197,6 +5210,8 @@ void vmc_balance_update(void)
       vmc_balance.mpc_wheel_authority_applied = 0.0f;
       vmc_balance.mpc_leg_authority_applied = 0.0f;
       vmc_balance.mpc_failure_count++;
+      vmc_mpc_x_integral = 0.0f;
+      vmc_balance.mpc_x_integral = 0.0f;
       vmc_balance.mpc_left_wheel_torque = 0.0f;
       vmc_balance.mpc_right_wheel_torque = 0.0f;
       vmc_balance.mpc_left_tp_command = 0.0f;
@@ -5240,6 +5255,8 @@ void vmc_balance_update(void)
     vmc_balance.mpc_left_tp_raw = 0.0f;
     vmc_balance.mpc_right_tp_raw = 0.0f;
     vmc_balance.mpc_leg_length = 0.0f;
+    vmc_mpc_x_integral = 0.0f;
+    vmc_balance.mpc_x_integral = 0.0f;
     vmc_balance.mpc_left_state_theta = 0.0f;
     vmc_balance.mpc_left_state_dtheta = 0.0f;
     vmc_balance.mpc_left_state_x = 0.0f;

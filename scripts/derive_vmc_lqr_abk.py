@@ -302,12 +302,25 @@ def k_at_length(p: AbkPreset, leg_length: float) -> np.ndarray:
 def discrete_mpc_model(
     p: AbkPreset, leg_length: float, sample_time_s: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the row-major A/B pair used by the firmware incremental MPC."""
+    """Return the augmented A/B pair used by the firmware incremental MPC.
+
+    The last state integrates forward position error.  It gives the MPC the
+    same disturbance-rejection role as an integral term, which pure state
+    feedback lacks under static wheel friction.
+    """
     a, b = linearize(p, leg_length)
     g, h, _c, _d, _dt = cont2discrete(
         (a, b, np.eye(6), np.zeros((6, 2))), sample_time_s
     )
-    return g, h
+    g_augmented = np.zeros((MPC_STATE_COUNT, MPC_STATE_COUNT))
+    g_augmented[:MPC_PLANT_STATE_COUNT, :MPC_PLANT_STATE_COUNT] = g
+    g_augmented[MPC_INTEGRAL_STATE_INDEX, MPC_INTEGRAL_SOURCE_INDEX] = (
+        sample_time_s
+    )
+    g_augmented[MPC_INTEGRAL_STATE_INDEX, MPC_INTEGRAL_STATE_INDEX] = 1.0
+    h_augmented = np.zeros((MPC_STATE_COUNT, 2))
+    h_augmented[:MPC_PLANT_STATE_COUNT] = h
+    return g_augmented, h_augmented
 
 
 def fit_schedule(
@@ -404,7 +417,11 @@ def emit_c(coeffs: np.ndarray) -> str:
     return "\n".join(lines)
 
 
-MPC_STATE_COUNT = 6
+MPC_PLANT_STATE_COUNT = 6
+MPC_STATE_COUNT = 7
+MPC_INTEGRAL_STATE_INDEX = 6
+MPC_INTEGRAL_SOURCE_INDEX = 2
+MPC_INTEGRAL_WEIGHT = 0.2
 MPC_INPUT_COUNT = 2
 MPC_HORIZON = 10
 MPC_CONTROL_HORIZON = MPC_HORIZON
@@ -477,9 +494,17 @@ def emit_mpc_model(
     ]
     for leg_length in leg_lengths:
         a, b = discrete_mpc_model(p, float(leg_length), sample_time_s)
-        terminal_cost = solve_discrete_are(a, b, p.q, p.r)
+        if p.q.shape == (MPC_STATE_COUNT, MPC_STATE_COUNT):
+            mpc_q = p.q
+        else:
+            mpc_q = np.zeros((MPC_STATE_COUNT, MPC_STATE_COUNT))
+            mpc_q[:MPC_PLANT_STATE_COUNT, :MPC_PLANT_STATE_COUNT] = p.q
+            mpc_q[MPC_INTEGRAL_STATE_INDEX, MPC_INTEGRAL_STATE_INDEX] = (
+                MPC_INTEGRAL_WEIGHT
+            )
+        terminal_cost = solve_discrete_are(a, b, mpc_q, p.r)
         influence, hessian = mpc_prediction_and_hessian(
-            a, b, p.q, p.r, terminal_cost
+            a, b, mpc_q, p.r, terminal_cost
         )
         lines.append(f"  {{{literal(float(leg_length), 9)},")
         lines.append("   {")
@@ -623,7 +648,7 @@ def main() -> None:
         mpc_preset = preset
         if args.mpc_q:
             mpc_preset = replace(
-                preset, q=parse_diag(args.mpc_q, 6, "MPC Q")
+                preset, q=parse_diag(args.mpc_q, MPC_STATE_COUNT, "MPC Q")
             )
         args.out_mpc_model.write_text(
             emit_mpc_model(mpc_preset, mpc_lengths, args.mpc_dt),

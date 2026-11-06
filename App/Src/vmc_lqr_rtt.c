@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 28U
+#define VMC_LQR_RTT_SCHEMA_VERSION 29U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -1948,6 +1948,9 @@ void vmc_lqr_rtt_telemetry_update(void)
         line, offset, (int)sizeof(line),
         (double)b->mpc_right_plan[plan_index]);
   }
+  /* VMCVOFA field 267: integral of forward position error used by MPC. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_x_integral);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

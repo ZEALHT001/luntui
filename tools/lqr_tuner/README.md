@@ -188,6 +188,7 @@ compatibility but are zero on this branch because forward motion is wheel-only.
 | 225..226 | right previous MPC input, T and Tp | N.m |
 | 227..246 | left pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
 | 247..266 | right pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
+| 267 | MPC integral of forward position error | m·s |
 
 Fields 157..173 publish the automatic stair climb: stage and abort reason show
 the state machine, ready/pre-impact/impact show how far the trigger progressed,
@@ -230,6 +231,10 @@ QP result reproducible even when telemetry runs slower than the control loop.
 Schema 28 expands the control horizon from four to ten steps, aligning the MPC
 stage cost with the LQR model. The two ten-pair plan blocks now occupy fields
 227..266.
+
+Schema 29 appends the MPC position-error integrator. This state provides the
+steady-state disturbance rejection that the original six-state controller did
+not have.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of

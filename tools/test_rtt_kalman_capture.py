@@ -212,6 +212,7 @@ class ParseTests(unittest.TestCase):
         fields = format_line(schema_version=26.0).split(",")
         values = {
             "mpc_leg_length": "0.281",
+            "mpc_x_integral": "0.123",
             "mpc_left_state_theta": "0.1",
             "mpc_left_state_dtheta": "-0.2",
             "mpc_left_state_x": "0.3",

@@ -24,7 +24,7 @@ from derive_vmc_lqr_abk import (  # noqa: E402
     emit_mpc_model,
 )
 
-MPC_Q = np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0])
+MPC_Q = np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0, 0.2])
 
 
 class GeneratedModelTest(unittest.TestCase):
@@ -46,7 +46,7 @@ class GeneratedModelTest(unittest.TestCase):
         terminal = solve_discrete_are(a, b, q, r)
         horizon = 10
         control_horizon = 10
-        state_count = 6
+        state_count = MPC_Q.shape[0]
         decision_count = control_horizon * 2
 
         influence = np.zeros((horizon * state_count, decision_count))
@@ -104,7 +104,7 @@ class GeneratedModelTest(unittest.TestCase):
             delta = np.clip(z[:2] - previous_input, [-0.2, -2.0], [0.2, 2.0])
             return previous_input + delta
 
-        state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0])
+        state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0])
         command = np.zeros(2)
         positions: list[float] = []
         for _ in range(3000):
@@ -122,7 +122,7 @@ class GeneratedModelTest(unittest.TestCase):
         lqr_gain = np.linalg.solve(
             b.T @ terminal @ b + r, b.T @ terminal @ a
         )
-        lqr_state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0])
+        lqr_state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0])
         lqr_positions: list[float] = []
         for _ in range(3000):
             applied = -lqr_gain @ lqr_state
@@ -191,13 +191,14 @@ class FirmwareSolverTest(unittest.TestCase):
         )
         self.assertIn("if (rebuild_hessian != 0U)", solver)
         self.assertIn("vmc_mpc_h_factor_valid = 1U;", solver)
-        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 28U", rtt)
+        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 29U", rtt)
         for signal in (
             "mpc_leg_length",
             "mpc_left_state_dphi",
             "mpc_right_state_dphi",
             "mpc_left_previous_tp",
             "mpc_right_previous_tp",
+            "mpc_x_integral",
             "b->mpc_left_plan[plan_index]",
             "b->mpc_right_plan[plan_index]",
         ):

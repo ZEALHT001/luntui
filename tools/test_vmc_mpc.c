@@ -95,6 +95,26 @@ int main(void)
 
   {
     const vmc_mpc_model_point_t *model = &vmc_mpc_model_points[4];
+    float state[VMC_MPC_STATE_COUNT] = {
+        0.0f, 0.0f, 0.02f, 0.0f, 0.0f, 0.0f, 0.05f};
+
+    check(fabsf(model->a[VMC_MPC_INTEGRAL_STATE_INDEX][2] -
+                vmc_mpc_model_sample_time_s) < 1.0e-8f,
+          "MPC position integrator was not added to the model");
+    check(fabsf(model->a[VMC_MPC_INTEGRAL_STATE_INDEX]
+                          [VMC_MPC_INTEGRAL_STATE_INDEX] -
+                1.0f) < 1.0e-8f,
+          "MPC position integrator state is not persistent");
+    vmc_mpc_reset(0U);
+    vmc_mpc_prime(0U, 0.0f, 0.0f);
+    check(vmc_mpc_solve(0U, model->leg_length, state, &limits, &output) != 0U,
+          "steady-error-state solve failed");
+    check(output.valid != 0U && isfinite(output.wheel_torque),
+          "steady-error-state output was invalid");
+  }
+
+  {
+    const vmc_mpc_model_point_t *model = &vmc_mpc_model_points[4];
     float state[VMC_MPC_STATE_COUNT] = {0.0f, 0.0f, 0.02f, 0.0f, 0.0f, 0.0f};
     float tail_min = state[2];
     float tail_max = state[2];

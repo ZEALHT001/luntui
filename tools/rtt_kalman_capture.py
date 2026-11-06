@@ -622,7 +622,7 @@ FORMAT_V31_PROFILE = Profile(
 # (schema 28).
 FORMAT_PROFILE = Profile(
     name="format",
-    field_count=267,
+    field_count=268,
     channels={
         **FORMAT_V31_PROFILE.channels,
         "mpc_left_plan4_wheel": 243,
@@ -649,6 +649,7 @@ FORMAT_PROFILE = Profile(
         "mpc_right_plan8_tp": 264,
         "mpc_right_plan9_wheel": 265,
         "mpc_right_plan9_tp": 266,
+        "mpc_x_integral": 267,
     },
 )
 
@@ -1012,6 +1013,7 @@ CSV_FIELDS = [
     "mpc_right_plan8_tp",
     "mpc_right_plan9_wheel",
     "mpc_right_plan9_tp",
+    "mpc_x_integral",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -1221,6 +1223,7 @@ class KalmanSample:
     # Exact solver inputs and the previous control used by the incremental
     # objective (schema 26).
     mpc_leg_length: float = INVALID_VALUE
+    mpc_x_integral: float = INVALID_VALUE
     mpc_left_state_theta: float = INVALID_VALUE
     mpc_left_state_dtheta: float = INVALID_VALUE
     mpc_left_state_x: float = INVALID_VALUE
@@ -1694,6 +1697,7 @@ def parse_vmcvoa_line(
         mpc_rate_limit_count=channel("mpc_rate_limit_count"),
         mpc_torque_limit_count=channel("mpc_torque_limit_count"),
         mpc_leg_length=channel("mpc_leg_length"),
+        mpc_x_integral=channel("mpc_x_integral"),
         mpc_left_state_theta=channel("mpc_left_state_theta"),
         mpc_left_state_dtheta=channel("mpc_left_state_dtheta"),
         mpc_left_state_x=channel("mpc_left_state_x"),
@@ -2805,6 +2809,7 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                     row.get("mpc_torque_limit_count", "")
                 ),
                 mpc_leg_length=_safe_float(row.get("mpc_leg_length", "")),
+                mpc_x_integral=_safe_float(row.get("mpc_x_integral", "")),
                 mpc_left_state_theta=_safe_float(
                     row.get("mpc_left_state_theta", "")
                 ),
