@@ -64,6 +64,8 @@ static float vmc_lqr_gain_cache_length;
 static uint32_t vmc_lqr_gain_cache_age;
 static uint8_t vmc_lqr_gain_cache_valid;
 static float vmc_mpc_x_integral;
+static uint8_t vmc_balance_controller_was_enabled;
+static uint8_t vmc_mpc_handoff_was_active;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
  * UP to emergency-stop and then DOWN again before control can re-enable. */
 static uint8_t vmc_fall_rearm_required;
@@ -4562,6 +4564,8 @@ void vmc_balance_init(void)
   }
   vmc_balance.mpc_solve_us = 0U;
   vmc_mpc_x_integral = 0.0f;
+  vmc_balance_controller_was_enabled = 0U;
+  vmc_mpc_handoff_was_active = 0U;
   vmc_mpc_reset(0U);
   vmc_mpc_reset(1U);
   body_motion_kf_slip_initialized = 0U;
@@ -4582,6 +4586,35 @@ void vmc_balance_init(void)
 void vmc_balance_update(void)
 {
   const volatile vmc_motion_state_t *motion = &vmc_probe_state.motion;
+  const float mpc_wheel_authority_target =
+      clamp_float(vmc_balance.mpc_wheel_authority, 0.0f, 1.0f);
+  const float mpc_leg_authority_target =
+      clamp_float(vmc_balance.mpc_leg_authority, 0.0f, 1.0f);
+  const uint8_t mpc_handoff_requested =
+      (vmc_balance.mpc_enable != 0U &&
+       vmc_control.enabled != 0U &&
+       (mpc_wheel_authority_target > 0.0f ||
+        mpc_leg_authority_target > 0.0f) &&
+       vmc_control.manual_prepose_active == 0U &&
+       vmc_getup_is_active() == 0U &&
+       vmc_stair_is_active() == 0U &&
+       vmc_jump_is_active_or_aborted() == 0U &&
+       vmc_probe_state.airborne_active == 0U &&
+       vmc_safety_allows_output() != 0U)
+          ? 1U
+          : 0U;
+
+  if ((vmc_control.enabled != 0U &&
+       vmc_balance_controller_was_enabled == 0U) ||
+      (mpc_handoff_requested != 0U && vmc_mpc_handoff_was_active == 0U)) {
+    vmc_balance.x_offset = (float)motion->kf_x;
+    vmc_balance.speed_stop_hold_active = 0U;
+    vmc_mpc_x_integral = 0.0f;
+    vmc_balance.mpc_x_integral = 0.0f;
+  }
+  vmc_balance_controller_was_enabled = vmc_control.enabled;
+  vmc_mpc_handoff_was_active = mpc_handoff_requested;
+
   const float lqr_theta =
       (((float)vmc_probe_state.left_leg.phi0 - VMC_PHI0_VERTICAL_RAD) +
        ((float)vmc_probe_state.right_leg.phi0 - VMC_PHI0_VERTICAL_RAD)) *
@@ -5044,17 +5077,7 @@ void vmc_balance_update(void)
   float right_wheel_raw = right_wheel_lqr;
   float left_tp_raw = left_tp_lqr;
   float right_tp_raw = right_tp_lqr;
-  const uint8_t mpc_apply_requested =
-      (vmc_balance.mpc_enable != 0U &&
-       vmc_control.enabled != 0U &&
-       vmc_control.manual_prepose_active == 0U &&
-       vmc_getup_is_active() == 0U &&
-       vmc_stair_is_active() == 0U &&
-       vmc_jump_is_active_or_aborted() == 0U &&
-       vmc_probe_state.airborne_active == 0U &&
-       vmc_safety_allows_output() != 0U)
-          ? 1U
-          : 0U;
+  const uint8_t mpc_apply_requested = mpc_handoff_requested;
   const uint8_t mpc_shadow_requested =
       (vmc_balance.mpc_shadow_enable != 0U &&
        vmc_control.enabled != 0U &&
@@ -5162,10 +5185,8 @@ void vmc_balance_update(void)
     vmc_balance.mpc_solve_us = vmc_loop_now_us() - mpc_start_us;
     if (mpc_left_valid != 0U && mpc_right_valid != 0U) {
       if (mpc_apply_requested != 0U) {
-        const float wheel_target =
-            clamp_float(vmc_balance.mpc_wheel_authority, 0.0f, 1.0f);
-        const float leg_target =
-            clamp_float(vmc_balance.mpc_leg_authority, 0.0f, 1.0f);
+        const float wheel_target = mpc_wheel_authority_target;
+        const float leg_target = mpc_leg_authority_target;
         const float authority_step =
             clamp_float(vmc_balance.mpc_authority_ramp_rate, 0.0f, 10.0f) *
             (float)vmc_loop_dt();

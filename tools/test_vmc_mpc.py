@@ -166,6 +166,10 @@ class FirmwareSolverTest(unittest.TestCase):
         )
         self.assertIn("integrate_now", source)
         self.assertIn("reset_integral", source)
+        self.assertIn("mpc_handoff_requested", source)
+        self.assertIn("vmc_balance_controller_was_enabled", source)
+        self.assertIn("vmc_mpc_handoff_was_active", source)
+        self.assertIn("vmc_balance.x_offset = (float)motion->kf_x;", source)
         for signal in (
             "left_lqr_theta_error",
             "left_lqr_d_theta_limited",
