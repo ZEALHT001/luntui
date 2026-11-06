@@ -1546,6 +1546,9 @@ typedef struct {
   float mpc_right_tp_raw;
   float mpc_leg_length;
   float mpc_x_integral;
+  uint8_t mpc_integral_awake;
+  uint8_t mpc_integral_hold_reason;
+  uint8_t mpc_integral_saturated;
   float mpc_left_state_theta;
   float mpc_left_state_dtheta;
   float mpc_left_state_x;

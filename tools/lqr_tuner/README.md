@@ -189,6 +189,9 @@ compatibility but are zero on this branch because forward motion is wheel-only.
 | 227..246 | left pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
 | 247..266 | right pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
 | 267 | MPC integral of forward position error | m·s |
+| 268 | MPC integral currently awake | `0` or `1` |
+| 269 | MPC integral hold reason | enum, see below |
+| 270 | MPC integral at its configured limit | `0` or `1` |
 
 Fields 157..173 publish the automatic stair climb: stage and abort reason show
 the state machine, ready/pre-impact/impact show how far the trigger progressed,
@@ -235,6 +238,12 @@ stage cost with the LQR model. The two ten-pair plan blocks now occupy fields
 Schema 29 appends the MPC position-error integrator. This state provides the
 steady-state disturbance rejection that the original six-state controller did
 not have.
+
+Schema 30 appends integral gate diagnostics. Hold reason `0` means integrating,
+`1..9` are hard reset causes (stick, release, manual prepose, get-up, stair,
+jump, airborne, feedback timeout, fall re-arm), `10` is excessive speed, `11`
+is excessive position error, `12` means MPC is not computing, and `13` is a
+solver failure.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of

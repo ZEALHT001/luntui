@@ -64,6 +64,8 @@ static float vmc_lqr_gain_cache_length;
 static uint32_t vmc_lqr_gain_cache_age;
 static uint8_t vmc_lqr_gain_cache_valid;
 static float vmc_mpc_x_integral;
+static uint8_t vmc_mpc_integral_awake;
+static uint8_t vmc_mpc_integral_hold_reason;
 static uint8_t vmc_balance_controller_was_enabled;
 static uint8_t vmc_mpc_handoff_was_active;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
@@ -80,6 +82,23 @@ static uint8_t vmc_fall_prev_fully_fallen;
 #define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f
 #define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f
 #define VMC_MPC_X_INTEGRAL_REVERSE_DECAY 0.995f
+
+enum {
+  VMC_MPC_INTEGRAL_HOLD_NONE = 0U,
+  VMC_MPC_INTEGRAL_HOLD_STICK = 1U,
+  VMC_MPC_INTEGRAL_HOLD_RELEASE = 2U,
+  VMC_MPC_INTEGRAL_HOLD_MANUAL = 3U,
+  VMC_MPC_INTEGRAL_HOLD_GETUP = 4U,
+  VMC_MPC_INTEGRAL_HOLD_STAIR = 5U,
+  VMC_MPC_INTEGRAL_HOLD_JUMP = 6U,
+  VMC_MPC_INTEGRAL_HOLD_AIRBORNE = 7U,
+  VMC_MPC_INTEGRAL_HOLD_FEEDBACK = 8U,
+  VMC_MPC_INTEGRAL_HOLD_FALL_REARM = 9U,
+  VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED = 10U,
+  VMC_MPC_INTEGRAL_HOLD_POSITION = 11U,
+  VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING = 12U,
+  VMC_MPC_INTEGRAL_HOLD_SOLVER = 13U
+};
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
@@ -4541,6 +4560,9 @@ void vmc_balance_init(void)
   vmc_balance.mpc_right_tp_raw = 0.0f;
   vmc_balance.mpc_leg_length = 0.0f;
   vmc_balance.mpc_x_integral = 0.0f;
+  vmc_balance.mpc_integral_awake = 0U;
+  vmc_balance.mpc_integral_hold_reason = VMC_MPC_INTEGRAL_HOLD_NONE;
+  vmc_balance.mpc_integral_saturated = 0U;
   vmc_balance.mpc_left_state_theta = 0.0f;
   vmc_balance.mpc_left_state_dtheta = 0.0f;
   vmc_balance.mpc_left_state_x = 0.0f;
@@ -4564,6 +4586,8 @@ void vmc_balance_init(void)
   }
   vmc_balance.mpc_solve_us = 0U;
   vmc_mpc_x_integral = 0.0f;
+  vmc_mpc_integral_awake = 0U;
+  vmc_mpc_integral_hold_reason = VMC_MPC_INTEGRAL_HOLD_NONE;
   vmc_balance_controller_was_enabled = 0U;
   vmc_mpc_handoff_was_active = 0U;
   vmc_mpc_reset(0U);
@@ -5114,19 +5138,38 @@ void vmc_balance_update(void)
            vmc_fall_rearm_required != 0U)
               ? 1U
               : 0U;
-      const uint8_t integrate_now =
-          (reset_integral == 0U &&
-           fabsf((float)motion->kf_dx) <=
-               VMC_MPC_X_INTEGRAL_SPEED_LIMIT &&
-           fabsf(mpc_x_error) <= VMC_MPC_X_INTEGRAL_POS_LIMIT)
-              ? 1U
-              : 0U;
+      uint8_t hold_reason = VMC_MPC_INTEGRAL_HOLD_NONE;
 
       if (reset_integral != 0U) {
         vmc_mpc_x_integral = 0.0f;
+        if (released_from_speed != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_RELEASE;
+        } else if (stick_speed_active != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_STICK;
+        } else if (vmc_control.manual_prepose_active != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_MANUAL;
+        } else if (vmc_getup_is_active() != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_GETUP;
+        } else if (vmc_stair_is_active() != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_STAIR;
+        } else if (vmc_jump_is_active_or_aborted() != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_JUMP;
+        } else if (vmc_probe_state.airborne_active != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_AIRBORNE;
+        } else if (vmc_probe_state.feedback_timeout_active != 0U) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_FEEDBACK;
+        } else {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_FALL_REARM;
+        }
       } else {
         vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_LEAK;
-        if (integrate_now != 0U) {
+        if (fabsf((float)motion->kf_dx) >
+            VMC_MPC_X_INTEGRAL_SPEED_LIMIT) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED;
+        } else if (fabsf(mpc_x_error) >
+                   VMC_MPC_X_INTEGRAL_POS_LIMIT) {
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_POSITION;
+        } else {
           if (vmc_mpc_x_integral * mpc_x_error < 0.0f) {
             vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_REVERSE_DECAY;
           }
@@ -5137,6 +5180,16 @@ void vmc_balance_update(void)
                           VMC_MPC_X_INTEGRAL_LIMIT);
         }
       }
+      vmc_mpc_integral_awake =
+          (hold_reason == VMC_MPC_INTEGRAL_HOLD_NONE) ? 1U : 0U;
+      vmc_mpc_integral_hold_reason = hold_reason;
+      vmc_balance.mpc_integral_awake = vmc_mpc_integral_awake;
+      vmc_balance.mpc_integral_hold_reason = vmc_mpc_integral_hold_reason;
+      vmc_balance.mpc_integral_saturated =
+          (fabsf(vmc_mpc_x_integral) >=
+           VMC_MPC_X_INTEGRAL_LIMIT - 1.0e-6f)
+              ? 1U
+              : 0U;
     }
     const float left_mpc_state[VMC_MPC_STATE_COUNT] = {
         -(left_lqr_theta_error * left_theta_scale),
@@ -5265,7 +5318,13 @@ void vmc_balance_update(void)
       vmc_balance.mpc_leg_authority_applied = 0.0f;
       vmc_balance.mpc_failure_count++;
       vmc_mpc_x_integral = 0.0f;
+      vmc_mpc_integral_awake = 0U;
+      vmc_mpc_integral_hold_reason = VMC_MPC_INTEGRAL_HOLD_SOLVER;
       vmc_balance.mpc_x_integral = 0.0f;
+      vmc_balance.mpc_integral_awake = 0U;
+      vmc_balance.mpc_integral_hold_reason =
+          VMC_MPC_INTEGRAL_HOLD_SOLVER;
+      vmc_balance.mpc_integral_saturated = 0U;
       vmc_balance.mpc_left_wheel_torque = 0.0f;
       vmc_balance.mpc_right_wheel_torque = 0.0f;
       vmc_balance.mpc_left_tp_command = 0.0f;
@@ -5310,7 +5369,14 @@ void vmc_balance_update(void)
     vmc_balance.mpc_right_tp_raw = 0.0f;
     vmc_balance.mpc_leg_length = 0.0f;
     vmc_mpc_x_integral = 0.0f;
+    vmc_mpc_integral_awake = 0U;
+    vmc_mpc_integral_hold_reason =
+        VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING;
     vmc_balance.mpc_x_integral = 0.0f;
+    vmc_balance.mpc_integral_awake = 0U;
+    vmc_balance.mpc_integral_hold_reason =
+        VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING;
+    vmc_balance.mpc_integral_saturated = 0U;
     vmc_balance.mpc_left_state_theta = 0.0f;
     vmc_balance.mpc_left_state_dtheta = 0.0f;
     vmc_balance.mpc_left_state_x = 0.0f;

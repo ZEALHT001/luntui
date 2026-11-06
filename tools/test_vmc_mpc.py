@@ -164,12 +164,16 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn(
             "#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f", source
         )
-        self.assertIn("integrate_now", source)
         self.assertIn("reset_integral", source)
         self.assertIn("mpc_handoff_requested", source)
         self.assertIn("vmc_balance_controller_was_enabled", source)
         self.assertIn("vmc_mpc_handoff_was_active", source)
         self.assertIn("vmc_balance.x_offset = (float)motion->kf_x;", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_NONE", source)
+        self.assertIn("vmc_mpc_integral_awake =", source)
+        self.assertIn("mpc_integral_saturated", source)
         for signal in (
             "left_lqr_theta_error",
             "left_lqr_d_theta_limited",
@@ -203,7 +207,7 @@ class FirmwareSolverTest(unittest.TestCase):
         )
         self.assertIn("if (rebuild_hessian != 0U)", solver)
         self.assertIn("vmc_mpc_h_factor_valid = 1U;", solver)
-        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 29U", rtt)
+        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)
         for signal in (
             "mpc_leg_length",
             "mpc_left_state_dphi",
@@ -211,6 +215,11 @@ class FirmwareSolverTest(unittest.TestCase):
             "mpc_left_previous_tp",
             "mpc_right_previous_tp",
             "mpc_x_integral",
+            "mpc_integral_awake",
+            "mpc_integral_hold_reason",
+            "mpc_integral_saturated",
+            "x_offset",
+            "x_error",
             "b->mpc_left_plan[plan_index]",
             "b->mpc_right_plan[plan_index]",
         ):

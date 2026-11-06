@@ -76,6 +76,8 @@ TORQUE_CHANNELS = {
     "left_tp_dphi_term": 31,
     "left_tp_raw": 32,
     "left_tp_cmd": 33,
+    "x_offset": 42,
+    "x_error": 43,
     "right_tp_theta_term": 34,
     "right_tp_dtheta_term": 35,
     "right_tp_x_term": 36,
@@ -622,7 +624,7 @@ FORMAT_V31_PROFILE = Profile(
 # (schema 28).
 FORMAT_PROFILE = Profile(
     name="format",
-    field_count=268,
+    field_count=271,
     channels={
         **FORMAT_V31_PROFILE.channels,
         "mpc_left_plan4_wheel": 243,
@@ -650,6 +652,9 @@ FORMAT_PROFILE = Profile(
         "mpc_right_plan9_wheel": 265,
         "mpc_right_plan9_tp": 266,
         "mpc_x_integral": 267,
+        "mpc_integral_awake": 268,
+        "mpc_integral_hold_reason": 269,
+        "mpc_integral_saturated": 270,
     },
 )
 
@@ -1014,6 +1019,11 @@ CSV_FIELDS = [
     "mpc_right_plan9_wheel",
     "mpc_right_plan9_tp",
     "mpc_x_integral",
+    "mpc_integral_awake",
+    "mpc_integral_hold_reason",
+    "mpc_integral_saturated",
+    "x_offset",
+    "x_error",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -1105,6 +1115,8 @@ class KalmanSample:
     speed_target_ramped: float = INVALID_VALUE
     dx_target: float = INVALID_VALUE
     dx_error: float = INVALID_VALUE
+    x_offset: float = INVALID_VALUE
+    x_error: float = INVALID_VALUE
     schema_version: float = INVALID_VALUE
     dist_obs_output: float = INVALID_VALUE
     dist_obs_active: float = INVALID_VALUE
@@ -1224,6 +1236,9 @@ class KalmanSample:
     # objective (schema 26).
     mpc_leg_length: float = INVALID_VALUE
     mpc_x_integral: float = INVALID_VALUE
+    mpc_integral_awake: float = INVALID_VALUE
+    mpc_integral_hold_reason: float = INVALID_VALUE
+    mpc_integral_saturated: float = INVALID_VALUE
     mpc_left_state_theta: float = INVALID_VALUE
     mpc_left_state_dtheta: float = INVALID_VALUE
     mpc_left_state_x: float = INVALID_VALUE
@@ -1597,6 +1612,8 @@ def parse_vmcvoa_line(
         speed_target_ramped=channel("speed_target_ramped"),
         dx_target=channel("dx_target"),
         dx_error=channel("dx_error"),
+        x_offset=channel("x_offset"),
+        x_error=channel("x_error"),
         schema_version=channel("schema_version"),
         dist_obs_output=channel("dist_obs_output"),
         dist_obs_active=channel("dist_obs_active"),
@@ -1698,6 +1715,9 @@ def parse_vmcvoa_line(
         mpc_torque_limit_count=channel("mpc_torque_limit_count"),
         mpc_leg_length=channel("mpc_leg_length"),
         mpc_x_integral=channel("mpc_x_integral"),
+        mpc_integral_awake=channel("mpc_integral_awake"),
+        mpc_integral_hold_reason=channel("mpc_integral_hold_reason"),
+        mpc_integral_saturated=channel("mpc_integral_saturated"),
         mpc_left_state_theta=channel("mpc_left_state_theta"),
         mpc_left_state_dtheta=channel("mpc_left_state_dtheta"),
         mpc_left_state_x=channel("mpc_left_state_x"),
@@ -2631,6 +2651,8 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 dx_target=_safe_float(row.get("dx_target", "")),
                 dx_error=_safe_float(row.get("dx_error", "")),
+                x_offset=_safe_float(row.get("x_offset", "")),
+                x_error=_safe_float(row.get("x_error", "")),
                 schema_version=_safe_float(row.get("schema_version", "")),
                 dist_obs_output=_safe_float(row.get("dist_obs_output", "")),
                 dist_obs_active=_safe_float(row.get("dist_obs_active", "")),
@@ -2810,6 +2832,15 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 mpc_leg_length=_safe_float(row.get("mpc_leg_length", "")),
                 mpc_x_integral=_safe_float(row.get("mpc_x_integral", "")),
+                mpc_integral_awake=_safe_float(
+                    row.get("mpc_integral_awake", "")
+                ),
+                mpc_integral_hold_reason=_safe_float(
+                    row.get("mpc_integral_hold_reason", "")
+                ),
+                mpc_integral_saturated=_safe_float(
+                    row.get("mpc_integral_saturated", "")
+                ),
                 mpc_left_state_theta=_safe_float(
                     row.get("mpc_left_state_theta", "")
                 ),

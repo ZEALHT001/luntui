@@ -14,7 +14,7 @@
 #include <string.h>
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
-#define VMC_LQR_RTT_LINE_MAX     1792U
+#define VMC_LQR_RTT_LINE_MAX     1824U
 #define VMC_LQR_RTT_FAST_LINE_MAX 768U
 #define VMC_LQR_RTT_READ_CHUNK   64U
 #define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 29U
+#define VMC_LQR_RTT_SCHEMA_VERSION 30U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -1951,6 +1951,15 @@ void vmc_lqr_rtt_telemetry_update(void)
   /* VMCVOFA field 267: integral of forward position error used by MPC. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)b->mpc_x_integral);
+  /* VMCVOFA fields 268..270: integral wake/saturation diagnostics. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_integral_awake);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->mpc_integral_hold_reason);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->mpc_integral_saturated);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

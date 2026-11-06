@@ -640,6 +640,26 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(math.isfinite(sample.body_ay_lin_g))
         self.assertFalse(math.isfinite(sample.body_az_lin_g))
 
+    def test_mpc_integral_diagnostics_parse_from_schema_30(self) -> None:
+        fields = format_line(schema_version=30.0).split(",")
+        values = {
+            "x_offset": "0.180",
+            "x_error": "-0.021",
+            "mpc_x_integral": "0.017",
+            "mpc_integral_awake": "1.0",
+            "mpc_integral_hold_reason": "0.0",
+            "mpc_integral_saturated": "0.0",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        for name, value in values.items():
+            self.assertAlmostEqual(getattr(sample, name), float(value))
+
     def test_v14_layout_still_parses(self) -> None:
         """The 141-field layout (schema 10) predates the leg-follow fields."""
         fields = [0.001] * FORMAT_V14_PROFILE.field_count
