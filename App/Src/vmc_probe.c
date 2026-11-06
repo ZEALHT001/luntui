@@ -60,12 +60,18 @@ static uint32_t vmc_last_imu_rx_count;
 static uint32_t vmc_loop_us_last;
 static float vmc_loop_dt_s;
 static uint32_t vmc_loop_deadline_us;
+static double vmc_lqr_gain_cache_length;
+static uint32_t vmc_lqr_gain_cache_age;
+static uint8_t vmc_lqr_gain_cache_valid;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
  * UP to emergency-stop and then DOWN again before control can re-enable. */
 static uint8_t vmc_fall_rearm_required;
 static uint8_t vmc_fall_rearm_armed;
 static uint8_t vmc_fall_monitor_armed;
 static uint8_t vmc_fall_prev_fully_fallen;
+
+#define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02
+#define VMC_LQR_GAIN_REFRESH_CYCLES   45U
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
@@ -4021,6 +4027,7 @@ static void vmc_update_lqr_gain(void)
 
   vmc_probe_state.motion.leg_length_avg = leg_length_avg;
   if (vmc_probe_state.lqr.rtt_override_active != 0U) {
+    vmc_lqr_gain_cache_valid = 0U;
     for (i = 0U; i < 12U; i++) {
       vmc_probe_state.lqr.left_k[i] = vmc_probe_state.lqr.rtt_k[i];
       vmc_probe_state.lqr.right_k[i] = vmc_probe_state.lqr.rtt_k[i];
@@ -4028,8 +4035,21 @@ static void vmc_update_lqr_gain(void)
     return;
   }
 
+  if (vmc_lqr_gain_cache_valid != 0U &&
+      fabs(leg_length_avg - vmc_lqr_gain_cache_length) <=
+          VMC_LQR_GAIN_LENGTH_TOLERANCE &&
+      vmc_lqr_gain_cache_age < VMC_LQR_GAIN_REFRESH_CYCLES) {
+    vmc_lqr_gain_cache_age++;
+    return;
+  }
+
   vmc_lqr_update_gain(leg_length_avg, (double *)vmc_probe_state.lqr.left_k);
-  vmc_lqr_update_gain(leg_length_avg, (double *)vmc_probe_state.lqr.right_k);
+  for (i = 0U; i < 12U; i++) {
+    vmc_probe_state.lqr.right_k[i] = vmc_probe_state.lqr.left_k[i];
+  }
+  vmc_lqr_gain_cache_length = leg_length_avg;
+  vmc_lqr_gain_cache_age = 0U;
+  vmc_lqr_gain_cache_valid = 1U;
 }
 
 static uint8_t vmc_safety_allows_output(void)
@@ -4382,6 +4402,9 @@ void vmc_balance_init(void)
   vmc_speed_dx_prev = 0.0;
   vmc_speed_accel_lpf = 0.0;
   vmc_speed_accel_initialized = 0U;
+  vmc_lqr_gain_cache_valid = 0U;
+  vmc_lqr_gain_cache_age = 0U;
+  vmc_lqr_gain_cache_length = 0.0;
   vmc_balance.yaw_hold_enable = VMC_YAW_HOLD_ENABLE_DEFAULT;
   vmc_balance.yaw_hold_active = 0U;
   vmc_balance.gimbal_follow_enable = VMC_GIMBAL_FOLLOW_ENABLE_DEFAULT;

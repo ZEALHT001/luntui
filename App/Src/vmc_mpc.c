@@ -7,6 +7,7 @@
 #define VMC_MPC_ADMM_ITERATIONS 5U
 #define VMC_MPC_ADMM_RHO        0.20f
 #define VMC_MPC_SOLVER_TOLERANCE 1.0e-3f
+#define VMC_MPC_FACTOR_LEG_LENGTH_TOLERANCE 0.001f
 
 #if defined(__GNUC__) && defined(__arm__)
 #define VMC_MPC_FAST_RAM __attribute__((section(".ccmram")))
@@ -21,8 +22,8 @@ static const float vmc_mpc_delta_weight[VMC_MPC_INPUT_COUNT] = {
 
 static vmc_mpc_axis_state_t vmc_mpc_axis[VMC_MPC_SIDE_COUNT];
 
-/* G and H are interpolated from the Flash schedule once per solve_pair() call.
- * The factor is then shared by both sides. */
+/* G is interpolated every solve.  H and its factor are shared by both sides
+ * and only rebuilt when the average leg length has moved enough to matter. */
 static float
     vmc_mpc_g[VMC_MPC_PREDICTION_STATES][VMC_MPC_DECISION_COUNT]
         VMC_MPC_FAST_RAM;
@@ -30,6 +31,8 @@ static float vmc_mpc_base_left[VMC_MPC_PREDICTION_STATES] VMC_MPC_FAST_RAM;
 static float vmc_mpc_base_right[VMC_MPC_PREDICTION_STATES] VMC_MPC_FAST_RAM;
 static float vmc_mpc_h_factor[VMC_MPC_DECISION_COUNT]
                             [VMC_MPC_DECISION_COUNT] VMC_MPC_FAST_RAM;
+static float vmc_mpc_h_factor_leg_length;
+static uint8_t vmc_mpc_h_factor_valid;
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -48,7 +51,8 @@ static void interpolate_model(
     float b[VMC_MPC_STATE_COUNT][VMC_MPC_INPUT_COUNT],
     float terminal_cost[VMC_MPC_STATE_COUNT][VMC_MPC_STATE_COUNT],
     float g[VMC_MPC_PREDICTION_STATES][VMC_MPC_DECISION_COUNT],
-    float hessian[VMC_MPC_DECISION_COUNT][VMC_MPC_DECISION_COUNT])
+    float hessian[VMC_MPC_DECISION_COUNT][VMC_MPC_DECISION_COUNT],
+    uint8_t rebuild_hessian)
 {
   uint32_t upper = 1U;
   float fraction;
@@ -100,11 +104,13 @@ static void interpolate_model(
           fraction * (hi->g[row][column] - lo->g[row][column]);
     }
   }
-  for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
-    for (column = 0U; column < VMC_MPC_DECISION_COUNT; column++) {
-      hessian[row][column] =
-          lo->hessian[row][column] +
-          fraction * (hi->hessian[row][column] - lo->hessian[row][column]);
+  if (rebuild_hessian != 0U) {
+    for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
+      for (column = 0U; column < VMC_MPC_DECISION_COUNT; column++) {
+        hessian[row][column] =
+            lo->hessian[row][column] +
+            fraction * (hi->hessian[row][column] - lo->hessian[row][column]);
+      }
     }
   }
 }
@@ -463,6 +469,7 @@ uint8_t vmc_mpc_solve_pair(
   float left_solution[VMC_MPC_DECISION_COUNT];
   float right_solution[VMC_MPC_DECISION_COUNT];
   uint32_t state_index;
+  uint8_t rebuild_hessian;
   uint8_t left_valid;
   uint8_t right_valid;
 
@@ -472,6 +479,9 @@ uint8_t vmc_mpc_solve_pair(
   }
   memset(left_output, 0, sizeof(*left_output));
   memset(right_output, 0, sizeof(*right_output));
+  if (!isfinite(leg_length)) {
+    return 0U;
+  }
   for (state_index = 0U; state_index < VMC_MPC_STATE_COUNT;
        state_index++) {
     if (!isfinite(left_state[state_index]) ||
@@ -480,14 +490,25 @@ uint8_t vmc_mpc_solve_pair(
     }
   }
 
+  rebuild_hessian =
+      (vmc_mpc_h_factor_valid == 0U ||
+       fabsf(leg_length - vmc_mpc_h_factor_leg_length) >
+           VMC_MPC_FACTOR_LEG_LENGTH_TOLERANCE)
+          ? 1U
+          : 0U;
   interpolate_model(leg_length, a, b, terminal_cost, vmc_mpc_g,
-                    vmc_mpc_h_factor);
+                    vmc_mpc_h_factor, rebuild_hessian);
   build_base_predictions(a, left_state, right_state);
-  add_admm_regularization();
-  if (factor_hessian() == 0U) {
-    vmc_mpc_axis[0].failure_count++;
-    vmc_mpc_axis[1].failure_count++;
-    return 0U;
+  if (rebuild_hessian != 0U) {
+    add_admm_regularization();
+    if (factor_hessian() == 0U) {
+      vmc_mpc_h_factor_valid = 0U;
+      vmc_mpc_axis[0].failure_count++;
+      vmc_mpc_axis[1].failure_count++;
+      return 0U;
+    }
+    vmc_mpc_h_factor_leg_length = leg_length;
+    vmc_mpc_h_factor_valid = 1U;
   }
 
   build_rhs(vmc_mpc_base_left, vmc_mpc_axis[0].u_prev, f, terminal_cost);

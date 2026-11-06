@@ -77,6 +77,23 @@ int main(void)
   }
 
   {
+    /* Reusing the cached Hessian factor must stay valid while the leg length
+     * moves inside the tolerance, and must rebuild cleanly across it. */
+    const float leg_lengths[3] = {0.28f, 0.2805f, 0.30f};
+    uint32_t index;
+
+    vmc_mpc_reset(0U);
+    vmc_mpc_prime(0U, 0.0f, 0.0f);
+    for (index = 0U; index < 3U; index++) {
+      check(vmc_mpc_solve(0U, leg_lengths[index], forward_state, &limits,
+                          &output) != 0U,
+            "leg-length factor-cache solve failed");
+      check(output.valid != 0U && isfinite(output.wheel_torque),
+            "leg-length factor-cache output was invalid");
+    }
+  }
+
+  {
     const vmc_mpc_model_point_t *model = &vmc_mpc_model_points[4];
     float state[VMC_MPC_STATE_COUNT] = {0.0f, 0.0f, 0.02f, 0.0f, 0.0f, 0.0f};
     float tail_min = state[2];

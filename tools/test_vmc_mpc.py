@@ -155,6 +155,9 @@ class FirmwareSolverTest(unittest.TestCase):
             "vmc_probe_state.motion.kf_x + x0 * dt", source
         )
         self.assertIn("if (acceleration_valid != 0U)", source)
+        self.assertIn("#define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02", source)
+        self.assertIn("#define VMC_LQR_GAIN_REFRESH_CYCLES   45U", source)
+        self.assertIn("vmc_lqr_gain_cache_valid = 0U;", source)
         for signal in (
             "left_lqr_theta_error",
             "left_lqr_d_theta_limited",
@@ -179,6 +182,15 @@ class FirmwareSolverTest(unittest.TestCase):
         rtt = (ROOT / "App" / "Src" / "vmc_lqr_rtt.c").read_text(
             encoding="utf-8"
         )
+        solver = (ROOT / "App" / "Src" / "vmc_mpc.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "#define VMC_MPC_FACTOR_LEG_LENGTH_TOLERANCE 0.001f",
+            solver,
+        )
+        self.assertIn("if (rebuild_hessian != 0U)", solver)
+        self.assertIn("vmc_mpc_h_factor_valid = 1U;", solver)
         self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 28U", rtt)
         for signal in (
             "mpc_leg_length",
