@@ -155,7 +155,7 @@ class FirmwareSolverTest(unittest.TestCase):
             "vmc_probe_state.motion.kf_x + x0 * dt", source
         )
         self.assertIn("if (acceleration_valid != 0U)", source)
-        self.assertIn("#define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02", source)
+        self.assertIn("#define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02f", source)
         self.assertIn("#define VMC_LQR_GAIN_REFRESH_CYCLES   45U", source)
         self.assertIn("vmc_lqr_gain_cache_valid = 0U;", source)
         for signal in (

@@ -383,22 +383,22 @@ def emit_c(coeffs: np.ndarray) -> str:
     lines = [
         '#include "vmc_lqr.h"',
         "",
-        "static double vmc_lqr_pow3(double x)",
+        "static float vmc_lqr_pow3(float x)",
         "{",
         "  return x * x * x;",
         "}",
         "",
-        "void vmc_lqr_update_gain(double leg_length, double k[12])",
+        "void vmc_lqr_update_gain(float leg_length, float k[12])",
         "{",
-        "  double L_0 = leg_length;",
-        "  double t2 = L_0 * L_0;",
-        "  double t3 = vmc_lqr_pow3(L_0);",
+        "  float L_0 = leg_length;",
+        "  float t2 = L_0 * L_0;",
+        "  float t3 = vmc_lqr_pow3(L_0);",
         "",
     ]
     for i, c in enumerate(coeffs):
         lines.append(
-            f"  k[{i}] = ((L_0 * {c[2]:.17g} + t2 * {c[1]:.17g}) + "
-            f"t3 * {c[0]:.17g}) + {c[3]:.17g};"
+            f"  k[{i}] = ((L_0 * {c[2]:.17g}f + t2 * {c[1]:.17g}f) + "
+            f"t3 * {c[0]:.17g}f) + {c[3]:.17g}f;"
         )
     lines.extend(["}", ""])
     return "\n".join(lines)

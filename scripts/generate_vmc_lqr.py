@@ -100,11 +100,11 @@ def c_expr(coeff: Iterable[float], variable: str = "L_0") -> str:
     for idx, value in enumerate(coeff):
         power = degree - idx
         if power == 0:
-            term = f"{value:.17g}"
+            term = f"{value:.17g}f"
         elif power == 1:
-            term = f"({value:.17g} * {variable})"
+            term = f"({value:.17g}f * {variable})"
         else:
-            term = f"({value:.17g} * pow_{power})"
+            term = f"({value:.17g}f * pow_{power})"
         terms.append(term)
     return " + ".join(terms)
 
@@ -114,16 +114,16 @@ def emit_c(coeffs: np.ndarray, header_name: str) -> str:
     lines = [
         f'#include "{header_name}"',
         "",
-        "void vmc_lqr_update_gain(double leg_length, double k[12])",
+        "void vmc_lqr_update_gain(float leg_length, float k[12])",
         "{",
-        "  double L_0 = leg_length;",
+        "  float L_0 = leg_length;",
     ]
 
     for power in range(2, degree + 1):
         if power == 2:
-            lines.append("  double pow_2 = L_0 * L_0;")
+            lines.append("  float pow_2 = L_0 * L_0;")
         else:
-            lines.append(f"  double pow_{power} = pow_{power - 1} * L_0;")
+            lines.append(f"  float pow_{power} = pow_{power - 1} * L_0;")
 
     lines.append("")
 

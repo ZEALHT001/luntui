@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-void vmc_lqr_update_gain(double leg_length, double k[12]);
+void vmc_lqr_update_gain(float leg_length, float k[12]);
 
 #ifdef __cplusplus
 }

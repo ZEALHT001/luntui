@@ -161,9 +161,9 @@ class ApplicationTest(unittest.TestCase):
 
     def test_scale_is_bounded(self) -> None:
         """A malformed runtime value must not be able to blow up the gains."""
-        _has(self.body, "clamp_double(vmc_balance.slip_lqr_theta_scale, 0.0, 10.0)",
+        _has(self.body, "clamp_float(vmc_balance.slip_lqr_theta_scale, 0.0f, 10.0f)",
              "the angle scale is not clamped")
-        _has(self.body, "clamp_double(vmc_balance.slip_lqr_dtheta_scale, 0.0, 10.0)",
+        _has(self.body, "clamp_float(vmc_balance.slip_lqr_dtheta_scale, 0.0f, 10.0f)",
              "the rate scale is not clamped")
 
     def test_disabled_and_while_jumping_is_inert(self) -> None:

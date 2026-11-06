@@ -173,9 +173,9 @@ static void vmc_lqr_rtt_apply_k(const double k[12])
   uint8_t i;
 
   for (i = 0U; i < 12U; i++) {
-    vmc_probe_state.lqr.rtt_k[i] = k[i];
-    vmc_probe_state.lqr.left_k[i] = k[i];
-    vmc_probe_state.lqr.right_k[i] = k[i];
+    vmc_probe_state.lqr.rtt_k[i] = (float)k[i];
+    vmc_probe_state.lqr.left_k[i] = (float)k[i];
+    vmc_probe_state.lqr.right_k[i] = (float)k[i];
   }
 
   vmc_probe_state.lqr.rtt_override_active = 1U;

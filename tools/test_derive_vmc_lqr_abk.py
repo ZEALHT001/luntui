@@ -31,8 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LQR_C = ROOT / "App" / "Src" / "vmc_lqr.c"
 
 _K_LINE = re.compile(
-    r"\s*k\[(\d+)\] = \(\(L_0 \* ([-\d.eE+]+) \+ t2 \* ([-\d.eE+]+)\)"
-    r" \+ t3 \* ([-\d.eE+]+)\) \+ ([-\d.eE+]+);"
+    r"\s*k\[(\d+)\] = \(\(L_0 \* ([-\d.eE+]+)f \+ "
+    r"t2 \* ([-\d.eE+]+)f\) \+ t3 \* ([-\d.eE+]+)f\)"
+    r" \+ ([-\d.eE+]+)f;"
 )
 
 
@@ -172,6 +173,9 @@ class GeneratedScheduleTests(unittest.TestCase):
 
     def test_shipped_schedule_regenerates_exactly(self) -> None:
         source = LQR_C.read_text(encoding="utf-8")
+        self.assertIn(
+            "void vmc_lqr_update_gain(float leg_length, float k[12])", source
+        )
         match = re.search(
             r"VMC_LQR_TUNER_Q\s*[:=]\s*\[([^\]]*)\]", source, re.IGNORECASE
         )
