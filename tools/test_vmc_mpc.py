@@ -178,7 +178,28 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_RETURNING_TO_ANCHOR", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION_DEADBAND", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_NONE", source)
+        self.assertIn("VMC_MPC_AUTHORITY_FULL_EPSILON 0.001f", source)
+        self.assertIn(
+            "VMC_MPC_X_INTEGRAL_POSITION_DEADBAND 0.01f", source
+        )
+        self.assertIn("VMC_MPC_X_INTEGRAL_FAST_DECAY 0.99f", source)
+        self.assertIn(
+            "mpc_x_error * mpc_dx_error < 0.0f", source
+        )
+        self.assertIn("const uint8_t authority_ramping =", source)
+        self.assertIn(
+            "hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP", source
+        )
+        self.assertIn(
+            "vmc_balance.mpc_wheel_authority_applied <", source
+        )
+        self.assertIn(
+            "1.0f - VMC_MPC_AUTHORITY_FULL_EPSILON", source
+        )
         self.assertIn("vmc_mpc_integral_awake =", source)
         self.assertIn("mpc_integral_saturated", source)
         for signal in (

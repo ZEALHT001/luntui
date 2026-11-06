@@ -83,7 +83,9 @@ static uint8_t vmc_fall_prev_fully_fallen;
 #define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f
 #define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.25f
 #define VMC_MPC_X_INTEGRAL_LOW_SPEED_MS 1000U
-#define VMC_MPC_X_INTEGRAL_REVERSE_DECAY 0.995f
+#define VMC_MPC_X_INTEGRAL_POSITION_DEADBAND 0.01f
+#define VMC_MPC_X_INTEGRAL_FAST_DECAY 0.99f
+#define VMC_MPC_AUTHORITY_FULL_EPSILON 0.001f
 
 enum {
   VMC_MPC_INTEGRAL_HOLD_NONE = 0U,
@@ -100,7 +102,10 @@ enum {
   VMC_MPC_INTEGRAL_HOLD_POSITION = 11U,
   VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING = 12U,
   VMC_MPC_INTEGRAL_HOLD_SOLVER = 13U,
-  VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE = 14U
+  VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE = 14U,
+  VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP = 15U,
+  VMC_MPC_INTEGRAL_HOLD_RETURNING_TO_ANCHOR = 16U,
+  VMC_MPC_INTEGRAL_HOLD_POSITION_DEADBAND = 17U
 };
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
@@ -4733,7 +4738,9 @@ void vmc_balance_update(void)
   double pitch_target = pitch_target_base;
   double phi_error_raw;
   if (vmc_balance.disturbance_observer_enable != 0U &&
-      vmc_balance.mpc_enable == 0U &&
+      (vmc_balance.mpc_enable == 0U ||
+       vmc_balance.mpc_wheel_authority_applied <
+           1.0f - VMC_MPC_AUTHORITY_FULL_EPSILON) &&
       vmc_balance.speed_control_enable != 0U &&
       vmc_control.enabled != 0U &&
       vmc_control.manual_prepose_active == 0U &&
@@ -5169,8 +5176,20 @@ void vmc_balance_update(void)
       } else {
         const uint32_t dt_ms = (uint32_t)clamp_float(
             (float)vmc_loop_dt() * 1000.0f, 1.0f, 100.0f);
+        const uint8_t authority_ramping =
+            (fabsf(mpc_wheel_authority_target -
+                   vmc_balance.mpc_wheel_authority_applied) >
+                 VMC_MPC_AUTHORITY_FULL_EPSILON ||
+             fabsf(mpc_leg_authority_target -
+                   vmc_balance.mpc_leg_authority_applied) >
+                 VMC_MPC_AUTHORITY_FULL_EPSILON)
+                ? 1U
+                : 0U;
 
-        if (fabsf((float)motion->kf_dx) >
+        if (authority_ramping != 0U) {
+          vmc_mpc_integral_low_speed_ms = 0U;
+          hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP;
+        } else if (fabsf((float)motion->kf_dx) >
             VMC_MPC_X_INTEGRAL_SPEED_LIMIT) {
           vmc_mpc_integral_low_speed_ms = 0U;
           hold_reason = VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED;
@@ -5184,12 +5203,19 @@ void vmc_balance_update(void)
                      VMC_MPC_X_INTEGRAL_POS_LIMIT) {
             vmc_mpc_x_integral = 0.0f;
             hold_reason = VMC_MPC_INTEGRAL_HOLD_POSITION;
+          } else if (fabsf(mpc_x_error) <=
+                     VMC_MPC_X_INTEGRAL_POSITION_DEADBAND) {
+            hold_reason = VMC_MPC_INTEGRAL_HOLD_POSITION_DEADBAND;
+          } else if (mpc_x_error * mpc_dx_error < 0.0f) {
+            hold_reason = VMC_MPC_INTEGRAL_HOLD_RETURNING_TO_ANCHOR;
           }
         }
 
         vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_LEAK;
-        if (vmc_mpc_x_integral * mpc_x_error < 0.0f) {
-          vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_REVERSE_DECAY;
+        if (hold_reason == VMC_MPC_INTEGRAL_HOLD_RETURNING_TO_ANCHOR ||
+            hold_reason == VMC_MPC_INTEGRAL_HOLD_POSITION_DEADBAND ||
+            vmc_mpc_x_integral * mpc_x_error < 0.0f) {
+          vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_FAST_DECAY;
         }
         if (hold_reason == VMC_MPC_INTEGRAL_HOLD_NONE) {
           vmc_mpc_x_integral += mpc_x_error * (float)vmc_loop_dt();
