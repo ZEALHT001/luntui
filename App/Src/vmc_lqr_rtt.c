@@ -14,7 +14,7 @@
 #include <string.h>
 
 #define VMC_LQR_RTT_BUFFER_INDEX 0U
-#define VMC_LQR_RTT_LINE_MAX     1536U
+#define VMC_LQR_RTT_LINE_MAX     1792U
 #define VMC_LQR_RTT_FAST_LINE_MAX 768U
 #define VMC_LQR_RTT_READ_CHUNK   64U
 #define VMC_LQR_RTT_TELEM_PERIOD_MS 20U
@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 22U
+#define VMC_LQR_RTT_SCHEMA_VERSION 28U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -476,6 +476,38 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   if (vmc_lqr_rtt_parse_named_float(line, "disturbance_observer_theta_gain", &value) != 0U) {
     vmc_balance.disturbance_observer_theta_gain =
         vmc_lqr_rtt_clamp_float(value, -2.0f, 2.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_enable", &value) != 0U) {
+    vmc_balance.mpc_enable = (value > 0.5f) ? 1U : 0U;
+    if (vmc_balance.mpc_enable == 0U) {
+      vmc_balance.mpc_active = 0U;
+    }
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_shadow_enable", &value) != 0U) {
+    vmc_balance.mpc_shadow_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "compute_only_enable", &value) != 0U) {
+    vmc_control.compute_only = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_wheel_authority", &value) !=
+      0U) {
+    vmc_balance.mpc_wheel_authority =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_leg_authority", &value) != 0U) {
+    vmc_balance.mpc_leg_authority =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_authority_ramp_rate", &value) !=
+      0U) {
+    vmc_balance.mpc_authority_ramp_rate =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
@@ -1808,6 +1840,113 @@ void vmc_lqr_rtt_telemetry_update(void)
   for (uint8_t reserved = 0U; reserved < 10U; reserved++) {
     offset = vmc_lqr_rtt_append_scaled(
         line, offset, (int)sizeof(line), 0.0);
+  }
+
+  /* VMCVOFA fields 187..199: incremental-MPC diagnostics.  These are appended
+   * after the legacy layout so every pre-MPC recorder keeps its field indices. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_enable);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_active);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_failure_count);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_saturation_count);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_wheel_torque);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_wheel_torque);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_tp_command);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_tp_command);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_wheel_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_wheel_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_tp_delta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_tp_delta);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_solve_us);
+  /* VMCVOFA fields 200..201: bench mode and controller enable. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.compute_only);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_control.enabled);
+  /* VMCVOFA fields 202..209: MPC authority, raw QP output and saturation
+   * diagnostics. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->mpc_wheel_authority_applied);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)b->mpc_leg_authority_applied);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_wheel_raw);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_wheel_raw);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_tp_raw);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_tp_raw);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_rate_limit_count);
+  offset = vmc_lqr_rtt_append_u32(
+      line, offset, (int)sizeof(line), b->mpc_torque_limit_count);
+  /* VMCVOFA fields 210..226: exact MPC inputs.  These are the values handed
+   * to the QP, not reconstructed from the LQR torque terms.  u_prev is
+   * published in the public T/Tp sign convention so an offline replay can
+   * reproduce the incremental objective without translating internal signs. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_leg_length);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_theta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_dtheta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_x);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_dx);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_phi);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_state_dphi);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_theta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_dtheta);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_x);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_dx);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_phi);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_state_dphi);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_previous_wheel);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_left_previous_tp);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_previous_wheel);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->mpc_right_previous_tp);
+  /* VMCVOFA fields 227..266: the exact warm-start plans supplied to each QP,
+   * in public T/Tp sign convention.  With the six-dimensional state and
+   * u_prev, these make the five fixed ADMM iterations reproducible offline. */
+  for (uint32_t plan_index = 0U;
+       plan_index < VMC_MPC_DECISION_COUNT; plan_index++) {
+    offset = vmc_lqr_rtt_append_scaled(
+        line, offset, (int)sizeof(line),
+        (double)b->mpc_left_plan[plan_index]);
+  }
+  for (uint32_t plan_index = 0U;
+       plan_index < VMC_MPC_DECISION_COUNT; plan_index++) {
+    offset = vmc_lqr_rtt_append_scaled(
+        line, offset, (int)sizeof(line),
+        (double)b->mpc_right_plan[plan_index]);
   }
 
   if (offset < ((int)sizeof(line) - 2)) {

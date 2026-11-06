@@ -20,6 +20,9 @@ from tools.rtt_kalman_capture import (
     FORMAT_V15_PROFILE,
     FORMAT_V16_PROFILE,
     FORMAT_V18_PROFILE,
+    FORMAT_V29_PROFILE,
+    FORMAT_V30_PROFILE,
+    FORMAT_V31_PROFILE,
     KalmanSample,
     analyze_samples,
     analyze_continuity,
@@ -44,7 +47,7 @@ def format_line(**updates: float) -> str:
     fields[FORMAT_PROFILE.channels["r_wheel"]] = updates.get("r_wheel", 100.0)
     fields[FORMAT_PROFILE.channels["r_imu"]] = updates.get("r_imu", 1.0e12)
     fields[FORMAT_PROFILE.channels["schema_version"]] = updates.get(
-        "schema_version", 3.0
+        "schema_version", 28.0
     )
     fields[FORMAT_PROFILE.channels["mcu_time_ms"]] = updates.get(
         "mcu_time_ms", 1000.0
@@ -146,6 +149,172 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(sample.kf_wheel_measurement, 0.25)
         self.assertAlmostEqual(sample.kf_innovation_v, 0.05)
         self.assertAlmostEqual(sample.gravity_sign, 1.0)
+
+    def test_mpc_diagnostics_parse_from_schema_25(self) -> None:
+        fields = format_line(schema_version=25.0).split(",")
+        values = {
+            "mpc_enable": "1",
+            "mpc_active": "1",
+            "mpc_failure_count": "2",
+            "mpc_saturation_count": "3",
+            "mpc_left_wheel_torque": "-1.25",
+            "mpc_right_wheel_torque": "1.75",
+            "mpc_left_tp_command": "-12.5",
+            "mpc_right_tp_command": "18.0",
+            "mpc_left_wheel_delta": "-0.2",
+            "mpc_right_wheel_delta": "0.1",
+            "mpc_left_tp_delta": "-2.0",
+            "mpc_right_tp_delta": "1.0",
+            "mpc_solve_us": "340",
+            "compute_only": "1",
+            "control_enabled": "1",
+            "mpc_wheel_authority_applied": "0.0",
+            "mpc_leg_authority_applied": "1.0",
+            "mpc_left_wheel_raw": "5.4",
+            "mpc_right_wheel_raw": "-4.2",
+            "mpc_left_tp_raw": "14.0",
+            "mpc_right_tp_raw": "13.0",
+            "mpc_rate_limit_count": "4",
+            "mpc_torque_limit_count": "2",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        self.assertAlmostEqual(sample.mpc_enable, 1.0)
+        self.assertAlmostEqual(sample.mpc_active, 1.0)
+        self.assertAlmostEqual(sample.mpc_failure_count, 2.0)
+        self.assertAlmostEqual(sample.mpc_saturation_count, 3.0)
+        self.assertAlmostEqual(sample.mpc_left_wheel_torque, -1.25)
+        self.assertAlmostEqual(sample.mpc_right_wheel_torque, 1.75)
+        self.assertAlmostEqual(sample.mpc_left_tp_command, -12.5)
+        self.assertAlmostEqual(sample.mpc_right_tp_command, 18.0)
+        self.assertAlmostEqual(sample.mpc_left_wheel_delta, -0.2)
+        self.assertAlmostEqual(sample.mpc_right_wheel_delta, 0.1)
+        self.assertAlmostEqual(sample.mpc_left_tp_delta, -2.0)
+        self.assertAlmostEqual(sample.mpc_right_tp_delta, 1.0)
+        self.assertAlmostEqual(sample.mpc_solve_us, 340.0)
+        self.assertAlmostEqual(sample.compute_only, 1.0)
+        self.assertAlmostEqual(sample.control_enabled, 1.0)
+        self.assertAlmostEqual(sample.mpc_wheel_authority_applied, 0.0)
+        self.assertAlmostEqual(sample.mpc_leg_authority_applied, 1.0)
+        self.assertAlmostEqual(sample.mpc_left_wheel_raw, 5.4)
+        self.assertAlmostEqual(sample.mpc_right_wheel_raw, -4.2)
+        self.assertAlmostEqual(sample.mpc_left_tp_raw, 14.0)
+        self.assertAlmostEqual(sample.mpc_right_tp_raw, 13.0)
+        self.assertAlmostEqual(sample.mpc_rate_limit_count, 4.0)
+        self.assertAlmostEqual(sample.mpc_torque_limit_count, 2.0)
+
+    def test_mpc_state_and_previous_inputs_parse_from_schema_26(self) -> None:
+        fields = format_line(schema_version=26.0).split(",")
+        values = {
+            "mpc_leg_length": "0.281",
+            "mpc_left_state_theta": "0.1",
+            "mpc_left_state_dtheta": "-0.2",
+            "mpc_left_state_x": "0.3",
+            "mpc_left_state_dx": "-0.4",
+            "mpc_left_state_phi": "0.5",
+            "mpc_left_state_dphi": "-0.6",
+            "mpc_right_state_theta": "0.7",
+            "mpc_right_state_dtheta": "-0.8",
+            "mpc_right_state_x": "0.9",
+            "mpc_right_state_dx": "-1.0",
+            "mpc_right_state_phi": "1.1",
+            "mpc_right_state_dphi": "-1.2",
+            "mpc_left_previous_wheel": "1.3",
+            "mpc_left_previous_tp": "-1.4",
+            "mpc_right_previous_wheel": "1.5",
+            "mpc_right_previous_tp": "-1.6",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        for name, value in values.items():
+            self.assertAlmostEqual(getattr(sample, name), float(value))
+
+    def test_schema_25_layout_still_parses(self) -> None:
+        fields = [0.001] * FORMAT_V29_PROFILE.field_count
+        fields[FORMAT_V29_PROFILE.channels["schema_version"]] = 25.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v29")
+        self.assertAlmostEqual(sample.schema_version, 25.0)
+        self.assertFalse(math.isfinite(sample.mpc_left_state_theta))
+
+    def test_qp_warm_start_plan_parses_from_schema_27(self) -> None:
+        fields = format_line(schema_version=27.0).split(",")
+        values = {
+            "mpc_left_plan0_wheel": "0.1",
+            "mpc_left_plan0_tp": "-0.2",
+            "mpc_left_plan1_wheel": "0.3",
+            "mpc_left_plan1_tp": "-0.4",
+            "mpc_left_plan2_wheel": "0.5",
+            "mpc_left_plan2_tp": "-0.6",
+            "mpc_left_plan3_wheel": "0.7",
+            "mpc_left_plan3_tp": "-0.8",
+            "mpc_right_plan0_wheel": "0.9",
+            "mpc_right_plan0_tp": "-1.0",
+            "mpc_right_plan1_wheel": "1.1",
+            "mpc_right_plan1_tp": "-1.2",
+            "mpc_right_plan2_wheel": "1.3",
+            "mpc_right_plan2_tp": "-1.4",
+            "mpc_right_plan3_wheel": "1.5",
+            "mpc_right_plan3_tp": "-1.6",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        for name, value in values.items():
+            self.assertAlmostEqual(getattr(sample, name), float(value))
+
+    def test_schema_26_layout_still_parses(self) -> None:
+        fields = [0.001] * FORMAT_V30_PROFILE.field_count
+        fields[FORMAT_V30_PROFILE.channels["schema_version"]] = 26.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v30")
+        self.assertAlmostEqual(sample.schema_version, 26.0)
+        self.assertFalse(math.isfinite(sample.mpc_left_plan0_wheel))
+
+    def test_schema_27_layout_still_parses(self) -> None:
+        fields = [0.001] * FORMAT_V31_PROFILE.field_count
+        fields[FORMAT_V31_PROFILE.channels["schema_version"]] = 27.0
+        parsed = parse_vmcvoa_line("VMCVOFA," + ",".join(map(str, fields)))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format-v31")
+        self.assertAlmostEqual(sample.schema_version, 27.0)
+        self.assertFalse(math.isfinite(sample.mpc_left_plan4_wheel))
+
+    def test_extended_plan_parses_from_schema_28(self) -> None:
+        fields = format_line(schema_version=28.0).split(",")
+        values = {
+            "mpc_left_plan4_wheel": "0.41",
+            "mpc_left_plan9_tp": "-9.2",
+            "mpc_right_plan4_tp": "4.3",
+            "mpc_right_plan9_wheel": "-0.94",
+        }
+        for name, value in values.items():
+            fields[1 + FORMAT_PROFILE.channels[name]] = value
+        parsed = parse_vmcvoa_line(",".join(fields))
+        self.assertIsNotNone(parsed)
+        profile, sample = parsed  # type: ignore[misc]
+        self.assertEqual(profile.name, "format")
+        for name, value in values.items():
+            self.assertAlmostEqual(getattr(sample, name), float(value))
 
     def test_previous_format_layout_still_parses(self) -> None:
         """The 106-field layout predates gravity_sign and must keep working."""

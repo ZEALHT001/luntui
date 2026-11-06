@@ -52,9 +52,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/hi12_imu.c
     App/Src/tf02_pro.c
     App/Src/vmc_lqr.c
+    App/Src/vmc_mpc.c
+    App/Src/vmc_mpc_model.c
     App/Src/vmc_lqr_rtt.c
     Drivers/RTT/SEGGER_RTT.c
 )
+
+# Keep the fixed-size MPC solver's dense loops out of the size-optimised build.
+set_source_files_properties(App/Src/vmc_mpc.c
+    PROPERTIES COMPILE_OPTIONS "-O3")
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

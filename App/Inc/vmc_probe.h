@@ -3,6 +3,7 @@
 
 #include "can.h"
 #include "cmsis_os.h"
+#include "vmc_mpc.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -643,6 +644,20 @@ extern "C" {
  * Threshold and confirmation are a pair; do not move one without re-running
  * tools/slip_analyze.py --sweep. */
 #define VMC_BODY_MOTION_KF_SLIP_CONFIRM_MS_DEFAULT 5U
+
+/* MPC is available at runtime but dormant at boot.  Keep the verified stable2
+ * LQR path bit-for-bit in command until shadow performance and output
+ * alignment have been validated on this firmware. */
+#define VMC_MPC_SHADOW_ENABLE_DEFAULT   0U
+#define VMC_MPC_ENABLE_DEFAULT          0U
+#define VMC_MPC_WHEEL_DELTA_MAX_DEFAULT 0.20f
+#define VMC_MPC_LEG_DELTA_MAX_DEFAULT   2.00f
+#define VMC_MPC_WHEEL_AUTHORITY_DEFAULT 0.0f
+#define VMC_MPC_LEG_AUTHORITY_DEFAULT   0.0f
+#define VMC_MPC_AUTHORITY_RAMP_RATE_DEFAULT 0.5f
+/* Boot with the verified LQR actuator path enabled.  Bench timing can still
+ * force every final command to zero through compute_only_enable at runtime. */
+#define VMC_COMPUTE_ONLY_DEFAULT        0U
 /* Slip LQR weight switching.
  *
  * The reference this comes from is the Nanhang sentry wheel-leg firmware
@@ -1199,6 +1214,7 @@ typedef struct {
 
 typedef struct {
   uint8_t enabled;
+  uint8_t compute_only;
   float target_length;
   uint8_t jump_enable;
   uint8_t jump_moving_enable;
@@ -1503,6 +1519,51 @@ typedef struct {
   float kalman_slip_yaw;
   uint32_t kalman_slip_hold_ms;
   uint32_t kalman_slip_confirm_ms;
+  uint8_t mpc_enable;
+  uint8_t mpc_active;
+  uint8_t mpc_shadow_enable;
+  uint8_t mpc_shadow_active;
+  uint32_t mpc_failure_count;
+  uint32_t mpc_saturation_count;
+  uint32_t mpc_rate_limit_count;
+  uint32_t mpc_torque_limit_count;
+  float mpc_wheel_authority;
+  float mpc_leg_authority;
+  float mpc_wheel_authority_applied;
+  float mpc_leg_authority_applied;
+  float mpc_authority_ramp_rate;
+  float mpc_left_wheel_torque;
+  float mpc_right_wheel_torque;
+  float mpc_left_tp_command;
+  float mpc_right_tp_command;
+  float mpc_left_wheel_delta;
+  float mpc_right_wheel_delta;
+  float mpc_left_tp_delta;
+  float mpc_right_tp_delta;
+  float mpc_left_wheel_raw;
+  float mpc_right_wheel_raw;
+  float mpc_left_tp_raw;
+  float mpc_right_tp_raw;
+  float mpc_leg_length;
+  float mpc_left_state_theta;
+  float mpc_left_state_dtheta;
+  float mpc_left_state_x;
+  float mpc_left_state_dx;
+  float mpc_left_state_phi;
+  float mpc_left_state_dphi;
+  float mpc_right_state_theta;
+  float mpc_right_state_dtheta;
+  float mpc_right_state_x;
+  float mpc_right_state_dx;
+  float mpc_right_state_phi;
+  float mpc_right_state_dphi;
+  float mpc_left_previous_wheel;
+  float mpc_left_previous_tp;
+  float mpc_right_previous_wheel;
+  float mpc_right_previous_tp;
+  float mpc_left_plan[VMC_MPC_DECISION_COUNT];
+  float mpc_right_plan[VMC_MPC_DECISION_COUNT];
+  uint32_t mpc_solve_us;
   /* Slip LQR weight switching.  While one side's slip latch is set, that
    * side's leg-angle feedback is scaled up so the posture term dominates the
    * control output instead of the (unreliable) wheel/velocity terms.  See

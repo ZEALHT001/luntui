@@ -16,6 +16,32 @@ The model already includes the drivetrain relationship used by the firmware
 gain schedule. The tuner therefore applies the LQR wheel input directly and
 must not multiply it by the gearbox ratio or efficiency again.
 
+## Incremental MPC
+
+The controller selector on the balance page exposes `mpc_enable` and
+`mpc_shadow_enable`.  At boot both are `0` so the machine starts on the verified
+stable2 LQR path without extra solver load.  Set `mpc_shadow_enable=1` only
+after LQR behaviour has been checked; the solver then runs and publishes its
+candidate wheel/leg torques every cycle while LQR remains the command source.
+After solve time and output alignment have been validated, `mpc_enable=1`
+switches the same prewarmed solver to command the wheel torque `T` and
+virtual-leg torque `Tp`.
+
+`compute_only_enable=1` is the bench timing mode.  LQR and shadow MPC still
+execute when shadow mode is enabled, but wheel currents and all four joint
+torques are forced to zero before the CAN layer.  This mode must be disabled
+explicitly before any driving test.
+
+The MPC owns the steady-state integral action.  While it is enabled, the old
+disturbance observer is held at zero to prevent two integrators fighting.
+Disable MPC with the same selector at any time; the next control cycle drops
+back to LQR.
+
+Forward motion keeps the verified stable2 Kalman filter: the average wheel
+velocity and gravity-compensated IMU acceleration are fused into `kf_dx`, and
+`kf_x` integrates that estimate.  The MPC shadow state consumes the same
+`kf_dx` used by LQR.
+
 ## Start Frontend
 
 ```sh
@@ -34,7 +60,7 @@ reflash.  That includes the automatic jump gate, added to the page under
 
 | Field | Meaning |
 | --- | --- |
-| `jump_auto_speed_min` | Fused body speed the machine must reach, m/s (`kf_dx`) |
+| `jump_auto_speed_min` | Wheel-odometry body speed the machine must reach, m/s (`kf_dx`) |
 | `jump_auto_dist_min_cm` | Lower laser bound, exclusive |
 | `jump_auto_dist_max_cm` | Upper laser bound, exclusive |
 | `jump_auto_confirm_ms` | How long all three conditions must hold before firing |
@@ -61,10 +87,11 @@ Firmware parsing is implemented in `aboard/App/Src/vmc_lqr_rtt.c`. A valid
 payload enables runtime K override and copies the 12 column-major gains to both
 left and right LQR matrices before every balance update.
 
-## Kalman Telemetry
+## Motion-Estimator Telemetry
 
-`VMCVOFA` retains fields 0..98 for existing readers and appends the filter
-diagnostics below:
+`VMCVOFA` retains fields 0..98 for existing readers and appends the legacy
+filter diagnostics below.  The innovation fields remain in the format for
+compatibility but are zero on this branch because forward motion is wheel-only.
 
 | Field | Meaning | Encoding |
 |---:|---|---|
@@ -139,6 +166,28 @@ diagnostics below:
 | 175 | master switch, synthesized from SBUS channel 4 | `1` up, `3` mid, `2` down |
 | 176 | leg knob, synthesized from SBUS channel 9 | `1` high, `3` middle, `2` low |
 | 177..186 | reserved compatibility fields | always `0` |
+| 187 | MPC runtime enable | `0` or `1` |
+| 188 | MPC active on the last control cycle | `0` or `1` |
+| 189..190 | MPC solve-failure and saturation counters | count |
+| 191..192 | MPC left/right wheel torque | N.m |
+| 193..194 | MPC left/right virtual-leg torque | N.m |
+| 195..196 | MPC left/right wheel torque increment | N.m per cycle |
+| 197..198 | MPC left/right virtual-leg torque increment | N.m per cycle |
+| 199 | MPC solve time for both sides | microseconds |
+| 200 | compute-only bench mode | `1` means all final actuator outputs are zero |
+| 201 | controller enabled | `0` or `1` |
+| 202..203 | applied MPC wheel/Tp authority | `0..1` |
+| 204..205 | raw QP wheel torque, left/right | N.m, before rate limiting |
+| 206..207 | raw QP virtual-leg torque, left/right | N.m, before rate limiting |
+| 208 | MPC rate-limit count | count |
+| 209 | MPC torque-limit count | count |
+| 210 | average leg length used by the MPC model | m |
+| 211..216 | left MPC state: theta, dtheta, x, dx, phi, dphi | rad, rad/s, m, m/s, rad, rad/s |
+| 217..222 | right MPC state: theta, dtheta, x, dx, phi, dphi | rad, rad/s, m, m/s, rad, rad/s |
+| 223..224 | left previous MPC input, T and Tp | N.m |
+| 225..226 | right previous MPC input, T and Tp | N.m |
+| 227..246 | left pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
+| 247..266 | right pre-solve QP plan, ten `(T, Tp)` pairs | N.m |
 
 Fields 157..173 publish the automatic stair climb: stage and abort reason show
 the state machine, ready/pre-impact/impact show how far the trigger progressed,
@@ -151,6 +200,36 @@ from a channel-4 stop command or a source handover.
 Fields 177..186 are retained only to preserve the historical recorder layout.
 The former automatic platform descent feature has been removed and these
 fields are now always zero.
+
+Fields 187..199 were added with schema 23. They separate a controller-mode
+problem from an actuator or estimator problem: `mpc_active` proves the new
+controller actually produced the output, the counters expose solver failure
+or saturation, and the torque/delta channels show whether the fallback LQR was
+used and whether the MPC output is plausible. The solve-time channel is the
+sum for both sides.
+
+Fields 200..201 were added with schema 24 for bench timing. `compute_only=1`
+means LQR and shadow MPC still execute but the wheel-current and joint-torque
+commands are forced to zero before transmission.
+
+Fields 202..209 were added with schema 25. They separate raw QP demand from the
+rate-limited command, publish the actual wheel/Tp authority ramp, and distinguish
+rate limiting from actuator torque saturation.
+
+Fields 210..226 were added with schema 26. They record the exact plant input and
+the previous incremental control passed to the QP, not values reconstructed
+from the rounded LQR torque terms. This makes the wheel-output discrepancy
+replayable offline and distinguishes a state/objective mismatch from a solver
+or rate-limiter problem.
+
+Fields 227..242 were added with schema 27. They record the exact warm-start
+plan supplied to the fixed five-iteration ADMM solver, in public T/Tp sign
+convention. Together with the state and previous input they make each sampled
+QP result reproducible even when telemetry runs slower than the control loop.
+
+Schema 28 expands the control horizon from four to ten steps, aligning the MPC
+stage cost with the LQR model. The two ten-pair plan blocks now occupy fields
+227..266.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of

@@ -283,7 +283,7 @@ def enable_payload(period_ms: int, slow_period_ms: int) -> str:
     return _enable_payload("both", period_ms, slow_period_ms)
 
 
-# The full VMCVOFA frame is ~1088 B (187 fields at schema 22).  The firmware
+# The full VMCVOFA frame is ~1175 B (202 fields at schema 24).  The firmware
 # clamps its period to at most 200 ms, so 5 Hz is the closest no-reflash
 # approximation of "fast stream only"; it leaves under 2% of the combined link
 # load in place.
