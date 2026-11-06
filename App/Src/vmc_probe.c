@@ -75,6 +75,9 @@ static uint8_t vmc_fall_prev_fully_fallen;
 #define VMC_LQR_GAIN_REFRESH_CYCLES   45U
 #define VMC_MPC_X_INTEGRAL_LIMIT       0.10f
 #define VMC_MPC_X_INTEGRAL_LEAK        0.99995f
+#define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f
+#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f
+#define VMC_MPC_X_INTEGRAL_REVERSE_DECAY 0.995f
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
 static uint8_t vmc_feedback_timeout_source(void);
@@ -5077,11 +5080,41 @@ void vmc_balance_update(void)
         clamp_float((float)motion->kf_dx - dx_feedback_target,
                     -dx_feedback_limit,
                     dx_feedback_limit);
-    vmc_mpc_x_integral =
-        clamp_float(vmc_mpc_x_integral * VMC_MPC_X_INTEGRAL_LEAK +
-                        mpc_x_error * (float)vmc_loop_dt(),
-                    -VMC_MPC_X_INTEGRAL_LIMIT,
-                    VMC_MPC_X_INTEGRAL_LIMIT);
+    {
+      const uint8_t reset_integral =
+          (stick_speed_active != 0U || released_from_speed != 0U ||
+           vmc_control.manual_prepose_active != 0U ||
+           vmc_getup_is_active() != 0U || vmc_stair_is_active() != 0U ||
+           vmc_jump_is_active_or_aborted() != 0U ||
+           vmc_probe_state.airborne_active != 0U ||
+           vmc_probe_state.feedback_timeout_active != 0U ||
+           vmc_fall_rearm_required != 0U)
+              ? 1U
+              : 0U;
+      const uint8_t integrate_now =
+          (reset_integral == 0U &&
+           fabsf((float)motion->kf_dx) <=
+               VMC_MPC_X_INTEGRAL_SPEED_LIMIT &&
+           fabsf(mpc_x_error) <= VMC_MPC_X_INTEGRAL_POS_LIMIT)
+              ? 1U
+              : 0U;
+
+      if (reset_integral != 0U) {
+        vmc_mpc_x_integral = 0.0f;
+      } else {
+        vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_LEAK;
+        if (integrate_now != 0U) {
+          if (vmc_mpc_x_integral * mpc_x_error < 0.0f) {
+            vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_REVERSE_DECAY;
+          }
+          vmc_mpc_x_integral += mpc_x_error * (float)vmc_loop_dt();
+          vmc_mpc_x_integral =
+              clamp_float(vmc_mpc_x_integral,
+                          -VMC_MPC_X_INTEGRAL_LIMIT,
+                          VMC_MPC_X_INTEGRAL_LIMIT);
+        }
+      }
+    }
     const float left_mpc_state[VMC_MPC_STATE_COUNT] = {
         -(left_lqr_theta_error * left_theta_scale),
         -(left_lqr_d_theta_limited * left_dtheta_scale),

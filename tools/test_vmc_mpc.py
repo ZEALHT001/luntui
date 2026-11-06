@@ -158,6 +158,14 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("#define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02f", source)
         self.assertIn("#define VMC_LQR_GAIN_REFRESH_CYCLES   45U", source)
         self.assertIn("vmc_lqr_gain_cache_valid = 0U;", source)
+        self.assertIn(
+            "#define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f", source
+        )
+        self.assertIn(
+            "#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f", source
+        )
+        self.assertIn("integrate_now", source)
+        self.assertIn("reset_integral", source)
         for signal in (
             "left_lqr_theta_error",
             "left_lqr_d_theta_limited",
