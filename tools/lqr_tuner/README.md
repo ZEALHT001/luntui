@@ -246,6 +246,10 @@ is excessive position error, `12` means MPC is not computing, `13` is a solver
 failure, and `14` means speed is inside the wake range but has not stayed
 there for the required continuous second.
 
+The integral schedule uses weight `0.05` and a `0.02 m·s` runtime clamp.  The
+small clamp gives the state time to act on persistent low-speed drift without
+sitting at saturation through an entire stand.
+
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of
 two separately-reported channels cannot separate "the legs never diverged" from

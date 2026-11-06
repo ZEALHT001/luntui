@@ -16,7 +16,7 @@
 #endif
 
 static const float vmc_mpc_q[VMC_MPC_STATE_COUNT] = {
-    1.0f, 100.0f, 400.0f, 30.0f, 5000.0f, 1.0f, 0.2f};
+    1.0f, 100.0f, 400.0f, 30.0f, 5000.0f, 1.0f, 0.05f};
 static const float vmc_mpc_delta_weight[VMC_MPC_INPUT_COUNT] = {
     1.0f, 0.05f};
 

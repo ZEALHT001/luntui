@@ -78,7 +78,7 @@ static uint8_t vmc_fall_prev_fully_fallen;
 
 #define VMC_LQR_GAIN_LENGTH_TOLERANCE 0.02f
 #define VMC_LQR_GAIN_REFRESH_CYCLES   45U
-#define VMC_MPC_X_INTEGRAL_LIMIT       0.10f
+#define VMC_MPC_X_INTEGRAL_LIMIT       0.02f
 #define VMC_MPC_X_INTEGRAL_LEAK        0.99995f
 #define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f
 #define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.25f

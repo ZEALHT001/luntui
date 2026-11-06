@@ -24,7 +24,7 @@ from derive_vmc_lqr_abk import (  # noqa: E402
     emit_mpc_model,
 )
 
-MPC_Q = np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0, 0.2])
+MPC_Q = np.diag([1.0, 100.0, 400.0, 30.0, 5000.0, 1.0, 0.05])
 
 
 class GeneratedModelTest(unittest.TestCase):
@@ -166,6 +166,9 @@ class FirmwareSolverTest(unittest.TestCase):
         )
         self.assertIn(
             "#define VMC_MPC_X_INTEGRAL_LOW_SPEED_MS 1000U", source
+        )
+        self.assertIn(
+            "#define VMC_MPC_X_INTEGRAL_LIMIT       0.02f", source
         )
         self.assertIn("reset_integral", source)
         self.assertIn("mpc_handoff_requested", source)
