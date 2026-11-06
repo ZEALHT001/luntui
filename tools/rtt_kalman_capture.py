@@ -3532,20 +3532,20 @@ def capture_live(
                     if window:
                         metrics = analyze_window(window)
                         windows.append(metrics)
-                    print(
-                        f"[{next_progress - window_s:6.1f}.."
-                        f"{next_progress:6.1f}s] "
-                        f"{metrics.status:4s} "
-                        f"N={metrics.samples:3d} "
-                        f"dx={metrics.kf_dx_mean:+.4f}"
-                        f"±{metrics.kf_dx_std:.4f} m/s "
-                        f"x_net={metrics.kf_x_net:+.4f} m "
-                        f"K_w={format_value(metrics.wheel_gain, 4)} "
-                        f"K_i={format_value(metrics.imu_gain, 4)} "
-                        f"NIS_v={format_value(metrics.nis_v, 3)}"
-                    )
-                    for finding in metrics.findings:
-                        print(f"    {finding}")
+                        print(
+                            f"[{next_progress - window_s:6.1f}.."
+                            f"{next_progress:6.1f}s] "
+                            f"{metrics.status:4s} "
+                            f"N={metrics.samples:3d} "
+                            f"dx={metrics.kf_dx_mean:+.4f}"
+                            f"±{metrics.kf_dx_std:.4f} m/s "
+                            f"x_net={metrics.kf_x_net:+.4f} m "
+                            f"K_w={format_value(metrics.wheel_gain, 4)} "
+                            f"K_i={format_value(metrics.imu_gain, 4)} "
+                            f"NIS_v={format_value(metrics.nis_v, 3)}"
+                        )
+                        for finding in metrics.findings:
+                            print(f"    {finding}")
                     next_progress += hop_s
 
             if now - last_rx > rx_timeout_s and now - start > 1.0:
