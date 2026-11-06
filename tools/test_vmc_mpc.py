@@ -162,7 +162,10 @@ class FirmwareSolverTest(unittest.TestCase):
             "#define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f", source
         )
         self.assertIn(
-            "#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f", source
+            "#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.25f", source
+        )
+        self.assertIn(
+            "#define VMC_MPC_X_INTEGRAL_LOW_SPEED_MS 1000U", source
         )
         self.assertIn("reset_integral", source)
         self.assertIn("mpc_handoff_requested", source)
@@ -171,6 +174,7 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("vmc_balance.x_offset = (float)motion->kf_x;", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION", source)
+        self.assertIn("VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_NONE", source)
         self.assertIn("vmc_mpc_integral_awake =", source)
         self.assertIn("mpc_integral_saturated", source)

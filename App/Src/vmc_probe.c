@@ -66,6 +66,7 @@ static uint8_t vmc_lqr_gain_cache_valid;
 static float vmc_mpc_x_integral;
 static uint8_t vmc_mpc_integral_awake;
 static uint8_t vmc_mpc_integral_hold_reason;
+static uint32_t vmc_mpc_integral_low_speed_ms;
 static uint8_t vmc_balance_controller_was_enabled;
 static uint8_t vmc_mpc_handoff_was_active;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
@@ -80,7 +81,8 @@ static uint8_t vmc_fall_prev_fully_fallen;
 #define VMC_MPC_X_INTEGRAL_LIMIT       0.10f
 #define VMC_MPC_X_INTEGRAL_LEAK        0.99995f
 #define VMC_MPC_X_INTEGRAL_SPEED_LIMIT 0.08f
-#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.10f
+#define VMC_MPC_X_INTEGRAL_POS_LIMIT   0.25f
+#define VMC_MPC_X_INTEGRAL_LOW_SPEED_MS 1000U
 #define VMC_MPC_X_INTEGRAL_REVERSE_DECAY 0.995f
 
 enum {
@@ -97,7 +99,8 @@ enum {
   VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED = 10U,
   VMC_MPC_INTEGRAL_HOLD_POSITION = 11U,
   VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING = 12U,
-  VMC_MPC_INTEGRAL_HOLD_SOLVER = 13U
+  VMC_MPC_INTEGRAL_HOLD_SOLVER = 13U,
+  VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE = 14U
 };
 
 static void clear_leg_command(volatile vmc_leg_state_t *leg);
@@ -4634,6 +4637,7 @@ void vmc_balance_update(void)
     vmc_balance.x_offset = (float)motion->kf_x;
     vmc_balance.speed_stop_hold_active = 0U;
     vmc_mpc_x_integral = 0.0f;
+    vmc_mpc_integral_low_speed_ms = 0U;
     vmc_balance.mpc_x_integral = 0.0f;
   }
   vmc_balance_controller_was_enabled = vmc_control.enabled;
@@ -5142,6 +5146,7 @@ void vmc_balance_update(void)
 
       if (reset_integral != 0U) {
         vmc_mpc_x_integral = 0.0f;
+        vmc_mpc_integral_low_speed_ms = 0U;
         if (released_from_speed != 0U) {
           hold_reason = VMC_MPC_INTEGRAL_HOLD_RELEASE;
         } else if (stick_speed_active != 0U) {
@@ -5162,17 +5167,31 @@ void vmc_balance_update(void)
           hold_reason = VMC_MPC_INTEGRAL_HOLD_FALL_REARM;
         }
       } else {
-        vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_LEAK;
+        const uint32_t dt_ms = (uint32_t)clamp_float(
+            (float)vmc_loop_dt() * 1000.0f, 1.0f, 100.0f);
+
         if (fabsf((float)motion->kf_dx) >
             VMC_MPC_X_INTEGRAL_SPEED_LIMIT) {
+          vmc_mpc_integral_low_speed_ms = 0U;
           hold_reason = VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED;
-        } else if (fabsf(mpc_x_error) >
-                   VMC_MPC_X_INTEGRAL_POS_LIMIT) {
-          hold_reason = VMC_MPC_INTEGRAL_HOLD_POSITION;
         } else {
-          if (vmc_mpc_x_integral * mpc_x_error < 0.0f) {
-            vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_REVERSE_DECAY;
+          vmc_mpc_integral_low_speed_ms = clamp_u32(
+              vmc_mpc_integral_low_speed_ms + dt_ms, 0U, 60000U);
+          if (vmc_mpc_integral_low_speed_ms <
+              VMC_MPC_X_INTEGRAL_LOW_SPEED_MS) {
+            hold_reason = VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE;
+          } else if (fabsf(mpc_x_error) >
+                     VMC_MPC_X_INTEGRAL_POS_LIMIT) {
+            vmc_mpc_x_integral = 0.0f;
+            hold_reason = VMC_MPC_INTEGRAL_HOLD_POSITION;
           }
+        }
+
+        vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_LEAK;
+        if (vmc_mpc_x_integral * mpc_x_error < 0.0f) {
+          vmc_mpc_x_integral *= VMC_MPC_X_INTEGRAL_REVERSE_DECAY;
+        }
+        if (hold_reason == VMC_MPC_INTEGRAL_HOLD_NONE) {
           vmc_mpc_x_integral += mpc_x_error * (float)vmc_loop_dt();
           vmc_mpc_x_integral =
               clamp_float(vmc_mpc_x_integral,
@@ -5318,6 +5337,7 @@ void vmc_balance_update(void)
       vmc_balance.mpc_leg_authority_applied = 0.0f;
       vmc_balance.mpc_failure_count++;
       vmc_mpc_x_integral = 0.0f;
+      vmc_mpc_integral_low_speed_ms = 0U;
       vmc_mpc_integral_awake = 0U;
       vmc_mpc_integral_hold_reason = VMC_MPC_INTEGRAL_HOLD_SOLVER;
       vmc_balance.mpc_x_integral = 0.0f;
@@ -5369,6 +5389,7 @@ void vmc_balance_update(void)
     vmc_balance.mpc_right_tp_raw = 0.0f;
     vmc_balance.mpc_leg_length = 0.0f;
     vmc_mpc_x_integral = 0.0f;
+    vmc_mpc_integral_low_speed_ms = 0U;
     vmc_mpc_integral_awake = 0U;
     vmc_mpc_integral_hold_reason =
         VMC_MPC_INTEGRAL_HOLD_NOT_COMPUTING;

@@ -242,8 +242,9 @@ not have.
 Schema 30 appends integral gate diagnostics. Hold reason `0` means integrating,
 `1..9` are hard reset causes (stick, release, manual prepose, get-up, stair,
 jump, airborne, feedback timeout, fall re-arm), `10` is excessive speed, `11`
-is excessive position error, `12` means MPC is not computing, and `13` is a
-solver failure.
+is excessive position error, `12` means MPC is not computing, `13` is a solver
+failure, and `14` means speed is inside the wake range but has not stayed
+there for the required continuous second.
 
 Fields 155/156 (schema 18) publish the leg-synchronisation (anti-splay) loop.
 `left_theta` and `right_theta` were already in the frame, but a difference of
