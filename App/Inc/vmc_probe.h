@@ -1565,6 +1565,7 @@ typedef struct {
   float mpc_left_previous_tp;
   float mpc_right_previous_wheel;
   float mpc_right_previous_tp;
+  /* Absolute command trajectories reconstructed from the incremental plan. */
   float mpc_left_plan[VMC_MPC_DECISION_COUNT];
   float mpc_right_plan[VMC_MPC_DECISION_COUNT];
   uint32_t mpc_solve_us;

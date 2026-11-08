@@ -302,7 +302,7 @@ def k_at_length(p: AbkPreset, leg_length: float) -> np.ndarray:
 def discrete_mpc_model(
     p: AbkPreset, leg_length: float, sample_time_s: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the augmented A/B pair used by the firmware incremental MPC.
+    """Return the augmented A/B pair used by the incremental MPC.
 
     The last state integrates forward position error.  It gives the MPC the
     same disturbance-rejection role as an integral term, which pure state
@@ -428,17 +428,19 @@ MPC_CONTROL_HORIZON = MPC_HORIZON
 MPC_DECISION_COUNT = MPC_CONTROL_HORIZON * MPC_INPUT_COUNT
 MPC_PREDICTION_STATES = MPC_HORIZON * MPC_STATE_COUNT
 MPC_DELTA_WEIGHT = np.array([1.0, 0.05])
-MPC_INPUT_WEIGHT_SCALE = np.array([1.0, 1.0])
 
 
 def mpc_prediction_and_hessian(
     a: np.ndarray,
     b: np.ndarray,
     q: np.ndarray,
-    r: np.ndarray,
     terminal: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build the same condensed G/H matrices consumed by the firmware."""
+    """Build the input-increment G/H matrices consumed by the firmware.
+
+    The decision vector contains torque increments.  The absolute input applied
+    at prediction step k is u_previous + sum(delta_u[0:k+1]).
+    """
     influence = np.zeros((MPC_PREDICTION_STATES, MPC_DECISION_COUNT))
     previous = np.zeros((MPC_STATE_COUNT, MPC_DECISION_COUNT))
     hessian = np.zeros((MPC_DECISION_COUNT, MPC_DECISION_COUNT))
@@ -459,16 +461,6 @@ def mpc_prediction_and_hessian(
         for input_index, weight in enumerate(MPC_DELTA_WEIGHT):
             index = step * MPC_INPUT_COUNT + input_index
             hessian[index, index] += weight
-    # The held control after the control horizon still contributes its
-    # absolute-input cost at every remaining prediction step.
-    for step in range(MPC_HORIZON):
-        held_step = min(step, MPC_CONTROL_HORIZON - 1)
-        for input_index in range(MPC_INPUT_COUNT):
-            index = held_step * MPC_INPUT_COUNT + input_index
-            hessian[index, index] += (
-                MPC_INPUT_WEIGHT_SCALE[input_index]
-                * r[input_index, input_index]
-            )
     return influence, hessian
 
 
@@ -504,7 +496,7 @@ def emit_mpc_model(
             )
         terminal_cost = solve_discrete_are(a, b, mpc_q, p.r)
         influence, hessian = mpc_prediction_and_hessian(
-            a, b, mpc_q, p.r, terminal_cost
+            a, b, mpc_q, terminal_cost
         )
         lines.append(f"  {{{literal(float(leg_length), 9)},")
         lines.append("   {")

@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from derive_vmc_lqr_abk import (  # noqa: E402
-    MPC_INPUT_WEIGHT_SCALE,
     PRESETS,
     discrete_mpc_model,
     emit_mpc_model,
@@ -66,43 +65,32 @@ class GeneratedModelTest(unittest.TestCase):
         delta_weights = np.kron(
             np.eye(control_horizon), np.diag([1.0, 0.05])
         )
-        delta_vector = np.diag(delta_weights)
         hessian = influence.T @ weights @ influence + delta_weights
-        for step in range(horizon):
-            held_step = min(step, control_horizon - 1)
-            for input_index in range(2):
-                index = held_step * 2 + input_index
-                hessian[index, index] += (
-                    MPC_INPUT_WEIGHT_SCALE[input_index]
-                    * r[input_index, input_index]
-                )
         rho = 0.20
         inverse_regularized = np.linalg.inv(hessian + rho * np.eye(decision_count))
-        lower = np.tile([-5.5, -108.0], control_horizon)
-        upper = np.tile([5.5, 108.0], control_horizon)
+        lower = np.tile([-0.2, -2.0], control_horizon)
+        upper = np.tile([0.2, 2.0], control_horizon)
+        absolute_lower = np.array([-5.5, -108.0])
+        absolute_upper = np.array([5.5, 108.0])
 
         def solve(state: np.ndarray, previous_input: np.ndarray) -> np.ndarray:
             base = state.copy()
             base_prediction = np.zeros(horizon * state_count)
             for step in range(horizon):
-                base = a @ base
+                base = a @ base + b @ previous_input
                 base_prediction[
                     step * state_count : (step + 1) * state_count
                 ] = base
-            linear = (
-                influence.T @ weights @ base_prediction
-                - delta_vector * np.tile(previous_input, control_horizon)
-            )
-            z = np.clip(
-                np.tile(previous_input, control_horizon), lower, upper
-            )
+            linear = influence.T @ weights @ base_prediction
+            z = np.zeros(decision_count)
             dual = np.zeros(decision_count)
             for _ in range(10):
                 u = inverse_regularized @ (rho * (z - dual) - linear)
                 z = np.clip(u + dual, lower, upper)
                 dual += u - z
-            delta = np.clip(z[:2] - previous_input, [-0.2, -2.0], [0.2, 2.0])
-            return previous_input + delta
+            command = previous_input + z[:2]
+            command = np.clip(command, absolute_lower, absolute_upper)
+            return command
 
         state = np.array([0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0])
         command = np.zeros(2)
@@ -235,6 +223,15 @@ class FirmwareSolverTest(unittest.TestCase):
         )
         self.assertIn("if (rebuild_hessian != 0U)", solver)
         self.assertIn("vmc_mpc_h_factor_valid = 1U;", solver)
+        self.assertIn("advance_state_with_input", solver)
+        self.assertIn("project_delta_sequence", solver)
+        self.assertIn(
+            "axis->plan[0] = next_input[0] - previous_input[0]", solver
+        )
+        self.assertIn(
+            "previous_input[0] + requested_delta[0]", solver
+        )
+        self.assertNotIn("vmc_mpc_delta_weight", solver)
         self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)
         for signal in (
             "mpc_leg_length",

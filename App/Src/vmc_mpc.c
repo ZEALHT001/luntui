@@ -17,8 +17,6 @@
 
 static const float vmc_mpc_q[VMC_MPC_STATE_COUNT] = {
     1.0f, 100.0f, 400.0f, 30.0f, 5000.0f, 1.0f, 0.05f};
-static const float vmc_mpc_delta_weight[VMC_MPC_INPUT_COUNT] = {
-    1.0f, 0.05f};
 
 static vmc_mpc_axis_state_t vmc_mpc_axis[VMC_MPC_SIDE_COUNT];
 
@@ -115,8 +113,10 @@ static void interpolate_model(
   }
 }
 
-static void advance_state(
+static void advance_state_with_input(
     const float a[VMC_MPC_STATE_COUNT][VMC_MPC_STATE_COUNT],
+    const float b[VMC_MPC_STATE_COUNT][VMC_MPC_INPUT_COUNT],
+    const float input[VMC_MPC_INPUT_COUNT],
     float state[VMC_MPC_STATE_COUNT])
 {
   float next[VMC_MPC_STATE_COUNT];
@@ -128,14 +128,20 @@ static void advance_state(
     for (column = 0U; column < VMC_MPC_STATE_COUNT; column++) {
       next[row] += a[row][column] * state[column];
     }
+    for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
+      next[row] += b[row][column] * input[column];
+    }
   }
   memcpy(state, next, sizeof(next));
 }
 
 static void build_base_predictions(
     const float a[VMC_MPC_STATE_COUNT][VMC_MPC_STATE_COUNT],
+    const float b[VMC_MPC_STATE_COUNT][VMC_MPC_INPUT_COUNT],
     const float left_state[VMC_MPC_STATE_COUNT],
-    const float right_state[VMC_MPC_STATE_COUNT])
+    const float right_state[VMC_MPC_STATE_COUNT],
+    const float left_previous_input[VMC_MPC_INPUT_COUNT],
+    const float right_previous_input[VMC_MPC_INPUT_COUNT])
 {
   float left_base[VMC_MPC_STATE_COUNT];
   float right_base[VMC_MPC_STATE_COUNT];
@@ -148,8 +154,8 @@ static void build_base_predictions(
   memset(vmc_mpc_base_right, 0, sizeof(vmc_mpc_base_right));
 
   for (step = 0U; step < VMC_MPC_HORIZON; step++) {
-    advance_state(a, left_base);
-    advance_state(a, right_base);
+    advance_state_with_input(a, b, left_previous_input, left_base);
+    advance_state_with_input(a, b, right_previous_input, right_base);
     for (row = 0U; row < VMC_MPC_STATE_COUNT; row++) {
       vmc_mpc_base_left[step * VMC_MPC_STATE_COUNT + row] = left_base[row];
       vmc_mpc_base_right[step * VMC_MPC_STATE_COUNT + row] = right_base[row];
@@ -201,7 +207,6 @@ static uint8_t factor_hessian(void)
 }
 
 static void build_rhs(const float base[VMC_MPC_PREDICTION_STATES],
-                      const float u_previous[VMC_MPC_INPUT_COUNT],
                       float f[VMC_MPC_DECISION_COUNT],
                       const float terminal_cost[VMC_MPC_STATE_COUNT]
                                                [VMC_MPC_STATE_COUNT])
@@ -239,12 +244,6 @@ static void build_rhs(const float base[VMC_MPC_PREDICTION_STATES],
     }
   }
 
-  for (step = 0U; step < VMC_MPC_HORIZON; step++) {
-    for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
-      const uint32_t index = step * VMC_MPC_INPUT_COUNT + column;
-      f[index] -= vmc_mpc_delta_weight[column] * u_previous[column];
-    }
-  }
 }
 
 static void solve_factor(const float rhs[VMC_MPC_DECISION_COUNT],
@@ -271,16 +270,43 @@ static void solve_factor(const float rhs[VMC_MPC_DECISION_COUNT],
   }
 }
 
-static float variable_minimum(const vmc_mpc_limits_t *limits, uint32_t index)
+static float delta_minimum(const vmc_mpc_limits_t *limits, uint32_t index)
 {
-  return (index % VMC_MPC_INPUT_COUNT == 0U) ? limits->wheel_torque_min
-                                             : limits->leg_torque_min;
+  return (index % VMC_MPC_INPUT_COUNT == 0U) ? -limits->wheel_delta_max
+                                             : -limits->leg_delta_max;
 }
 
-static float variable_maximum(const vmc_mpc_limits_t *limits, uint32_t index)
+static float delta_maximum(const vmc_mpc_limits_t *limits, uint32_t index)
 {
-  return (index % VMC_MPC_INPUT_COUNT == 0U) ? limits->wheel_torque_max
-                                             : limits->leg_torque_max;
+  return (index % VMC_MPC_INPUT_COUNT == 0U) ? limits->wheel_delta_max
+                                             : limits->leg_delta_max;
+}
+
+static void project_delta_sequence(
+    float sequence[VMC_MPC_DECISION_COUNT],
+    const vmc_mpc_limits_t *limits,
+    const float previous_input[VMC_MPC_INPUT_COUNT])
+{
+  uint32_t step;
+
+  for (uint32_t column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
+    const float minimum =
+        (column == 0U) ? limits->wheel_torque_min : limits->leg_torque_min;
+    const float maximum =
+        (column == 0U) ? limits->wheel_torque_max : limits->leg_torque_max;
+    float absolute = previous_input[column];
+
+    for (step = 0U; step < VMC_MPC_CONTROL_HORIZON; step++) {
+      const uint32_t index = step * VMC_MPC_INPUT_COUNT + column;
+      const float delta =
+          clamp_float(sequence[index], delta_minimum(limits, index),
+                      delta_maximum(limits, index));
+      const float next_absolute =
+          clamp_float(absolute + delta, minimum, maximum);
+      sequence[index] = next_absolute - absolute;
+      absolute = next_absolute;
+    }
+  }
 }
 
 static uint8_t solve_box_qp(
@@ -297,23 +323,20 @@ static uint8_t solve_box_qp(
   uint32_t row;
 
   if (axis->plan_valid != 0U) {
-    for (row = 0U; row + VMC_MPC_INPUT_COUNT < VMC_MPC_DECISION_COUNT;
-         row++) {
+    for (row = 0U;
+         row + VMC_MPC_INPUT_COUNT < VMC_MPC_DECISION_COUNT; row++) {
       solution[row] = axis->plan[row + VMC_MPC_INPUT_COUNT];
     }
-    solution[VMC_MPC_DECISION_COUNT - 2U] = axis->u_prev[0];
-    solution[VMC_MPC_DECISION_COUNT - 1U] = axis->u_prev[1];
+    solution[VMC_MPC_DECISION_COUNT - 2U] = 0.0f;
+    solution[VMC_MPC_DECISION_COUNT - 1U] = 0.0f;
   } else {
-    for (row = 0U; row < VMC_MPC_CONTROL_HORIZON; row++) {
-      solution[2U * row] = axis->u_prev[0];
-      solution[2U * row + 1U] = axis->u_prev[1];
+    for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
+      solution[row] = 0.0f;
     }
   }
   memcpy(initial_plan, solution, sizeof(float) * VMC_MPC_DECISION_COUNT);
-  for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
-    z[row] = clamp_float(solution[row], variable_minimum(limits, row),
-                         variable_maximum(limits, row));
-  }
+  memcpy(z, solution, sizeof(z));
+  project_delta_sequence(z, limits, axis->u_prev);
 
   for (iteration = 0U; iteration < VMC_MPC_ADMM_ITERATIONS; iteration++) {
     float primal_residual = 0.0f;
@@ -324,9 +347,11 @@ static uint8_t solve_box_qp(
     }
     solve_factor(rhs, u);
     for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
-      const float next_z =
-          clamp_float(u[row] + y[row], variable_minimum(limits, row),
-                      variable_maximum(limits, row));
+      rhs[row] = u[row] + y[row];
+    }
+    project_delta_sequence(rhs, limits, axis->u_prev);
+    for (row = 0U; row < VMC_MPC_DECISION_COUNT; row++) {
+      const float next_z = rhs[row];
       const float primal = fabsf(u[row] - next_z);
       const float dual = fabsf(VMC_MPC_ADMM_RHO * (next_z - z[row]));
       y[row] += u[row] - next_z;
@@ -353,48 +378,52 @@ static uint8_t finalize_output(
     const vmc_mpc_limits_t *limits, vmc_mpc_output_t *output)
 {
   float previous_input[VMC_MPC_INPUT_COUNT];
-  float bounded_solution[VMC_MPC_INPUT_COUNT];
   float next_input[VMC_MPC_INPUT_COUNT];
+  float bounded_delta[VMC_MPC_INPUT_COUNT];
   float requested_delta[VMC_MPC_INPUT_COUNT];
-  uint8_t saturated = 0U;
+  float requested_input[VMC_MPC_INPUT_COUNT];
+  uint8_t rate_limited = 0U;
+  uint8_t torque_saturated = 0U;
+  float planned_input[VMC_MPC_INPUT_COUNT];
 
   previous_input[0] = axis->u_prev[0];
   previous_input[1] = axis->u_prev[1];
-  bounded_solution[0] = clamp_float(solution[0], limits->wheel_torque_min,
-                                    limits->wheel_torque_max);
-  bounded_solution[1] = clamp_float(solution[1], limits->leg_torque_min,
-                                    limits->leg_torque_max);
-  next_input[0] = bounded_solution[0];
-  next_input[1] = bounded_solution[1];
-  requested_delta[0] = next_input[0] - previous_input[0];
-  requested_delta[1] = next_input[1] - previous_input[1];
-  next_input[0] =
-      previous_input[0] +
-      clamp_float(requested_delta[0], -limits->wheel_delta_max,
-                  limits->wheel_delta_max);
-  next_input[1] =
-      previous_input[1] +
+  requested_delta[0] = solution[0];
+  requested_delta[1] = solution[1];
+  bounded_delta[0] = clamp_float(requested_delta[0],
+                                 -limits->wheel_delta_max,
+                                 limits->wheel_delta_max);
+  bounded_delta[1] =
       clamp_float(requested_delta[1], -limits->leg_delta_max,
                   limits->leg_delta_max);
-  next_input[0] = clamp_float(next_input[0], limits->wheel_torque_min,
-                              limits->wheel_torque_max);
-  next_input[1] = clamp_float(next_input[1], limits->leg_torque_min,
-                              limits->leg_torque_max);
-
-  if (fabsf(next_input[0] - bounded_solution[0]) >
+  if (fabsf(bounded_delta[0] - requested_delta[0]) >
           VMC_MPC_SOLVER_TOLERANCE ||
-      fabsf(next_input[1] - bounded_solution[1]) >
+      fabsf(bounded_delta[1] - requested_delta[1]) >
           VMC_MPC_SOLVER_TOLERANCE) {
-    saturated = 1U;
+    rate_limited = 1U;
+  }
+  requested_input[0] = previous_input[0] + bounded_delta[0];
+  requested_input[1] = previous_input[1] + bounded_delta[1];
+  next_input[0] = clamp_float(requested_input[0],
+                              limits->wheel_torque_min,
+                              limits->wheel_torque_max);
+  next_input[1] = clamp_float(requested_input[1],
+                              limits->leg_torque_min,
+                              limits->leg_torque_max);
+  if (fabsf(next_input[0] - requested_input[0]) >
+          VMC_MPC_SOLVER_TOLERANCE ||
+      fabsf(next_input[1] - requested_input[1]) >
+          VMC_MPC_SOLVER_TOLERANCE) {
+    torque_saturated = 1U;
   }
   memcpy(axis->plan, solution, sizeof(axis->plan));
-  axis->plan[0] = next_input[0];
-  axis->plan[1] = next_input[1];
+  axis->plan[0] = next_input[0] - previous_input[0];
+  axis->plan[1] = next_input[1] - previous_input[1];
   axis->plan_valid = 1U;
   axis->u_prev[0] = next_input[0];
   axis->u_prev[1] = next_input[1];
   axis->solve_count++;
-  if (saturated != 0U) {
+  if (rate_limited != 0U || torque_saturated != 0U) {
     axis->saturation_count++;
   }
 
@@ -405,25 +434,24 @@ static uint8_t finalize_output(
   output->virtual_leg_torque = -next_input[1];
   output->wheel_delta = next_input[0] - previous_input[0];
   output->virtual_leg_delta = next_input[1] - previous_input[1];
-  output->raw_wheel_torque = solution[0];
-  output->raw_virtual_leg_torque = -solution[1];
+  output->raw_wheel_torque = previous_input[0] + requested_delta[0];
+  output->raw_virtual_leg_torque =
+      -(previous_input[1] + requested_delta[1]);
   output->previous_wheel_torque = previous_input[0];
   output->previous_virtual_leg_torque = -previous_input[1];
+  planned_input[0] = previous_input[0];
+  planned_input[1] = previous_input[1];
   for (uint32_t index = 0U; index < VMC_MPC_DECISION_COUNT; index++) {
+    const uint32_t column = index % VMC_MPC_INPUT_COUNT;
+    planned_input[column] += initial_plan[index];
     output->initial_plan[index] =
-        (index % VMC_MPC_INPUT_COUNT == 0U) ? initial_plan[index]
-                                          : -initial_plan[index];
+        (column == 0U) ? planned_input[column] : -planned_input[column];
   }
-  output->rate_limited = saturated;
-  output->torque_saturated =
-      (bounded_solution[0] != solution[0] ||
-       bounded_solution[1] != solution[1])
-          ? 1U
-          : 0U;
+  output->rate_limited = rate_limited;
+  output->torque_saturated = torque_saturated;
   output->saturated =
       (output->rate_limited != 0U || output->torque_saturated != 0U) ? 1U : 0U;
   output->valid = 1U;
-  output->saturated = saturated;
   return 1U;
 }
 
@@ -447,9 +475,8 @@ void vmc_mpc_prime(uint8_t side, float wheel_torque,
   axis = &vmc_mpc_axis[side];
   axis->u_prev[0] = wheel_torque;
   axis->u_prev[1] = -virtual_leg_torque;
-  for (i = 0U; i < VMC_MPC_CONTROL_HORIZON; i++) {
-    axis->plan[2U * i] = axis->u_prev[0];
-    axis->plan[2U * i + 1U] = axis->u_prev[1];
+  for (i = 0U; i < VMC_MPC_DECISION_COUNT; i++) {
+    axis->plan[i] = 0.0f;
   }
   axis->plan_valid = 1U;
 }
@@ -498,7 +525,9 @@ uint8_t vmc_mpc_solve_pair(
           : 0U;
   interpolate_model(leg_length, a, b, terminal_cost, vmc_mpc_g,
                     vmc_mpc_h_factor, rebuild_hessian);
-  build_base_predictions(a, left_state, right_state);
+  build_base_predictions(a, b, left_state, right_state,
+                         vmc_mpc_axis[0].u_prev,
+                         vmc_mpc_axis[1].u_prev);
   if (rebuild_hessian != 0U) {
     add_admm_regularization();
     if (factor_hessian() == 0U) {
@@ -511,13 +540,13 @@ uint8_t vmc_mpc_solve_pair(
     vmc_mpc_h_factor_valid = 1U;
   }
 
-  build_rhs(vmc_mpc_base_left, vmc_mpc_axis[0].u_prev, f, terminal_cost);
+  build_rhs(vmc_mpc_base_left, f, terminal_cost);
   (void)solve_box_qp(&vmc_mpc_axis[0], f, limits, left_initial_plan,
                      left_solution);
   left_valid = finalize_output(&vmc_mpc_axis[0], left_solution,
                                left_initial_plan, limits, left_output);
 
-  build_rhs(vmc_mpc_base_right, vmc_mpc_axis[1].u_prev, f, terminal_cost);
+  build_rhs(vmc_mpc_base_right, f, terminal_cost);
   (void)solve_box_qp(&vmc_mpc_axis[1], f, limits, right_initial_plan,
                      right_solution);
   right_valid = finalize_output(&vmc_mpc_axis[1], right_solution,

@@ -58,7 +58,9 @@ typedef struct {
 } vmc_mpc_output_t;
 
 typedef struct {
+  /* Absolute torque command from the previous control period. */
   float u_prev[VMC_MPC_INPUT_COUNT];
+  /* Receding plan of torque increments, not absolute torque commands. */
   float plan[VMC_MPC_DECISION_COUNT];
   uint8_t plan_valid;
   uint32_t solve_count;
