@@ -31,6 +31,10 @@ static float vmc_mpc_h_factor[VMC_MPC_DECISION_COUNT]
                             [VMC_MPC_DECISION_COUNT] VMC_MPC_FAST_RAM;
 static float vmc_mpc_h_factor_leg_length;
 static uint8_t vmc_mpc_h_factor_valid;
+/* Runtime torque-increment weights, stored as an offset from the weights the
+ * table was built with.  Zero means "unchanged", so the default path costs
+ * nothing and the table keeps its conditioning. */
+static float vmc_mpc_delta_weight_offset[VMC_MPC_INPUT_COUNT];
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -171,7 +175,8 @@ static void add_admm_regularization(void)
   for (step = 0U; step < VMC_MPC_CONTROL_HORIZON; step++) {
     for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
       const uint32_t index = step * VMC_MPC_INPUT_COUNT + column;
-      vmc_mpc_h_factor[index][index] += VMC_MPC_ADMM_RHO;
+      vmc_mpc_h_factor[index][index] +=
+          VMC_MPC_ADMM_RHO + vmc_mpc_delta_weight_offset[column];
     }
   }
 }
@@ -466,6 +471,12 @@ void vmc_mpc_reset(uint8_t side)
 void vmc_mpc_prime(uint8_t side, float wheel_torque,
                    float virtual_leg_torque)
 {
+  vmc_mpc_sync_previous_input(side, wheel_torque, virtual_leg_torque);
+}
+
+void vmc_mpc_sync_previous_input(uint8_t side, float wheel_torque,
+                                 float virtual_leg_torque)
+{
   uint32_t i;
   vmc_mpc_axis_state_t *axis;
 
@@ -479,6 +490,23 @@ void vmc_mpc_prime(uint8_t side, float wheel_torque,
     axis->plan[i] = 0.0f;
   }
   axis->plan_valid = 1U;
+}
+
+void vmc_mpc_set_delta_weight(float wheel_weight, float leg_weight)
+{
+  const float offset[VMC_MPC_INPUT_COUNT] = {
+      wheel_weight - vmc_mpc_delta_weight_default[0],
+      leg_weight - vmc_mpc_delta_weight_default[1]};
+
+  if (fabsf(offset[0] - vmc_mpc_delta_weight_offset[0]) < 1.0e-6f &&
+      fabsf(offset[1] - vmc_mpc_delta_weight_offset[1]) < 1.0e-6f) {
+    return;
+  }
+  vmc_mpc_delta_weight_offset[0] = offset[0];
+  vmc_mpc_delta_weight_offset[1] = offset[1];
+  /* The Hessian carries the weights on its diagonal, so it has to be rebuilt
+   * and refactored before the next solve. */
+  vmc_mpc_h_factor_valid = 0U;
 }
 
 uint8_t vmc_mpc_solve_pair(

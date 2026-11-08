@@ -405,20 +405,28 @@ extern "C" {
  * a whole second. */
 #define VMC_LOOP_DT_MIN           0.0001f
 #define VMC_LOOP_DT_MAX           0.05f
-/* Fixed control period, in microseconds (450 Hz).
+/* Fixed control period, in microseconds (333 Hz).
  *
  * The loop is held to this period instead of running as fast as it can.
  * Every rate term in the controller multiplies the measured dt, so a faster
  * loop does not change the tuning in theory - but it does change the
- * discrete-time realisation of every filter, and this machine was tuned
- * against 450 Hz.  Pinning the period means a telemetry or formatting change
- * cannot alter the closed-loop response.
+ * discrete-time realisation of every filter.  The MPC model table is
+ * discretised at VMC_MPC_MODEL_PERIOD and cannot absorb a measured dt, so the
+ * pinned period and the model sample time have to agree.  They did not before
+ * 2026-11-09: the period asked for 450 Hz while the solver pushed the body to
+ * ~2.92 ms, and the MPC predicted a plant that was 31 % faster than the real
+ * one.  Measured over 37.7 s, loop_count / mcu_time was 333.4 Hz.
+ *
+ * Pinning the period means a telemetry or formatting change cannot alter the
+ * closed-loop response, and it keeps the budget honest: the current body
+ * leaves ~85 us of slack, so any added per-cycle work shows up as a missed
+ * deadline rather than a silent sample-time drift.
  *
  * FreeRTOS ticks at 1 kHz, so the sub-millisecond remainder is waited out by
  * polling TIM1 (1 MHz).  That costs up to one millisecond of idle time per
  * cycle; deterministic timing is worth more here than the idle time.  There
  * is no watchdog and no idle hook, so a busy control task is safe. */
-#define VMC_CONTROL_PERIOD_US     2222U
+#define VMC_CONTROL_PERIOD_US     3000U
 /* Sleep only when a whole RTOS tick comfortably fits in the remaining time.
  * osDelay(1) returns somewhere between almost immediately and ~1 ms later
  * depending on where the call lands inside the tick, so a margin is needed to
@@ -1532,6 +1540,8 @@ typedef struct {
   float mpc_wheel_authority_applied;
   float mpc_leg_authority_applied;
   float mpc_authority_ramp_rate;
+  float mpc_delta_weight_wheel;
+  float mpc_delta_weight_leg;
   float mpc_left_wheel_torque;
   float mpc_right_wheel_torque;
   float mpc_left_tp_command;

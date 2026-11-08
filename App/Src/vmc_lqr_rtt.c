@@ -510,6 +510,22 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_delta_weight_wheel", &value) !=
+      0U) {
+    vmc_balance.mpc_delta_weight_wheel =
+        vmc_lqr_rtt_clamp_float(value, 1.0e-4f, 100.0f);
+    vmc_mpc_set_delta_weight(vmc_balance.mpc_delta_weight_wheel,
+                             vmc_balance.mpc_delta_weight_leg);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_delta_weight_leg", &value) !=
+      0U) {
+    vmc_balance.mpc_delta_weight_leg =
+        vmc_lqr_rtt_clamp_float(value, 1.0e-4f, 100.0f);
+    vmc_mpc_set_delta_weight(vmc_balance.mpc_delta_weight_wheel,
+                             vmc_balance.mpc_delta_weight_leg);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "x_feedback_gain", &value) != 0U) {
     vmc_balance.x_feedback_gain = vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
     applied = 1U;

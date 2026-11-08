@@ -31,6 +31,11 @@ typedef struct {
 extern const vmc_mpc_model_point_t
     vmc_mpc_model_points[VMC_MPC_MODEL_POINTS];
 extern const float vmc_mpc_model_sample_time_s;
+/* Torque-increment weights the table was built with.  The runtime weights
+ * default to these and may only deviate by patching the Hessian diagonal, so
+ * the table does not have to be regenerated to sweep them on the bench. */
+extern const float
+    vmc_mpc_delta_weight_default[VMC_MPC_INPUT_COUNT];
 
 typedef struct {
   float wheel_torque_min;
@@ -71,6 +76,11 @@ typedef struct {
 void vmc_mpc_reset(uint8_t side);
 void vmc_mpc_prime(uint8_t side, float wheel_torque,
                    float virtual_leg_torque);
+void vmc_mpc_sync_previous_input(uint8_t side, float wheel_torque,
+                                 float virtual_leg_torque);
+/* Override the torque-increment weights at runtime.  The Hessian is cached per
+ * leg length, so a change invalidates it and the next solve rebuilds it. */
+void vmc_mpc_set_delta_weight(float wheel_weight, float leg_weight);
 uint8_t vmc_mpc_solve(uint8_t side, float leg_length,
                       const float state[VMC_MPC_STATE_COUNT],
                       const vmc_mpc_limits_t *limits,

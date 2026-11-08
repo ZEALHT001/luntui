@@ -30,16 +30,37 @@ class GeneratedModelTest(unittest.TestCase):
     def test_generated_model_matches_the_python_plant(self) -> None:
         lengths = np.linspace(0.180, 0.385, num=9)
         expected = emit_mpc_model(
-            replace(PRESETS["abk"], q=MPC_Q), lengths, 0.002222
+            replace(PRESETS["abk"], q=MPC_Q), lengths, 0.003
         )
         actual = (ROOT / "App" / "Src" / "vmc_mpc_model.c").read_text(
             encoding="utf-8"
         )
         self.assertEqual(actual, expected)
 
+    def test_model_sample_time_matches_the_control_period(self) -> None:
+        """The MPC table cannot absorb a measured dt, so it must be generated
+        at the period the loop is actually pinned to."""
+        header = (ROOT / "App" / "Inc" / "vmc_probe.h").read_text(
+            encoding="utf-8"
+        )
+        model = (ROOT / "App" / "Src" / "vmc_mpc_model.c").read_text(
+            encoding="utf-8"
+        )
+        period_us = float(
+            header.split("#define VMC_CONTROL_PERIOD_US", 1)[1]
+            .split()[0]
+            .rstrip("U")
+        )
+        sample_s = float(
+            model.split("vmc_mpc_model_sample_time_s =", 1)[1]
+            .split("f;")[0]
+            .strip()
+        )
+        self.assertAlmostEqual(sample_s, period_us * 1.0e-6, places=9)
+
     def test_closed_loop_is_stable_with_stiction(self) -> None:
         plant = PRESETS["abk"]
-        a, b = discrete_mpc_model(plant, 0.28, 0.002222)
+        a, b = discrete_mpc_model(plant, 0.28, 0.003)
         q = MPC_Q
         r = np.diag([20.0, 2.5])
         terminal = solve_discrete_are(a, b, q, r)
@@ -178,6 +199,30 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn(
             "mpc_x_error * mpc_dx_error < 0.0f", source
         )
+        # u_prev may only be taken from the applied command in pure shadow.
+        # Feeding the blended command back during an authority ramp makes
+        # u(k) = (1 - a) * LQR + a * u(k - 1) + a * delta_u, a positive
+        # feedback loop whose gain a / (1 - a) diverges near full authority.
+        sync_block = source.split(
+            "const uint8_t mpc_sync_previous_input =", 1
+        )[1].split(";", 1)[0]
+        self.assertIn("mpc_apply_requested == 0U", sync_block)
+        self.assertNotIn("mpc_wheel_authority", sync_block)
+        self.assertNotIn("mpc_leg_authority", sync_block)
+        # The crossfade must be against the LQR demand.  Using the previous
+        # applied command as the base degenerates at zero authority to
+        # u(k) = u(k-1): in the 2026-11-09 run the legs kept their last torque
+        # (leg authority is 0 for the whole wheel test) and lifted the machine,
+        # and the wheel command became a 0.96-pole low-pass.
+        mix_block = source.split("if (mpc_apply_requested != 0U) {", 1)[
+            1
+        ].split("vmc_balance.mpc_wheel_authority_applied =", 1)[0]
+        self.assertIn("(1.0f - wheel_authority) * left_wheel_lqr", mix_block)
+        self.assertIn("(1.0f - wheel_authority) * right_wheel_lqr", mix_block)
+        self.assertIn("(1.0f - leg_authority) * left_tp_lqr", mix_block)
+        self.assertIn("(1.0f - leg_authority) * right_tp_lqr", mix_block)
+        self.assertNotIn("left_wheel_torque_limited", mix_block)
+        self.assertNotIn("left_tp_cmd", mix_block)
         self.assertIn("const uint8_t authority_ramping =", source)
         self.assertIn(
             "hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP", source
@@ -225,13 +270,21 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("vmc_mpc_h_factor_valid = 1U;", solver)
         self.assertIn("advance_state_with_input", solver)
         self.assertIn("project_delta_sequence", solver)
+        self.assertIn("vmc_mpc_sync_previous_input", solver)
         self.assertIn(
             "axis->plan[0] = next_input[0] - previous_input[0]", solver
         )
         self.assertIn(
             "previous_input[0] + requested_delta[0]", solver
         )
-        self.assertNotIn("vmc_mpc_delta_weight", solver)
+        # The increment weights are runtime-tunable, but only as an offset from
+        # what the table was built with: the model file stays the single source
+        # of the default, and the factor cache is invalidated on a change.
+        self.assertIn("vmc_mpc_delta_weight_offset[column]", solver)
+        self.assertIn("vmc_mpc_h_factor_valid = 0U;", solver)
+        self.assertIn("vmc_mpc_set_delta_weight", solver)
+        self.assertIn('"mpc_delta_weight_wheel"', rtt)
+        self.assertIn('"mpc_delta_weight_leg"', rtt)
         self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)
         for signal in (
             "mpc_leg_length",

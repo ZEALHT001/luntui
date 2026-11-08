@@ -61,6 +61,17 @@ int main(void)
             fabsf(output.initial_plan[7] - 7.5f) < 1.0e-5f,
         "initial QP plan did not preserve public T/Tp signs");
 
+  vmc_mpc_reset(0U);
+  vmc_mpc_sync_previous_input(0U, 1.5f, 4.0f);
+  check(vmc_mpc_solve(0U, 0.28f, zero_state, &limits, &output) != 0U,
+        "synchronized-state solve failed");
+  check(fabsf(output.previous_wheel_torque - 1.5f) < 1.0e-5f &&
+            fabsf(output.previous_virtual_leg_torque - 4.0f) < 1.0e-5f,
+        "previous inputs were not synchronized to applied commands");
+  check(fabsf(output.initial_plan[0] - 1.5f) < 1.0e-5f &&
+            fabsf(output.initial_plan[1] - 4.0f) < 1.0e-5f,
+        "synchronized plan did not start from applied commands");
+
   vmc_mpc_reset(1U);
   vmc_mpc_prime(1U, 0.0f, 0.0f);
   {
@@ -119,6 +130,9 @@ int main(void)
     float tail_min = state[2];
     float tail_max = state[2];
     uint32_t step;
+    uint32_t saturated_steps = 0U;
+    double delta_square_sum = 0.0;
+    double wheel_square_sum = 0.0;
 
     vmc_mpc_reset(0U);
     vmc_mpc_prime(0U, 0.0f, 0.0f);
@@ -132,6 +146,12 @@ int main(void)
             "closed-loop solve failed");
       input[0] = output.wheel_torque;
       input[1] = -output.virtual_leg_torque;
+      if (fabsf(output.wheel_delta) >= 0.199f) {
+        saturated_steps++;
+      }
+      delta_square_sum += (double)output.wheel_delta *
+                           (double)output.wheel_delta;
+      wheel_square_sum += (double)input[0] * (double)input[0];
       if (fabsf(state[3]) < 0.01f && fabsf(input[0]) < 1.2f) {
         input[0] = 0.0f;
       }
@@ -165,10 +185,37 @@ int main(void)
      * regression rather than the old four-step controller's 20 mm result. */
     check(tail_max - tail_min < 0.030f,
           "closed-loop stiction limit cycle exceeded the LQR baseline");
+    printf("metrics: tail=%.4f sat=%.1f%% du_rms=%.4f wheel_rms=%.3f\n",
+           (double)(tail_max - tail_min),
+           (double)(100.0f * (float)saturated_steps / (float)step),
+           sqrt(delta_square_sum / (double)step),
+           sqrt(wheel_square_sum / (double)step));
   }
-  check(vmc_mpc_model_sample_time_s > 0.0022f &&
-            vmc_mpc_model_sample_time_s < 0.0023f,
-        "MPC model was not generated for the 450 Hz control period");
+  {
+    float state[VMC_MPC_STATE_COUNT] = {
+        0.0f, 0.0f, 0.001f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float baseline_delta;
+
+    vmc_mpc_reset(0U);
+    vmc_mpc_prime(0U, 0.0f, 0.0f);
+    check(vmc_mpc_solve(0U, 0.28f, state, &limits, &output) != 0U,
+          "delta-weight baseline solve failed");
+    baseline_delta = fabsf(output.wheel_delta);
+
+    vmc_mpc_set_delta_weight(vmc_mpc_delta_weight_default[0] * 20.0f,
+                             vmc_mpc_delta_weight_default[1] * 20.0f);
+    vmc_mpc_reset(0U);
+    vmc_mpc_prime(0U, 0.0f, 0.0f);
+    check(vmc_mpc_solve(0U, 0.28f, state, &limits, &output) != 0U,
+          "delta-weight heavy solve failed");
+    check(fabsf(output.wheel_delta) < baseline_delta,
+          "heavier torque-increment weight did not shrink the first step");
+
+    vmc_mpc_set_delta_weight(vmc_mpc_delta_weight_default[0],
+                             vmc_mpc_delta_weight_default[1]);
+  }
+  check(fabsf(vmc_mpc_model_sample_time_s - 0.003f) < 1.0e-6f,
+        "MPC model was not generated for the 333 Hz control period");
 
   if (failures != 0) {
     return 1;

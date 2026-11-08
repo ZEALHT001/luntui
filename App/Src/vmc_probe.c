@@ -4554,6 +4554,10 @@ void vmc_balance_init(void)
   vmc_balance.mpc_leg_authority_applied = 0.0f;
   vmc_balance.mpc_authority_ramp_rate =
       VMC_MPC_AUTHORITY_RAMP_RATE_DEFAULT;
+  vmc_balance.mpc_delta_weight_wheel =
+      vmc_mpc_delta_weight_default[0];
+  vmc_balance.mpc_delta_weight_leg =
+      vmc_mpc_delta_weight_default[1];
   vmc_balance.mpc_left_wheel_torque = 0.0f;
   vmc_balance.mpc_right_wheel_torque = 0.0f;
   vmc_balance.mpc_left_tp_command = 0.0f;
@@ -5121,6 +5125,14 @@ void vmc_balance_update(void)
           : 0U;
   const uint8_t mpc_compute_requested =
       (mpc_apply_requested != 0U || mpc_shadow_requested != 0U) ? 1U : 0U;
+  /* u_prev may only be taken from the applied command while the MPC is a pure
+   * observer.  During an authority ramp the applied command is itself a blend
+   * of LQR and MPC, so feeding it back closes the loop
+   *     u(k) = (1 - a) * LQR + a * u(k - 1) + a * delta_u(k),
+   * whose pole sits at z = a and whose delta_u gain is a / (1 - a): 9x at 90 %
+   * authority.  The 2026-11-09 ramp diverged exactly as it passed 0.8. */
+  const uint8_t mpc_sync_previous_input =
+      (mpc_apply_requested == 0U) ? 1U : 0U;
   uint8_t mpc_left_valid = 0U;
   uint8_t mpc_right_valid = 0U;
   if (mpc_compute_requested != 0U) {
@@ -5270,10 +5282,13 @@ void vmc_balance_update(void)
     vmc_balance.mpc_right_state_dx = right_mpc_state[3];
     vmc_balance.mpc_right_state_phi = right_mpc_state[4];
     vmc_balance.mpc_right_state_dphi = right_mpc_state[5];
-    if (vmc_balance.mpc_active == 0U &&
-        vmc_balance.mpc_shadow_active == 0U) {
-      vmc_mpc_prime(0U, left_wheel_lqr, left_tp_lqr);
-      vmc_mpc_prime(1U, right_wheel_lqr, right_tp_lqr);
+    if (mpc_sync_previous_input != 0U) {
+      vmc_mpc_sync_previous_input(0U,
+                                  vmc_balance.left_wheel_torque_limited,
+                                  vmc_balance.left_tp_cmd);
+      vmc_mpc_sync_previous_input(1U,
+                                  vmc_balance.right_wheel_torque_limited,
+                                  vmc_balance.right_tp_cmd);
     }
     (void)vmc_mpc_solve_pair(
         (float)vmc_probe_state.motion.leg_length_avg, left_mpc_state,
@@ -5295,6 +5310,13 @@ void vmc_balance_update(void)
             vmc_step_towards_float(vmc_balance.mpc_leg_authority_applied,
                                    leg_target, authority_step);
 
+        /* Crossfade against the LQR demand, never against the previous applied
+         * command: at zero authority the latter degenerates to u(k) = u(k-1),
+         * which froze the leg torque in the 2026-11-09 run (leg authority is 0
+         * for the whole wheel test, so the legs kept their last command and
+         * lifted the machine) and turned the wheel command into a low-pass
+         * with a 0.96 pole.  u_prev must stay the MPC's own command so the
+         * blend cannot close a loop through the solver. */
         left_wheel_raw =
             (1.0f - wheel_authority) * left_wheel_lqr +
             wheel_authority * left_mpc.wheel_torque;

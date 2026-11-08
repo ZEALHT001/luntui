@@ -427,7 +427,25 @@ MPC_HORIZON = 10
 MPC_CONTROL_HORIZON = MPC_HORIZON
 MPC_DECISION_COUNT = MPC_CONTROL_HORIZON * MPC_INPUT_COUNT
 MPC_PREDICTION_STATES = MPC_HORIZON * MPC_STATE_COUNT
-MPC_DELTA_WEIGHT = np.array([1.0, 0.05])
+MPC_DELTA_WEIGHT = np.array([0.25, 0.0125])
+# Chosen on the host closed-loop testbed (tools/test_vmc_mpc.c metrics, 3 ms,
+# stiction model).  Sweeping this weight moves the position limit cycle the
+# opposite way intuition expects, because the drift being chased is a
+# stiction limit cycle: damping the torque slew keeps the machine parked
+# inside the stiction band for longer.
+#
+#   weight     tail span   rate-limit saturation   delta_u RMS
+#   10.0       32.6 mm     0.0 %                   0.027
+#    4.0       26.2 mm     1.2 %                   0.034
+#    2.0       21.8 mm     1.8 %                   0.036
+#    1.0       20.1 mm     2.4 %                   0.039
+#    0.25      13.9 mm     7.3 %                   0.064
+#    0.05      12.6 mm    15.8 %                   0.094
+#
+# 0.25 takes most of the position improvement without the 16 % saturation of
+# the 0.05 optimum.  The testbed plants the model against itself, so it cannot
+# price in model mismatch; go below 0.25 only after a clean full-authority
+# hardware run.
 
 
 def mpc_prediction_and_hessian(
@@ -480,6 +498,9 @@ def emit_mpc_model(
         '#include "vmc_mpc.h"',
         "",
         f"const float vmc_mpc_model_sample_time_s = {literal(sample_time_s)};",
+        "",
+        "const float vmc_mpc_delta_weight_default[VMC_MPC_INPUT_COUNT] = {",
+        f"    {literal(MPC_DELTA_WEIGHT[0])}, {literal(MPC_DELTA_WEIGHT[1])}}};",
         "",
         "const vmc_mpc_model_point_t",
         "    vmc_mpc_model_points[VMC_MPC_MODEL_POINTS] = {",

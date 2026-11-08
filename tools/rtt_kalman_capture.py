@@ -620,25 +620,33 @@ FORMAT_V31_PROFILE = Profile(
     },
 )
 
-# A 10-step control horizon doubles the decision vector to 20 values per side
-# (schema 28).
+# A 10-step control horizon doubles the decision vector to 20 interleaved
+# [wheel, leg] values per side (schema 28).
 FORMAT_PROFILE = Profile(
     name="format",
     field_count=271,
     channels={
         **FORMAT_V31_PROFILE.channels,
-        "mpc_left_plan4_wheel": 243,
-        "mpc_left_plan4_tp": 244,
-        "mpc_left_plan5_wheel": 245,
-        "mpc_left_plan5_tp": 246,
-        "mpc_left_plan6_wheel": 247,
-        "mpc_left_plan6_tp": 248,
-        "mpc_left_plan7_wheel": 249,
-        "mpc_left_plan7_tp": 250,
-        "mpc_left_plan8_wheel": 251,
-        "mpc_left_plan8_tp": 252,
-        "mpc_left_plan9_wheel": 253,
-        "mpc_left_plan9_tp": 254,
+        "mpc_left_plan4_wheel": 235,
+        "mpc_left_plan4_tp": 236,
+        "mpc_left_plan5_wheel": 237,
+        "mpc_left_plan5_tp": 238,
+        "mpc_left_plan6_wheel": 239,
+        "mpc_left_plan6_tp": 240,
+        "mpc_left_plan7_wheel": 241,
+        "mpc_left_plan7_tp": 242,
+        "mpc_left_plan8_wheel": 243,
+        "mpc_left_plan8_tp": 244,
+        "mpc_left_plan9_wheel": 245,
+        "mpc_left_plan9_tp": 246,
+        "mpc_right_plan0_wheel": 247,
+        "mpc_right_plan0_tp": 248,
+        "mpc_right_plan1_wheel": 249,
+        "mpc_right_plan1_tp": 250,
+        "mpc_right_plan2_wheel": 251,
+        "mpc_right_plan2_tp": 252,
+        "mpc_right_plan3_wheel": 253,
+        "mpc_right_plan3_tp": 254,
         "mpc_right_plan4_wheel": 255,
         "mpc_right_plan4_tp": 256,
         "mpc_right_plan5_wheel": 257,

@@ -302,19 +302,24 @@ class ParseTests(unittest.TestCase):
 
     def test_extended_plan_parses_from_schema_28(self) -> None:
         fields = format_line(schema_version=28.0).split(",")
-        values = {
-            "mpc_left_plan4_wheel": "0.41",
-            "mpc_left_plan9_tp": "-9.2",
-            "mpc_right_plan4_tp": "4.3",
-            "mpc_right_plan9_wheel": "-0.94",
+        raw_values = {
+            # Left and right plans are emitted as 20 interleaved [T, Tp]
+            # values per side.  Use raw indices so a mirrored parser mapping
+            # cannot accidentally validate itself.
+            235: ("mpc_left_plan4_wheel", "0.41"),
+            246: ("mpc_left_plan9_tp", "-9.2"),
+            247: ("mpc_right_plan0_wheel", "0.9"),
+            256: ("mpc_right_plan4_tp", "4.3"),
+            265: ("mpc_right_plan9_wheel", "-0.94"),
+            266: ("mpc_right_plan9_tp", "-9.4"),
         }
-        for name, value in values.items():
-            fields[1 + FORMAT_PROFILE.channels[name]] = value
+        for index, (_name, value) in raw_values.items():
+            fields[1 + index] = value
         parsed = parse_vmcvoa_line(",".join(fields))
         self.assertIsNotNone(parsed)
         profile, sample = parsed  # type: ignore[misc]
         self.assertEqual(profile.name, "format")
-        for name, value in values.items():
+        for _index, (name, value) in raw_values.items():
             self.assertAlmostEqual(getattr(sample, name), float(value))
 
     def test_previous_format_layout_still_parses(self) -> None:
