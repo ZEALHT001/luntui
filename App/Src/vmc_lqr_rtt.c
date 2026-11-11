@@ -518,6 +518,34 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
                              vmc_balance.mpc_delta_weight_leg);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_abs_weight_wheel", &value) !=
+      0U) {
+    vmc_balance.mpc_abs_weight_wheel =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
+    vmc_mpc_set_abs_weight(vmc_balance.mpc_abs_weight_wheel,
+                           vmc_balance.mpc_abs_weight_leg);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_abs_weight_leg", &value) !=
+      0U) {
+    vmc_balance.mpc_abs_weight_leg =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
+    vmc_mpc_set_abs_weight(vmc_balance.mpc_abs_weight_wheel,
+                           vmc_balance.mpc_abs_weight_leg);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_wheel_delta_max", &value) !=
+      0U) {
+    vmc_balance.mpc_wheel_delta_max =
+        vmc_lqr_rtt_clamp_float(value, 0.01f, 5.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "mpc_leg_delta_max", &value) !=
+      0U) {
+    vmc_balance.mpc_leg_delta_max =
+        vmc_lqr_rtt_clamp_float(value, 0.01f, 20.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "mpc_delta_weight_leg", &value) !=
       0U) {
     vmc_balance.mpc_delta_weight_leg =

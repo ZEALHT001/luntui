@@ -428,6 +428,11 @@ MPC_CONTROL_HORIZON = MPC_HORIZON
 MPC_DECISION_COUNT = MPC_CONTROL_HORIZON * MPC_INPUT_COUNT
 MPC_PREDICTION_STATES = MPC_HORIZON * MPC_STATE_COUNT
 MPC_DELTA_WEIGHT = np.array([0.25, 0.0125])
+# Absolute-input weight: the incremental cost only penalises torque increments,
+# so a large steady torque costs nothing and the solver parks on the 0.20 N.m
+# rate limit.  Swept on the host testbed (scripts/mpc_weight_sweep.py).
+MPC_ABS_WEIGHT = np.array([0.0, 0.0])
+
 # Chosen on the host closed-loop testbed (tools/test_vmc_mpc.c metrics, 3 ms,
 # stiction model).  Sweeping this weight moves the position limit cycle the
 # opposite way intuition expects, because the drift being chased is a
@@ -501,6 +506,9 @@ def emit_mpc_model(
         "",
         "const float vmc_mpc_delta_weight_default[VMC_MPC_INPUT_COUNT] = {",
         f"    {literal(MPC_DELTA_WEIGHT[0])}, {literal(MPC_DELTA_WEIGHT[1])}}};",
+        "",
+        "const float vmc_mpc_abs_weight_default[VMC_MPC_INPUT_COUNT] = {",
+        f"    {literal(MPC_ABS_WEIGHT[0])}, {literal(MPC_ABS_WEIGHT[1])}}};",
         "",
         "const vmc_mpc_model_point_t",
         "    vmc_mpc_model_points[VMC_MPC_MODEL_POINTS] = {",

@@ -36,6 +36,11 @@ extern const float vmc_mpc_model_sample_time_s;
  * the table does not have to be regenerated to sweep them on the bench. */
 extern const float
     vmc_mpc_delta_weight_default[VMC_MPC_INPUT_COUNT];
+/* Absolute-input weights the table was built with.  The incremental cost only
+ * penalises torque increments, so without this term a large steady torque is
+ * free and the solver sits on the rate limit. */
+extern const float
+    vmc_mpc_abs_weight_default[VMC_MPC_INPUT_COUNT];
 
 typedef struct {
   float wheel_torque_min;
@@ -81,6 +86,8 @@ void vmc_mpc_sync_previous_input(uint8_t side, float wheel_torque,
 /* Override the torque-increment weights at runtime.  The Hessian is cached per
  * leg length, so a change invalidates it and the next solve rebuilds it. */
 void vmc_mpc_set_delta_weight(float wheel_weight, float leg_weight);
+/* Override the absolute-input weights at runtime; same cache invalidation. */
+void vmc_mpc_set_abs_weight(float wheel_weight, float leg_weight);
 uint8_t vmc_mpc_solve(uint8_t side, float leg_length,
                       const float state[VMC_MPC_STATE_COUNT],
                       const vmc_mpc_limits_t *limits,

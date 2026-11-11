@@ -4558,6 +4558,10 @@ void vmc_balance_init(void)
       vmc_mpc_delta_weight_default[0];
   vmc_balance.mpc_delta_weight_leg =
       vmc_mpc_delta_weight_default[1];
+  vmc_balance.mpc_abs_weight_wheel = vmc_mpc_abs_weight_default[0];
+  vmc_balance.mpc_abs_weight_leg = vmc_mpc_abs_weight_default[1];
+  vmc_balance.mpc_wheel_delta_max = VMC_MPC_WHEEL_DELTA_MAX_DEFAULT;
+  vmc_balance.mpc_leg_delta_max = VMC_MPC_LEG_DELTA_MAX_DEFAULT;
   vmc_balance.mpc_left_wheel_torque = 0.0f;
   vmc_balance.mpc_right_wheel_torque = 0.0f;
   vmc_balance.mpc_left_tp_command = 0.0f;
@@ -5142,8 +5146,8 @@ void vmc_balance_update(void)
         motor_torque_limit,
         -tp_limit,
         tp_limit,
-        VMC_MPC_WHEEL_DELTA_MAX_DEFAULT,
-        VMC_MPC_LEG_DELTA_MAX_DEFAULT};
+        clamp_float(vmc_balance.mpc_wheel_delta_max, 0.01f, 5.0f),
+        clamp_float(vmc_balance.mpc_leg_delta_max, 0.01f, 20.0f)};
     const float mpc_x_error =
         clamp_float(x_error, -x_feedback_limit, x_feedback_limit);
     const float mpc_dx_error =

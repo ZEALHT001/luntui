@@ -1542,6 +1542,10 @@ typedef struct {
   float mpc_authority_ramp_rate;
   float mpc_delta_weight_wheel;
   float mpc_delta_weight_leg;
+  float mpc_abs_weight_wheel;
+  float mpc_abs_weight_leg;
+  float mpc_wheel_delta_max;
+  float mpc_leg_delta_max;
   float mpc_left_wheel_torque;
   float mpc_right_wheel_torque;
   float mpc_left_tp_command;

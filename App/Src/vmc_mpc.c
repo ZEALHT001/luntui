@@ -35,6 +35,10 @@ static uint8_t vmc_mpc_h_factor_valid;
  * table was built with.  Zero means "unchanged", so the default path costs
  * nothing and the table keeps its conditioning. */
 static float vmc_mpc_delta_weight_offset[VMC_MPC_INPUT_COUNT];
+/* Same offset scheme for the absolute-input weight.  The Hessian part is a
+ * constant overlap matrix that depends only on the horizon, so it can be
+ * rebuilt on the fly when the factor cache is invalidated. */
+static float vmc_mpc_abs_weight_offset[VMC_MPC_INPUT_COUNT];
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -179,6 +183,25 @@ static void add_admm_regularization(void)
           VMC_MPC_ADMM_RHO + vmc_mpc_delta_weight_offset[column];
     }
   }
+
+  /* Absolute-input cost: sum_k u_k' R_u u_k with u_k = u_prev + sum_{j<=k} du_j
+   * contributes a quadratic form whose (m, n) block is scaled by the number of
+   * steps that contain both increments. */
+  for (step = 0U; step < VMC_MPC_CONTROL_HORIZON; step++) {
+    uint32_t other;
+    for (other = 0U; other < VMC_MPC_CONTROL_HORIZON; other++) {
+      const uint32_t later = (step > other) ? step : other;
+      const float overlap = (float)(VMC_MPC_CONTROL_HORIZON - later);
+      for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
+        const float weight =
+            vmc_mpc_abs_weight_default[column] +
+            vmc_mpc_abs_weight_offset[column];
+        vmc_mpc_h_factor[step * VMC_MPC_INPUT_COUNT + column]
+                       [other * VMC_MPC_INPUT_COUNT + column] +=
+            overlap * weight;
+      }
+    }
+  }
 }
 
 static uint8_t factor_hessian(void)
@@ -212,6 +235,7 @@ static uint8_t factor_hessian(void)
 }
 
 static void build_rhs(const float base[VMC_MPC_PREDICTION_STATES],
+                      const float previous_input[VMC_MPC_INPUT_COUNT],
                       float f[VMC_MPC_DECISION_COUNT],
                       const float terminal_cost[VMC_MPC_STATE_COUNT]
                                                [VMC_MPC_STATE_COUNT])
@@ -249,6 +273,17 @@ static void build_rhs(const float base[VMC_MPC_PREDICTION_STATES],
     }
   }
 
+  /* Linear term of the absolute-input cost, A * u_prev. */
+  for (step = 0U; step < VMC_MPC_CONTROL_HORIZON; step++) {
+    const float overlap = (float)(VMC_MPC_CONTROL_HORIZON - step);
+    for (column = 0U; column < VMC_MPC_INPUT_COUNT; column++) {
+      const float weight =
+          vmc_mpc_abs_weight_default[column] +
+          vmc_mpc_abs_weight_offset[column];
+      f[step * VMC_MPC_INPUT_COUNT + column] +=
+          overlap * weight * previous_input[column];
+    }
+  }
 }
 
 static void solve_factor(const float rhs[VMC_MPC_DECISION_COUNT],
@@ -509,6 +544,21 @@ void vmc_mpc_set_delta_weight(float wheel_weight, float leg_weight)
   vmc_mpc_h_factor_valid = 0U;
 }
 
+void vmc_mpc_set_abs_weight(float wheel_weight, float leg_weight)
+{
+  const float offset[VMC_MPC_INPUT_COUNT] = {
+      wheel_weight - vmc_mpc_abs_weight_default[0],
+      leg_weight - vmc_mpc_abs_weight_default[1]};
+
+  if (fabsf(offset[0] - vmc_mpc_abs_weight_offset[0]) < 1.0e-9f &&
+      fabsf(offset[1] - vmc_mpc_abs_weight_offset[1]) < 1.0e-9f) {
+    return;
+  }
+  vmc_mpc_abs_weight_offset[0] = offset[0];
+  vmc_mpc_abs_weight_offset[1] = offset[1];
+  vmc_mpc_h_factor_valid = 0U;
+}
+
 uint8_t vmc_mpc_solve_pair(
     float leg_length, const float left_state[VMC_MPC_STATE_COUNT],
     const float right_state[VMC_MPC_STATE_COUNT],
@@ -568,13 +618,13 @@ uint8_t vmc_mpc_solve_pair(
     vmc_mpc_h_factor_valid = 1U;
   }
 
-  build_rhs(vmc_mpc_base_left, f, terminal_cost);
+  build_rhs(vmc_mpc_base_left, vmc_mpc_axis[0].u_prev, f, terminal_cost);
   (void)solve_box_qp(&vmc_mpc_axis[0], f, limits, left_initial_plan,
                      left_solution);
   left_valid = finalize_output(&vmc_mpc_axis[0], left_solution,
                                left_initial_plan, limits, left_output);
 
-  build_rhs(vmc_mpc_base_right, f, terminal_cost);
+  build_rhs(vmc_mpc_base_right, vmc_mpc_axis[1].u_prev, f, terminal_cost);
   (void)solve_box_qp(&vmc_mpc_axis[1], f, limits, right_initial_plan,
                      right_solution);
   right_valid = finalize_output(&vmc_mpc_axis[1], right_solution,

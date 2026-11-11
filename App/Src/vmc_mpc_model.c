@@ -7,6 +7,9 @@ const float vmc_mpc_model_sample_time_s = 0.003f;
 const float vmc_mpc_delta_weight_default[VMC_MPC_INPUT_COUNT] = {
     0.25f, 0.0125f};
 
+const float vmc_mpc_abs_weight_default[VMC_MPC_INPUT_COUNT] = {
+    0.0f, 0.0f};
+
 const vmc_mpc_model_point_t
     vmc_mpc_model_points[VMC_MPC_MODEL_POINTS] = {
   {0.18f,

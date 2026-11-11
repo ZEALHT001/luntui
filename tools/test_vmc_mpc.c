@@ -2,6 +2,8 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static int failures;
 
@@ -13,14 +15,60 @@ static void check(int condition, const char *message)
   }
 }
 
-int main(void)
+static float read_option(int argc, char **argv, const char *name,
+                         float fallback)
 {
-  const vmc_mpc_limits_t limits = {
+  int index;
+
+  for (index = 1; index + 1 < argc; index += 2) {
+    if (strcmp(argv[index], name) == 0) {
+      return (float)atof(argv[index + 1]);
+    }
+  }
+  return fallback;
+}
+
+int main(int argc, char **argv)
+{
+  vmc_mpc_limits_t limits = {
       -5.5f, 5.5f, -108.0f, 108.0f, 0.2f, 2.0f};
+  const float option_delta_wheel =
+      read_option(argc, argv, "--delta-wheel", -1.0f);
+  const float option_delta_leg =
+      read_option(argc, argv, "--delta-leg", -1.0f);
+  const float option_abs_wheel =
+      read_option(argc, argv, "--abs-wheel", -1.0f);
+  const float option_abs_leg =
+      read_option(argc, argv, "--abs-leg", -1.0f);
+  const float option_rate_wheel =
+      read_option(argc, argv, "--rate-wheel", -1.0f);
+  const float option_rate_leg =
+      read_option(argc, argv, "--rate-leg", -1.0f);
   const float zero_state[VMC_MPC_STATE_COUNT] = {0.0f};
   const float forward_state[VMC_MPC_STATE_COUNT] = {
       0.0f, 0.0f, 0.02f, 0.0f, 0.0f, 0.0f};
   vmc_mpc_output_t output;
+
+  if (option_delta_wheel >= 0.0f || option_delta_leg >= 0.0f) {
+    vmc_mpc_set_delta_weight(
+        (option_delta_wheel >= 0.0f) ? option_delta_wheel
+                                     : vmc_mpc_delta_weight_default[0],
+        (option_delta_leg >= 0.0f) ? option_delta_leg
+                                   : vmc_mpc_delta_weight_default[1]);
+  }
+  if (option_abs_wheel >= 0.0f || option_abs_leg >= 0.0f) {
+    vmc_mpc_set_abs_weight(
+        (option_abs_wheel >= 0.0f) ? option_abs_wheel
+                                   : vmc_mpc_abs_weight_default[0],
+        (option_abs_leg >= 0.0f) ? option_abs_leg
+                                 : vmc_mpc_abs_weight_default[1]);
+  }
+  if (option_rate_wheel >= 0.0f) {
+    limits.wheel_delta_max = option_rate_wheel;
+  }
+  if (option_rate_leg >= 0.0f) {
+    limits.leg_delta_max = option_rate_leg;
+  }
 
   vmc_mpc_reset(0U);
   vmc_mpc_prime(0U, 0.0f, 0.0f);
