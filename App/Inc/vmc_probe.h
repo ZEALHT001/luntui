@@ -1087,6 +1087,16 @@ extern "C" {
 #define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.0f
 #define VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT 1.0f
 #define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 4.0f
+/* Standing hold: after this long with the stick released the velocity
+ * feedback gain ramps to the static value. */
+#define VMC_BALANCE_DX_GAIN_STATIC_DEFAULT   -2.0f
+#define VMC_BALANCE_DX_STATIC_DELAY_MS       1000.0f
+#define VMC_BALANCE_DX_STATIC_SPEED_LIMIT    0.10f
+/* Gain slew, per second, so the hand-off cannot step the leg target. */
+#define VMC_BALANCE_DX_GAIN_RAMP_RATE        4.0f
+/* Shedding the strong gain has to be quicker than adding it: a disturbance
+ * must fall back to the normal gain within a few control cycles. */
+#define VMC_BALANCE_DX_GAIN_RELEASE_RATE     20.0f
 #define VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 4.0f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
@@ -1546,6 +1556,15 @@ typedef struct {
   float mpc_abs_weight_leg;
   float mpc_wheel_delta_max;
   float mpc_leg_delta_max;
+  /* Velocity-feedback gain used after the stick has been released for a
+   * while.  The standing limit cycle shrinks monotonically with more velocity
+   * feedback, but the same gain makes the machine leaden while driving. */
+  float dx_feedback_gain_static;
+  float dx_static_delay_ms;
+  /* The strong gain is only safe near zero speed: at 0.3 m/s and above the
+   * same gain turns the leg-target path into positive feedback and the machine
+   * rings instead of recovering. */
+  float dx_static_speed_limit;
   float mpc_left_wheel_torque;
   float mpc_right_wheel_torque;
   float mpc_left_tp_command;

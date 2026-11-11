@@ -223,6 +223,30 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("(1.0f - leg_authority) * right_tp_lqr", mix_block)
         self.assertNotIn("left_wheel_torque_limited", mix_block)
         self.assertNotIn("left_tp_cmd", mix_block)
+        # Static-hold damping: the stronger gain only engages after the stick
+        # has been released for a while, and the applied gain is ramped.
+        self.assertIn("vmc_dx_static_hold_ms", source)
+        self.assertIn("dx_feedback_gain_static", source)
+        self.assertIn("vmc_dx_gain_applied", source)
+        self.assertIn("if (stick_speed_active != 0U ||", source)
+        # A get-up runs with the stick released, so the strong gain must be
+        # gated out of every scripted sequence.
+        self.assertIn("static_hold_allowed", source)
+        for mode in (
+            "vmc_getup_is_active() == 0U",
+            "vmc_jump_is_active_or_aborted() == 0U",
+            "vmc_stair_is_active() == 0U",
+            "vmc_control.manual_prepose_active == 0U",
+            "vmc_probe_state.airborne_active == 0U",
+            "vmc_probe_state.feedback_timeout_active == 0U",
+        ):
+            self.assertIn(mode, source)
+        self.assertIn("ramp_rate * dt", source)
+        self.assertIn("VMC_BALANCE_DX_GAIN_RELEASE_RATE", source)
+        # The strong gain is only safe near zero speed; a kick must drop back
+        # to the normal gain instead of ringing.
+        self.assertIn("static_speed_ok", source)
+        self.assertIn("dx_static_speed_limit", source)
         self.assertIn("const uint8_t authority_ramping =", source)
         self.assertIn(
             "hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP", source
@@ -283,6 +307,9 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("vmc_mpc_delta_weight_offset[column]", solver)
         self.assertIn("vmc_mpc_h_factor_valid = 0U;", solver)
         self.assertIn("vmc_mpc_set_delta_weight", solver)
+        self.assertIn('"dx_feedback_gain_static"', rtt)
+        self.assertIn('"dx_static_delay_ms"', rtt)
+        self.assertIn('"dx_static_speed_limit"', rtt)
         self.assertIn('"mpc_delta_weight_wheel"', rtt)
         self.assertIn('"mpc_delta_weight_leg"', rtt)
         self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)

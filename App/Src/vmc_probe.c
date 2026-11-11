@@ -67,6 +67,10 @@ static float vmc_mpc_x_integral;
 static uint8_t vmc_mpc_integral_awake;
 static uint8_t vmc_mpc_integral_hold_reason;
 static uint32_t vmc_mpc_integral_low_speed_ms;
+/* Static-hold damping state.  The applied gain is kept separate from the
+ * configured one so the hand-off between them can be ramped. */
+static uint32_t vmc_dx_static_hold_ms;
+static float vmc_dx_gain_applied = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
 static uint8_t vmc_balance_controller_was_enabled;
 static uint8_t vmc_mpc_handoff_was_active;
 /* A fall detected while the robot was enabled requires channel 4 to be moved
@@ -4420,6 +4424,13 @@ void vmc_balance_init(void)
   vmc_balance.x_limit = VMC_BODY_MOTION_X_LIMIT_DEFAULT;
   vmc_balance.x_feedback_gain = VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.dx_feedback_gain = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
+  vmc_balance.dx_feedback_gain_static =
+      VMC_BALANCE_DX_GAIN_STATIC_DEFAULT;
+  vmc_balance.dx_static_delay_ms = VMC_BALANCE_DX_STATIC_DELAY_MS;
+  vmc_balance.dx_static_speed_limit =
+      VMC_BALANCE_DX_STATIC_SPEED_LIMIT;
+  vmc_dx_static_hold_ms = 0U;
+  vmc_dx_gain_applied = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.x_feedback_limit = VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT;
   vmc_balance.dx_feedback_limit = VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT;
   vmc_balance.speed_control_enable = VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT;
@@ -4865,10 +4876,65 @@ void vmc_balance_update(void)
                   VMC_BODY_MOTION_X_LIMIT_DEFAULT);
   const float x_feedback_error =
       clamp_float(x_feedback_raw, -x_feedback_limit, x_feedback_limit);
+  /* Static-hold damping.  Holding still is when the stiction limit cycle
+   * shows up, and it shrinks monotonically with more velocity feedback: the
+   * 2026-11-12 sweep measured 56.5 mm peak-to-peak at gain -1.0 and 37.4 mm at
+   * -2.0.  The stronger gain is only wanted while parked, though, because it
+   * makes the machine leaden to drive.  So it engages after the stick has been
+   * released for dx_static_delay_ms and releases as soon as a command appears,
+   * both through a slew-limited gain so the leg target cannot step.
+   *
+   * It must not engage during a scripted sequence.  The stick is released for
+   * the whole of a get-up, so without this gate the strong gain would land in
+   * the middle of the get-up on top of the state machine's own leg target. */
+  {
+    const float dt = (float)vmc_loop_dt();
+    const uint32_t hold_dt_ms = clamp_u32(
+        (uint32_t)(dt * 1000.0f), 1U, 100U);
+    const uint8_t static_hold_allowed =
+        (vmc_getup_is_active() == 0U &&
+         vmc_jump_is_active_or_aborted() == 0U &&
+         vmc_stair_is_active() == 0U &&
+         vmc_control.manual_prepose_active == 0U &&
+         vmc_probe_state.airborne_active == 0U &&
+         vmc_probe_state.feedback_timeout_active == 0U)
+            ? 1U
+            : 0U;
+    /* Speed gate: a kick leaves the stick released, so without this the
+     * strong gain would fight a disturbance at 0.3 m/s and ring.  Above the
+     * limit the velocity loop drops straight back to the normal gain. */
+    const uint8_t static_speed_ok =
+        (fabsf((float)motion->kf_dx) <=
+         clamp_float(vmc_balance.dx_static_speed_limit, 0.0f, 1.0f))
+            ? 1U
+            : 0U;
+    if (stick_speed_active != 0U || static_hold_allowed == 0U ||
+        static_speed_ok == 0U) {
+      vmc_dx_static_hold_ms = 0U;
+    } else {
+      vmc_dx_static_hold_ms =
+          clamp_u32(vmc_dx_static_hold_ms + hold_dt_ms, 0U, 60000U);
+    }
+    {
+      const uint32_t delay_ms = (uint32_t)clamp_float(
+          vmc_balance.dx_static_delay_ms, 0.0f, 10000.0f);
+      const float target_gain =
+          (vmc_dx_static_hold_ms >= delay_ms)
+              ? clamp_float(vmc_balance.dx_feedback_gain_static,
+                            -200.0f, 200.0f)
+              : clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f);
+      const float ramp_rate =
+          (fabsf(target_gain) < fabsf(vmc_dx_gain_applied))
+              ? VMC_BALANCE_DX_GAIN_RELEASE_RATE
+              : VMC_BALANCE_DX_GAIN_RAMP_RATE;
+      vmc_dx_gain_applied = vmc_step_towards_float(
+          vmc_dx_gain_applied, target_gain, ramp_rate * dt);
+    }
+  }
   const float dx_raw =
       (vmc_balance.dx_feedback_enable != 0U)
           ? ((float)motion->kf_dx - dx_feedback_target) *
-                clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f)
+                vmc_dx_gain_applied
           : 0.0f;
   const float dx_feedback_limit =
       clamp_float(vmc_balance.dx_feedback_limit, 0.0f, 30.0f);
