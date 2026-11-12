@@ -11,6 +11,9 @@ static uint8_t vmc_leso_enable;
 static float vmc_leso_compensation;
 static float vmc_leso_wheel_limit;
 static float vmc_leso_leg_limit;
+/* The observer still carries measurement noise; only the steady component is
+ * wanted, so the applied correction is low-passed at about 5 Hz. */
+static float vmc_leso_filtered[VMC_LESO_INPUT_COUNT];
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -74,6 +77,7 @@ static void interpolate_model(float leg_length)
 void vmc_leso_reset(void)
 {
   memset(vmc_leso_state, 0, sizeof(vmc_leso_state));
+  memset(vmc_leso_filtered, 0, sizeof(vmc_leso_filtered));
 }
 
 void vmc_leso_set_enable(uint8_t enable)
@@ -138,10 +142,17 @@ void vmc_leso_update(float leg_length,
 
   memcpy(vmc_leso_state, next, sizeof(vmc_leso_state));
 
-  disturbance[0] = vmc_leso_compensation *
-                   clamp_float(vmc_leso_state[VMC_LESO_PLANT_STATES],
-                               -vmc_leso_wheel_limit, vmc_leso_wheel_limit);
-  disturbance[1] = vmc_leso_compensation *
-                   clamp_float(vmc_leso_state[VMC_LESO_PLANT_STATES + 1U],
-                               -vmc_leso_leg_limit, vmc_leso_leg_limit);
+  {
+    const float alpha = 0.086f; /* ~5 Hz */
+    uint32_t channel;
+    for (channel = 0U; channel < VMC_LESO_INPUT_COUNT; channel++) {
+      const float limit = (channel == 0U) ? vmc_leso_wheel_limit
+                                          : vmc_leso_leg_limit;
+      const float raw = clamp_float(
+          vmc_leso_state[VMC_LESO_PLANT_STATES + channel], -limit, limit);
+      vmc_leso_filtered[channel] +=
+          alpha * (raw - vmc_leso_filtered[channel]);
+      disturbance[channel] = vmc_leso_compensation * vmc_leso_filtered[channel];
+    }
+  }
 }

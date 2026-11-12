@@ -493,7 +493,10 @@ LESO_INPUT_COUNT = 2
 LESO_STATE_COUNT = LESO_PLANT_STATES + LESO_INPUT_COUNT
 # System poles are pulled in by this factor relative to the augmented plant;
 # the disturbance poles stay slow so the estimate does not chase noise.
-LESO_FAST_FACTOR = 0.4
+# 0.4 is what the 1 kHz reference uses; at this 333 Hz loop the same factor put
+# the observer at the Nyquist limit and amplified measurement noise into a
+# 0.16 N.m jitter on the wheel command, which stiction rectified into creep.
+LESO_FAST_FACTOR = 0.7
 LESO_DISTURBANCE_POLE = 0.985
 
 

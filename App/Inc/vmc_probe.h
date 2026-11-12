@@ -1144,9 +1144,14 @@ extern "C" {
  * This is also the furthest the controller will ever walk the machine back: at
  * 0.25 m a hard kick was followed by a deliberate return to the original spot,
  * which is not what the operator wants - the machine should settle where the
- * disturbance left it and balance there.  0.06 m keeps the correction for slow
- * standing drift while turning a kick into a re-anchor instead of a return. */
-#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.06f
+ * disturbance left it and balance there.
+ *
+ * It trades two behaviours against each other.  0.06 m re-anchors fastest after
+ * a kick but lets floor slope through: a 52 s standing test crept at 1.2-2.0
+ * mm/s.  0.25 m holds position but walks the machine home after a kick.  0.10 m
+ * measured -0.24 mm/s over the same test - an order of magnitude better than
+ * 0.06 - while still capping the walk-back at 10 cm, so that is the default. */
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.10f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
