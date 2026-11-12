@@ -45,7 +45,7 @@
 /* Bumped whenever the VMCVOFA layout or the encoding of an existing field
  * changes.  Field count alone is not enough: Q/R switched from a three-decimal
  * to a nine-decimal fixed point without adding or removing any field. */
-#define VMC_LQR_RTT_SCHEMA_VERSION 30U
+#define VMC_LQR_RTT_SCHEMA_VERSION 31U
 
 static char lqr_rtt_line[VMC_LQR_RTT_LINE_MAX];
 static uint16_t lqr_rtt_line_len;
@@ -532,6 +532,25 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
     vmc_mpc_set_abs_weight(vmc_balance.mpc_abs_weight_wheel,
                            vmc_balance.mpc_abs_weight_leg);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_enable", &value) != 0U) {
+    vmc_balance.leso_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_compensation", &value) != 0U) {
+    vmc_balance.leso_compensation =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_wheel_limit", &value) != 0U) {
+    vmc_balance.leso_wheel_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_leg_limit", &value) != 0U) {
+    vmc_balance.leso_leg_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "mpc_wheel_delta_max", &value) !=
@@ -2026,6 +2045,16 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)b->mpc_integral_saturated);
+  /* VMCVOFA fields 271..274: wheel odometry and the LESO disturbance
+   * estimates, so the translational states the observer uses are auditable. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->odom_x);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->odom_v);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->leso_wheel_disturbance);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)b->leso_leg_disturbance);
 
   if (offset < ((int)sizeof(line) - 2)) {
     line[offset++] = '\n';

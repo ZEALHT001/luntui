@@ -150,6 +150,54 @@ class GeneratedModelTest(unittest.TestCase):
         self.assertLess(tail_span, lqr_tail_span * 1.10 + 0.002)
 
 
+class LesoTest(unittest.TestCase):
+    def test_observer_converges_to_a_constant_disturbance(self) -> None:
+        """The observer is what removes a slope's steady-state error, so the
+        host test drives a stabilised plant with a constant input disturbance
+        and checks that the estimate reaches it."""
+        compiler = (
+            shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+        )
+        if compiler is None:
+            self.skipTest("no host C compiler available")
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "test_vmc_leso"
+            command = [
+                compiler,
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                f"-I{ROOT / 'App' / 'Inc'}",
+                str(ROOT / "tools" / "test_vmc_leso.c"),
+                str(ROOT / "App" / "Src" / "vmc_leso.c"),
+                str(ROOT / "App" / "Src" / "vmc_leso_model.c"),
+                "-lm",
+                "-o",
+                str(executable),
+            ]
+            build = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(
+                build.returncode, 0, f"build failed:\n{build.stderr}"
+            )
+            run = subprocess.run([str(executable)], capture_output=True, text=True)
+            self.assertEqual(
+                run.returncode, 0, f"test failed:\n{run.stdout}\n{run.stderr}"
+            )
+
+    def test_model_matches_the_generator(self) -> None:
+        import numpy as np
+
+        from derive_vmc_lqr_abk import PRESETS, emit_leso_model
+
+        lengths = np.linspace(0.180, 0.385, num=9)
+        expected = emit_leso_model(PRESETS["abk"], lengths, 0.003)
+        actual = (ROOT / "App" / "Src" / "vmc_leso_model.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(actual, expected)
+
+
 class FirmwareSolverTest(unittest.TestCase):
     def test_forward_state_keeps_verified_kalman_fusion(self) -> None:
         source = (ROOT / "App" / "Src" / "vmc_probe.c").read_text(
@@ -321,7 +369,7 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn('"dx_static_speed_low"', rtt)
         self.assertIn('"mpc_delta_weight_wheel"', rtt)
         self.assertIn('"mpc_delta_weight_leg"', rtt)
-        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)
+        self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 31U", rtt)
         for signal in (
             "mpc_leg_length",
             "mpc_left_state_dphi",

@@ -624,7 +624,7 @@ FORMAT_V31_PROFILE = Profile(
 # [wheel, leg] values per side (schema 28).
 FORMAT_PROFILE = Profile(
     name="format",
-    field_count=271,
+    field_count=275,
     channels={
         **FORMAT_V31_PROFILE.channels,
         "mpc_left_plan4_wheel": 235,
@@ -663,6 +663,10 @@ FORMAT_PROFILE = Profile(
         "mpc_integral_awake": 268,
         "mpc_integral_hold_reason": 269,
         "mpc_integral_saturated": 270,
+        "odom_x": 271,
+        "odom_v": 272,
+        "leso_wheel_disturbance": 273,
+        "leso_leg_disturbance": 274,
     },
 )
 
@@ -1030,6 +1034,10 @@ CSV_FIELDS = [
     "mpc_integral_awake",
     "mpc_integral_hold_reason",
     "mpc_integral_saturated",
+    "odom_x",
+    "odom_v",
+    "leso_wheel_disturbance",
+    "leso_leg_disturbance",
     "x_offset",
     "x_error",
 ]
@@ -1247,6 +1255,10 @@ class KalmanSample:
     mpc_integral_awake: float = INVALID_VALUE
     mpc_integral_hold_reason: float = INVALID_VALUE
     mpc_integral_saturated: float = INVALID_VALUE
+    odom_x: float = INVALID_VALUE
+    odom_v: float = INVALID_VALUE
+    leso_wheel_disturbance: float = INVALID_VALUE
+    leso_leg_disturbance: float = INVALID_VALUE
     mpc_left_state_theta: float = INVALID_VALUE
     mpc_left_state_dtheta: float = INVALID_VALUE
     mpc_left_state_x: float = INVALID_VALUE
@@ -1726,6 +1738,10 @@ def parse_vmcvoa_line(
         mpc_integral_awake=channel("mpc_integral_awake"),
         mpc_integral_hold_reason=channel("mpc_integral_hold_reason"),
         mpc_integral_saturated=channel("mpc_integral_saturated"),
+        odom_x=channel("odom_x"),
+        odom_v=channel("odom_v"),
+        leso_wheel_disturbance=channel("leso_wheel_disturbance"),
+        leso_leg_disturbance=channel("leso_leg_disturbance"),
         mpc_left_state_theta=channel("mpc_left_state_theta"),
         mpc_left_state_dtheta=channel("mpc_left_state_dtheta"),
         mpc_left_state_x=channel("mpc_left_state_x"),
@@ -2848,6 +2864,14 @@ def iter_csv_samples(path: Path) -> Iterator[KalmanSample]:
                 ),
                 mpc_integral_saturated=_safe_float(
                     row.get("mpc_integral_saturated", "")
+                ),
+                odom_x=_safe_float(row.get("odom_x", "")),
+                odom_v=_safe_float(row.get("odom_v", "")),
+                leso_wheel_disturbance=_safe_float(
+                    row.get("leso_wheel_disturbance", "")
+                ),
+                leso_leg_disturbance=_safe_float(
+                    row.get("leso_leg_disturbance", "")
                 ),
                 mpc_left_state_theta=_safe_float(
                     row.get("mpc_left_state_theta", "")

@@ -1107,6 +1107,14 @@ extern "C" {
  * and takes about a second from folded, and the enable edge otherwise carried
  * the previous -2.0 straight into it. */
 #define VMC_BALANCE_DX_STATIC_SETTLE_MS      3000U
+/* Wheel odometry: freeze the integrator when the two sides disagree by more
+ * than this (m/s), which is what a slipping wheel looks like. */
+#define VMC_ODOM_SLIP_LIMIT                  0.15f
+/* LESO defaults: off, full depth when enabled, output capped in input units. */
+#define VMC_LESO_ENABLE_DEFAULT              0U
+#define VMC_LESO_COMPENSATION_DEFAULT        1.0f
+#define VMC_LESO_WHEEL_LIMIT_DEFAULT         3.0f
+#define VMC_LESO_LEG_LIMIT_DEFAULT           20.0f
 /* Gain slew, per second, so the hand-off cannot step the leg target. */
 #define VMC_BALANCE_DX_GAIN_RAMP_RATE        4.0f
 /* Shedding the strong gain has to be quicker than adding it: a disturbance
@@ -1577,6 +1585,20 @@ typedef struct {
   float mpc_abs_weight_leg;
   float mpc_wheel_delta_max;
   float mpc_leg_delta_max;
+  /* Wheel-odometry position and velocity.  These are the translational states
+   * the LESO and (later) the position loop will use: the fused Kalman estimate
+   * carries the wheel-channel inconsistency the NIS reports, and the wheels are
+   * the only ground truth available at low speed. */
+  float odom_x;
+  float odom_v;
+  /* LESO disturbance observer.  Default off so the behaviour is unchanged
+   * until it has been validated on the machine. */
+  uint8_t leso_enable;
+  float leso_compensation;
+  float leso_wheel_limit;
+  float leso_leg_limit;
+  float leso_wheel_disturbance;
+  float leso_leg_disturbance;
   /* Velocity-feedback gain used after the stick has been released for a
    * while.  The standing limit cycle shrinks monotonically with more velocity
    * feedback, but the same gain makes the machine leaden while driving. */
