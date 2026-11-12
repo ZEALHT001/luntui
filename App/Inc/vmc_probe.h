@@ -1110,8 +1110,11 @@ extern "C" {
 /* Wheel odometry: freeze the integrator when the two sides disagree by more
  * than this (m/s), which is what a slipping wheel looks like. */
 #define VMC_ODOM_SLIP_LIMIT                  0.15f
-/* LESO defaults: off, full depth when enabled, output capped in input units. */
-#define VMC_LESO_ENABLE_DEFAULT              0U
+/* LESO defaults: enabled, full depth, output capped in input units.  The
+ * observer is on by default from 2026-11-12; its estimates are low-passed at
+ * 5 Hz and limited per channel, so a wrong estimate degrades to a bounded
+ * offset rather than a runaway. */
+#define VMC_LESO_ENABLE_DEFAULT              1U
 #define VMC_LESO_COMPENSATION_DEFAULT        1.0f
 #define VMC_LESO_WHEEL_LIMIT_DEFAULT         3.0f
 #define VMC_LESO_LEG_LIMIT_DEFAULT           20.0f
