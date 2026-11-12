@@ -1132,7 +1132,13 @@ extern "C" {
  * metres).  At 0.25 the loop commands several times the friction threshold and
  * the same test holds to a few centimetres.  Raising it further buys nothing -
  * the residual limit cycle is closed-loop dynamics, not authority. */
-#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.25f
+/* How far the position loop may pull back before the anchor is dragged along.
+ * This is also the furthest the controller will ever walk the machine back: at
+ * 0.25 m a hard kick was followed by a deliberate return to the original spot,
+ * which is not what the operator wants - the machine should settle where the
+ * disturbance left it and balance there.  0.06 m keeps the correction for slow
+ * standing drift while turning a kick into a re-anchor instead of a return. */
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.06f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
