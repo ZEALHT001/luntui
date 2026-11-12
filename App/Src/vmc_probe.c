@@ -32,6 +32,9 @@ static uint8_t vmc_yaw_unwrap_initialized;
 static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
 static uint32_t vmc_jump_auto_hold_ms;
+/* Jump-mode debounce: how long the selected mode has been unchanged. */
+static uint32_t vmc_jump_mode_hold_ms;
+static uint8_t vmc_jump_mode_last;
 static uint8_t vmc_stair_auto_armed;
 static uint8_t vmc_stair_preimpact_armed;
 static double vmc_stair_preimpact_speed_ref;
@@ -70,6 +73,9 @@ static uint32_t vmc_mpc_integral_low_speed_ms;
 /* Static-hold damping state.  The applied gain is kept separate from the
  * configured one so the hand-off between them can be ramped. */
 static uint32_t vmc_dx_static_hold_ms;
+/* Time since the controller last became enabled, used to keep the strong gain
+ * out of the leg-extension transient. */
+static uint32_t vmc_dx_enabled_ms;
 static float vmc_dx_gain_applied = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
 static uint8_t vmc_balance_controller_was_enabled;
 static uint8_t vmc_mpc_handoff_was_active;
@@ -1410,6 +1416,7 @@ static void vmc_jump_finish(uint8_t stage, uint8_t reason, uint32_t now)
   }
   vmc_control.jump_armed = 0U;
   vmc_jump_auto_hold_ms = 0U;
+  vmc_jump_mode_hold_ms = 0U;
   vmc_control.jump_last_finish_ms = now;
   vmc_control.jump_land_contact_ms = 0U;
   /* Drop the airborne latch the jump itself asserted.
@@ -1560,17 +1567,31 @@ static void vmc_jump_update(void)
   }
   vmc_control.jump_target_length = (float)vmc_jump_stage_target_length();
 
+  /* Debounce the selected mode.  Without this a single corrupted SBUS frame,
+   * or the moment the switch spends crossing the middle AUTO band, can arm a
+   * jump: the manual path used to fire on the very first frame that read above
+   * the ON threshold. */
+  if (jump_mode != vmc_jump_mode_last) {
+    vmc_jump_mode_last = jump_mode;
+    vmc_jump_mode_hold_ms = 0U;
+  } else {
+    vmc_jump_mode_hold_ms =
+        clamp_u32(vmc_jump_mode_hold_ms + dt_ms, 0U, 60000U);
+  }
+  const uint8_t jump_mode_stable =
+      (vmc_jump_mode_hold_ms >= VMC_JUMP_MODE_STABLE_MS) ? 1U : 0U;
+
   if (vmc_control.jump_stage == VMC_JUMP_STAGE_IDLE) {
     const uint8_t cooled_down =
         ((now - vmc_control.jump_last_finish_ms) >= cooldown_ms) ? 1U : 0U;
     const uint8_t auto_now =
-        (cooled_down != 0U && jump_mode == RC_JUMP_AUTO &&
-         vmc_jump_auto_ready() != 0U)
+        (jump_mode_stable != 0U && cooled_down != 0U &&
+         jump_mode == RC_JUMP_AUTO && vmc_jump_auto_ready() != 0U)
             ? 1U
             : 0U;
     const uint8_t manual_now =
-        (cooled_down != 0U && jump_mode == RC_JUMP_MANUAL &&
-         vmc_jump_manual_latched == 0U)
+        (jump_mode_stable != 0U && cooled_down != 0U &&
+         jump_mode == RC_JUMP_MANUAL && vmc_jump_manual_latched == 0U)
             ? 1U
             : 0U;
 
@@ -4429,7 +4450,10 @@ void vmc_balance_init(void)
   vmc_balance.dx_static_delay_ms = VMC_BALANCE_DX_STATIC_DELAY_MS;
   vmc_balance.dx_static_speed_limit =
       VMC_BALANCE_DX_STATIC_SPEED_LIMIT;
+  vmc_balance.dx_static_speed_low =
+      VMC_BALANCE_DX_STATIC_SPEED_LOW;
   vmc_dx_static_hold_ms = 0U;
+  vmc_dx_enabled_ms = 0U;
   vmc_dx_gain_applied = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.x_feedback_limit = VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT;
   vmc_balance.dx_feedback_limit = VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT;
@@ -4900,17 +4924,25 @@ void vmc_balance_update(void)
          vmc_probe_state.feedback_timeout_active == 0U)
             ? 1U
             : 0U;
-    /* Speed gate: a kick leaves the stick released, so without this the
-     * strong gain would fight a disturbance at 0.3 m/s and ring.  Above the
-     * limit the velocity loop drops straight back to the normal gain. */
-    const uint8_t static_speed_ok =
-        (fabsf((float)motion->kf_dx) <=
-         clamp_float(vmc_balance.dx_static_speed_limit, 0.0f, 1.0f))
-            ? 1U
-            : 0U;
+    if (vmc_control.enabled == 0U) {
+      vmc_dx_enabled_ms = 0U;
+    } else {
+      vmc_dx_enabled_ms =
+          clamp_u32(vmc_dx_enabled_ms + hold_dt_ms, 0U, 60000U);
+    }
+    const uint8_t settled =
+        (vmc_dx_enabled_ms >= VMC_BALANCE_DX_STATIC_SETTLE_MS) ? 1U : 0U;
+
     if (stick_speed_active != 0U || static_hold_allowed == 0U ||
-        static_speed_ok == 0U) {
+        settled == 0U) {
       vmc_dx_static_hold_ms = 0U;
+      /* Snap back rather than slew when a sequence or the enable transient is
+       * the reason: the applied gain must never be the strong one at the
+       * moment the legs start moving. */
+      if (static_hold_allowed == 0U || settled == 0U) {
+        vmc_dx_gain_applied =
+            clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f);
+      }
     } else {
       vmc_dx_static_hold_ms =
           clamp_u32(vmc_dx_static_hold_ms + hold_dt_ms, 0U, 60000U);
@@ -4918,11 +4950,36 @@ void vmc_balance_update(void)
     {
       const uint32_t delay_ms = (uint32_t)clamp_float(
           vmc_balance.dx_static_delay_ms, 0.0f, 10000.0f);
-      const float target_gain =
-          (vmc_dx_static_hold_ms >= delay_ms)
-              ? clamp_float(vmc_balance.dx_feedback_gain_static,
-                            -200.0f, 200.0f)
-              : clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f);
+      const float normal_gain =
+          clamp_float(vmc_balance.dx_feedback_gain, -200.0f, 200.0f);
+      const float static_gain =
+          clamp_float(vmc_balance.dx_feedback_gain_static, -200.0f, 200.0f);
+      float target_gain = normal_gain;
+
+      /* Speed schedule rather than a gate.  -2.0 is only stable in the
+       * small-signal regime, so at high speed the gain has to be the normal
+       * one; but switching to it abruptly left the residual ring after a kick
+       * with no extra damping at all (0.1-0.2 m/s), which is why recovery took
+       * 6-10 s.  Interpolating across that band gives -1.3 to -1.6 exactly
+       * where the ring lives while still returning to -1.0 at speed. */
+      if (vmc_dx_static_hold_ms >= delay_ms) {
+        const float high =
+            clamp_float(vmc_balance.dx_static_speed_limit, 0.02f, 1.0f);
+        const float low =
+            clamp_float(vmc_balance.dx_static_speed_low, 0.0f, high * 0.99f);
+        const float span = (high > low) ? (high - low) : 1.0e-6f;
+        const float speed = fabsf((float)motion->kf_dx);
+        float blend;
+        if (speed <= low) {
+          blend = 1.0f;
+        } else if (speed >= high) {
+          blend = 0.0f;
+        } else {
+          blend = (high - speed) / span;
+        }
+        target_gain = normal_gain + (static_gain - normal_gain) * blend;
+      }
+
       const float ramp_rate =
           (fabsf(target_gain) < fabsf(vmc_dx_gain_applied))
               ? VMC_BALANCE_DX_GAIN_RELEASE_RATE
@@ -6272,6 +6329,7 @@ void vmc_control_init(void)
   vmc_fall_prev_fully_fallen = 0U;
   vmc_jump_last_update_ms = 0U;
   vmc_jump_auto_hold_ms = 0U;
+  vmc_jump_mode_hold_ms = 0U;
   vmc_stair_auto_armed = 0U;
   vmc_control.ramp_active = 0U;
 }

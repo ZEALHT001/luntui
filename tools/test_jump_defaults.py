@@ -95,6 +95,22 @@ class JumpDefaultsTest(unittest.TestCase):
         self.assertGreaterEqual(release, 100.0)
         self.assertGreater(release, confirm)
 
+    def test_jump_mode_is_debounced(self) -> None:
+        """SBUS has no checksum, so a corrupted payload can put any value on
+        the jump channel, and the switch spends time in the middle AUTO band
+        whenever it moves.  Neither may fire a jump: the selected mode has to
+        hold for the debounce window before it can arm anything."""
+        self.assertGreaterEqual(_macro("VMC_JUMP_MODE_STABLE_MS"), 100.0)
+        source = (ROOT / "App" / "Src" / "vmc_probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("jump_mode_stable", source)
+        for name in ("auto_now", "manual_now"):
+            block = source.split(f"const uint8_t {name} =", 1)[1].split(
+                "? 1U", 1
+            )[0]
+            self.assertIn("jump_mode_stable != 0U", block)
+
     def test_jump_can_lift_the_machine(self) -> None:
         """The jump force must exceed the machine's weight, with margin.
 

@@ -96,6 +96,11 @@ RC_STATE_FRAME_FRACTION = 0.9
 # 50 Hz this is 0.4 s.  Below it the operator-command paths stay closed and the
 # verdict falls back to the gated outputs.
 RC_STATE_MIN_FRAMES = 20
+# A forward jump in the MCU timestamp means the J-Link handed over whatever was
+# still buffered from an earlier session.  That prefix describes a different
+# moment in time - often one where the robot was still driving - and must not
+# vote on whether it is safe to reset now.
+STALE_JUMP_MS = 1000.0
 
 
 def _finite(value: float) -> bool:
@@ -113,8 +118,30 @@ class Probe:
     rc_offline_frames: int = 0
     s1_frames: int = 0
     s1_down_frames: int = 0
+    dropped_stale_frames: int = 0
+    last_mcu_ms: float | None = None
+
+    def _restart_window(self, dropped: int) -> None:
+        """Throw away everything accumulated before a stale prefix."""
+        self.dropped_stale_frames += dropped
+        self.frames = 0
+        self.rejected = 0
+        self.peaks.clear()
+        self.active.clear()
+        self.rc_offline_frames = 0
+        self.s1_frames = 0
+        self.s1_down_frames = 0
 
     def observe(self, sample) -> None:
+        stamp = getattr(sample, "mcu_time_ms", float("nan"))
+        if _finite(stamp):
+            if (
+                self.last_mcu_ms is not None
+                and stamp - self.last_mcu_ms > STALE_JUMP_MS
+            ):
+                self._restart_window(self.frames)
+            self.last_mcu_ms = stamp
+
         self.frames += 1
 
         # Corrupt/partial lines decode to nonsense magnitudes; count them for
@@ -238,6 +265,11 @@ def main() -> int:
         return 2
 
     print(f"{probe.frames} frames over {args.seconds:.0f} s; peak activity:")
+    if probe.dropped_stale_frames:
+        print(
+            f"  (dropped {probe.dropped_stale_frames} buffered frames from an "
+            "earlier session)"
+        )
     if probe.rejected:
         print(f"  ({probe.rejected} out-of-range samples ignored as corrupt)")
     limits = {

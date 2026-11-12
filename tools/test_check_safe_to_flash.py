@@ -136,6 +136,52 @@ def _probe(count: int, **updates) -> Probe:
     return probe
 
 
+class StaleBufferTest(unittest.TestCase):
+    """The J-Link hands over whatever was buffered, so a capture usually starts
+    with frames from an earlier session.  Those describe a different moment and
+    must not vote on whether it is safe to reset now."""
+
+    def test_buffered_prefix_is_dropped(self) -> None:
+        probe = Probe()
+        # An earlier session: the robot was up and driving.
+        for index in range(40):
+            probe.observe(
+                _sample(
+                    mcu_time_ms=float(index * 20),
+                    remote_s1=1.0,
+                    rc_source=3.0,
+                    airborne_joint_torque_max=18.0,
+                    left_wheel_current=15000.0,
+                )
+            )
+        # The live session: remote off, everything idle.
+        for index in range(100):
+            probe.observe(
+                _sample(
+                    mcu_time_ms=500000.0 + float(index * 20),
+                    rc_source=RC_SOURCE_NONE,
+                )
+            )
+
+        self.assertEqual(probe.dropped_stale_frames, 40)
+        self.assertEqual(probe.frames, 100)
+        self.assertFalse(probe.busy())
+        self.assertTrue(probe.rc_offline())
+        self.assertEqual(probe.s1_frames, 0)
+
+    def test_a_continuous_stream_is_not_dropped(self) -> None:
+        probe = Probe()
+        for index in range(100):
+            probe.observe(
+                _sample(
+                    mcu_time_ms=float(index * 20),
+                    rc_source=RC_SOURCE_NONE,
+                )
+            )
+        self.assertEqual(probe.dropped_stale_frames, 0)
+        self.assertEqual(probe.frames, 100)
+
+
 class RemoteStateTest(unittest.TestCase):
     """The operator's stop command is positive evidence, and is enough alone."""
 

@@ -244,9 +244,17 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("ramp_rate * dt", source)
         self.assertIn("VMC_BALANCE_DX_GAIN_RELEASE_RATE", source)
         # The strong gain is only safe near zero speed; a kick must drop back
-        # to the normal gain instead of ringing.
-        self.assertIn("static_speed_ok", source)
+        # to the normal gain instead of ringing, and the band between the two
+        # knees is interpolated so the residual ring still sees damping.
         self.assertIn("dx_static_speed_limit", source)
+        self.assertIn("dx_static_speed_low", source)
+        self.assertIn("normal_gain + (static_gain - normal_gain) * blend", source)
+        # The enable edge used to carry the previous strong gain straight into
+        # the leg-extension ramp; it now snaps back and waits for the settle.
+        self.assertIn("vmc_dx_enabled_ms", source)
+        self.assertIn("VMC_BALANCE_DX_STATIC_SETTLE_MS", source)
+        self.assertIn("settled == 0U", source)
+        self.assertNotIn("static_speed_ok", source)
         self.assertIn("const uint8_t authority_ramping =", source)
         self.assertIn(
             "hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP", source
@@ -310,6 +318,7 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn('"dx_feedback_gain_static"', rtt)
         self.assertIn('"dx_static_delay_ms"', rtt)
         self.assertIn('"dx_static_speed_limit"', rtt)
+        self.assertIn('"dx_static_speed_low"', rtt)
         self.assertIn('"mpc_delta_weight_wheel"', rtt)
         self.assertIn('"mpc_delta_weight_leg"', rtt)
         self.assertIn("#define VMC_LQR_RTT_SCHEMA_VERSION 30U", rtt)

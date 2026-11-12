@@ -251,6 +251,11 @@ extern "C" {
 #define VMC_JUMP_AUTO_DIST_MIN_CM  90.0f  /* exclusive */
 #define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
+/* A jump must never come from a single remote frame: SBUS carries no checksum,
+ * so a corrupted payload can put any value on the jump channel, and the switch
+ * passes through the AUTO band whenever it moves between positions.  The
+ * selected mode has to hold this long before it can arm anything. */
+#define VMC_JUMP_MODE_STABLE_MS    300U
 
 /* Automatic stair climb (one-shot switch-and-leg-response trigger).
  *
@@ -1091,7 +1096,17 @@ extern "C" {
  * feedback gain ramps to the static value. */
 #define VMC_BALANCE_DX_GAIN_STATIC_DEFAULT   -2.0f
 #define VMC_BALANCE_DX_STATIC_DELAY_MS       1000.0f
-#define VMC_BALANCE_DX_STATIC_SPEED_LIMIT    0.10f
+/* Upper knee of the standing gain schedule: at or above this speed the gain is
+ * the normal one, at a quarter of it the strong gain is fully engaged, and
+ * between the two the gain is interpolated so the residual ring after a
+ * disturbance still sees extra damping. */
+#define VMC_BALANCE_DX_STATIC_SPEED_LIMIT    0.20f
+#define VMC_BALANCE_DX_STATIC_SPEED_LOW      0.10f
+/* The strong gain must never be live while the legs are still extending or the
+ * body is settling after enable: the leg-length ramp alone runs at 0.225 m/s
+ * and takes about a second from folded, and the enable edge otherwise carried
+ * the previous -2.0 straight into it. */
+#define VMC_BALANCE_DX_STATIC_SETTLE_MS      3000U
 /* Gain slew, per second, so the hand-off cannot step the leg target. */
 #define VMC_BALANCE_DX_GAIN_RAMP_RATE        4.0f
 /* Shedding the strong gain has to be quicker than adding it: a disturbance
@@ -1561,6 +1576,11 @@ typedef struct {
    * feedback, but the same gain makes the machine leaden while driving. */
   float dx_feedback_gain_static;
   float dx_static_delay_ms;
+  /* Lower knee of the standing gain schedule.  Below this speed the gain is
+   * the full static one; raising it pulls more of the low-speed band into full
+   * damping, which settles faster but moves closer to where the strong gain
+   * stops being stable. */
+  float dx_static_speed_low;
   /* The strong gain is only safe near zero speed: at 0.3 m/s and above the
    * same gain turns the leg-target path into positive feedback and the machine
    * rings instead of recovering. */
