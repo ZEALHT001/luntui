@@ -208,6 +208,7 @@ static uint32_t clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value
 }
 
 static double body_motion_kf_x[2];
+static double vmc_odom_dx_lpf;
 static double body_motion_kf_p[4];
 static uint8_t body_motion_kf_initialized;
 
@@ -652,6 +653,7 @@ static double rc_channel_to_unit(int16_t ch)
 
 static void vmc_body_motion_kf_reset(void)
 {
+  vmc_odom_dx_lpf = 0.0;
   body_motion_kf_x[0] = 0.0;
   body_motion_kf_x[1] = 0.0;
   body_motion_kf_p[0] = 1.0;
@@ -661,6 +663,8 @@ static void vmc_body_motion_kf_reset(void)
   body_motion_kf_initialized = 1U;
   vmc_probe_state.motion.kf_x = 0.0;
   vmc_probe_state.motion.kf_dx = 0.0;
+  vmc_probe_state.motion.odom_x = 0.0;
+  vmc_probe_state.motion.odom_dx = 0.0;
   vmc_probe_state.motion.kf_acc = 0.0;
   vmc_probe_state.motion.kf_wheel_measurement = 0.0;
   vmc_probe_state.motion.kf_accel_measurement = 0.0;
@@ -4107,6 +4111,19 @@ static void vmc_update_motion_state(void)
     if (fabs(wheel_left_raw + wheel_right_raw) <= VMC_ODOM_SLIP_LIMIT) {
       vmc_balance.odom_x += vmc_balance.odom_v * (float)vmc_loop_dt();
     }
+    /* The control loop uses a lightly filtered wheel speed.  Raw wheel speed is
+     * quantised and would be multiplied by the damping gain, but the filter is
+     * only ~25 Hz so the lag stays around a millisecond - far less than the
+     * fusion estimate's error while braking. */
+    {
+      const double odom_dt = vmc_loop_dt();
+      const double odom_alpha =
+          1.0 - exp(-2.0 * 3.14159265358979323846 * 25.0 * odom_dt);
+      vmc_odom_dx_lpf +=
+          odom_alpha * ((double)vmc_balance.odom_v - vmc_odom_dx_lpf);
+    }
+    vmc_probe_state.motion.odom_x = (double)vmc_balance.odom_x;
+    vmc_probe_state.motion.odom_dx = vmc_odom_dx_lpf;
 
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
                               vmc_probe_state.motion.dd_x,
@@ -4704,7 +4721,7 @@ void vmc_balance_update(void)
   if ((vmc_control.enabled != 0U &&
        vmc_balance_controller_was_enabled == 0U) ||
       (mpc_handoff_requested != 0U && vmc_mpc_handoff_was_active == 0U)) {
-    vmc_balance.x_offset = (float)motion->kf_x;
+    vmc_balance.x_offset = (float)motion->odom_x;
     vmc_balance.speed_stop_hold_active = 0U;
     vmc_mpc_x_integral = 0.0f;
     vmc_mpc_integral_low_speed_ms = 0U;
@@ -4770,22 +4787,22 @@ void vmc_balance_update(void)
   if (vmc_control.enabled != 0U &&
       vmc_probe_state.feedback_timeout_active == 0U) {
     if (vmc_speed_accel_initialized == 0U) {
-      vmc_speed_dx_prev = motion->kf_dx;
+      vmc_speed_dx_prev = motion->odom_dx;
       vmc_speed_accel_initialized = 1U;
     }
-    speed_accel = (motion->kf_dx - vmc_speed_dx_prev) / vmc_loop_dt();
-    vmc_speed_dx_prev = motion->kf_dx;
+    speed_accel = (motion->odom_dx - vmc_speed_dx_prev) / vmc_loop_dt();
+    vmc_speed_dx_prev = motion->odom_dx;
     speed_accel = clamp_double(speed_accel, -20.0, 20.0);
     /* A fixed light LPF suppresses encoder/KF quantization without adding a
      * user-facing parameter to the existing tuning protocol. */
     vmc_speed_accel_lpf +=
         0.20 * (speed_accel - vmc_speed_accel_lpf);
-    if (fabs(motion->kf_dx) > speed_deadband &&
-        motion->kf_dx * vmc_speed_accel_lpf < 0.0) {
+    if (fabs(motion->odom_dx) > speed_deadband &&
+        motion->odom_dx * vmc_speed_accel_lpf < 0.0) {
       braking_accel = vmc_speed_accel_lpf;
     }
   } else {
-    vmc_speed_dx_prev = motion->kf_dx;
+    vmc_speed_dx_prev = motion->odom_dx;
     vmc_speed_accel_lpf = 0.0;
     vmc_speed_accel_initialized = 0U;
   }
@@ -4831,7 +4848,7 @@ void vmc_balance_update(void)
      * During commanded travel, keep applying the learned trim but freeze the
      * estimator so acceleration and braking do not wind it up. */
     if (stick_speed_active == 0U) {
-      const double speed_error = -motion->kf_dx;
+      const double speed_error = -motion->odom_dx;
       vmc_balance.disturbance_observer_neutral_time = (float)clamp_double(
           vmc_balance.disturbance_observer_neutral_time + vmc_loop_dt(),
           0.0,
@@ -4882,13 +4899,13 @@ void vmc_balance_update(void)
     /* Cruise mode: keep the parking anchor at the current position and only
        feed velocity error into LQR, matching the MuJoCo controller. */
     vmc_balance.speed_stop_hold_active = 1U;
-    vmc_balance.x_offset = (float)motion->kf_x;
+    vmc_balance.x_offset = (float)motion->odom_x;
     x_error = 0.0f;
   } else {
     if (released_from_speed != 0U) {
       /* Capture the release position exactly once.  The next command will
          recapture it again, so reverse motion never inherits an old anchor. */
-      vmc_balance.x_offset = (float)motion->kf_x;
+      vmc_balance.x_offset = (float)motion->odom_x;
       vmc_balance.speed_target_ramped = 0.0f;
       vmc_balance.speed_pitch_offset = 0.0f;
       vmc_balance.speed_stop_hold_active = 0U;
@@ -4899,15 +4916,15 @@ void vmc_balance_update(void)
         clamp_float(vmc_balance.x_hold_max_stretch, 0.0f,
                     VMC_BODY_MOTION_X_LIMIT_DEFAULT);
     dx_feedback_target = 0.0f;
-    x_error = (float)motion->kf_x - vmc_balance.x_offset;
+    x_error = (float)motion->odom_x - vmc_balance.x_offset;
     if (x_error > x_hold_max_stretch) {
-      vmc_balance.x_offset = (float)(motion->kf_x - x_hold_max_stretch);
+      vmc_balance.x_offset = (float)(motion->odom_x - x_hold_max_stretch);
       x_error = x_hold_max_stretch;
     } else if (x_error < -x_hold_max_stretch) {
-      vmc_balance.x_offset = (float)(motion->kf_x + x_hold_max_stretch);
+      vmc_balance.x_offset = (float)(motion->odom_x + x_hold_max_stretch);
       x_error = -x_hold_max_stretch;
     }
-    if (fabs(motion->kf_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {
+    if (fabs(motion->odom_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {
       vmc_balance.speed_stop_hold_active = 0U;
     }
   }
@@ -4990,7 +5007,7 @@ void vmc_balance_update(void)
         const float low =
             clamp_float(vmc_balance.dx_static_speed_low, 0.0f, high * 0.99f);
         const float span = (high > low) ? (high - low) : 1.0e-6f;
-        const float speed = fabsf((float)motion->kf_dx);
+        const float speed = fabsf((float)motion->odom_dx);
         float blend;
         if (speed <= low) {
           blend = 1.0f;
@@ -5012,7 +5029,7 @@ void vmc_balance_update(void)
   }
   const float dx_raw =
       (vmc_balance.dx_feedback_enable != 0U)
-          ? ((float)motion->kf_dx - dx_feedback_target) *
+          ? ((float)motion->odom_dx - dx_feedback_target) *
                 vmc_dx_gain_applied
           : 0.0f;
   const float dx_feedback_limit =
@@ -5296,7 +5313,7 @@ void vmc_balance_update(void)
     const float mpc_x_error =
         clamp_float(x_error, -x_feedback_limit, x_feedback_limit);
     const float mpc_dx_error =
-        clamp_float((float)motion->kf_dx - dx_feedback_target,
+        clamp_float((float)motion->odom_dx - dx_feedback_target,
                     -dx_feedback_limit,
                     dx_feedback_limit);
     {
@@ -5350,7 +5367,7 @@ void vmc_balance_update(void)
         if (authority_ramping != 0U) {
           vmc_mpc_integral_low_speed_ms = 0U;
           hold_reason = VMC_MPC_INTEGRAL_HOLD_AUTHORITY_RAMP;
-        } else if (fabsf((float)motion->kf_dx) >
+        } else if (fabsf((float)motion->odom_dx) >
             VMC_MPC_X_INTEGRAL_SPEED_LIMIT) {
           vmc_mpc_integral_low_speed_ms = 0U;
           hold_reason = VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED;

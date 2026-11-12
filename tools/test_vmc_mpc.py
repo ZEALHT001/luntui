@@ -245,7 +245,12 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("mpc_handoff_requested", source)
         self.assertIn("vmc_balance_controller_was_enabled", source)
         self.assertIn("vmc_mpc_handoff_was_active", source)
-        self.assertIn("vmc_balance.x_offset = (float)motion->kf_x;", source)
+        # The anchor follows wheel odometry: the fusion estimate reported up to
+        # 1.46 m/s more than the wheels turned while braking, and the position
+        # loop braked on that number.
+        self.assertIn("vmc_balance.x_offset = (float)motion->odom_x;", source)
+        self.assertIn("const float dx_raw =", source)
+        self.assertIn("(float)motion->odom_dx - dx_feedback_target", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE", source)
