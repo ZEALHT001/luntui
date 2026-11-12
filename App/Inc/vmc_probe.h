@@ -1110,6 +1110,10 @@ extern "C" {
 /* Wheel odometry: freeze the integrator when the two sides disagree by more
  * than this (m/s), which is what a slipping wheel looks like. */
 #define VMC_ODOM_SLIP_LIMIT                  0.15f
+/* Bound how far the fusion velocity may run from the measured wheel speed.
+ * 0 disables the bound.  While braking the fusion reported up to 1.46 m/s more
+ * than the wheels turned, and the LQR braked on that number. */
+#define VMC_DX_ODOM_GAP_MAX_DEFAULT          0.0f
 /* LESO defaults: enabled, full depth, output capped in input units.  The
  * observer is on by default from 2026-11-12; its estimates are low-passed at
  * 5 Hz and limited per channel, so a wrong estimate degrades to a bounded
@@ -1599,6 +1603,7 @@ typedef struct {
    * the only ground truth available at low speed. */
   float odom_x;
   float odom_v;
+  float dx_odom_gap_max;
   /* LESO disturbance observer.  Default off so the behaviour is unchanged
    * until it has been validated on the machine. */
   uint8_t leso_enable;
@@ -1831,6 +1836,11 @@ typedef struct {
   double kf_wheel_right_raw;
   double kf_x;
   double kf_dx;
+  /* Position from wheel odometry.  Only the position loop uses it: it is a
+   * slow loop and the fusion estimate's position random-walks.  The velocity
+   * stays the fusion estimate - feeding the measured wheel speed into the
+   * wheel torque closes a fast local loop that oscillates immediately. */
+  double odom_x;
   double kf_acc;
   double leg_length_avg;
 } vmc_motion_state_t;

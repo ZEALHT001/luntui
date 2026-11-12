@@ -534,6 +534,10 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
                            vmc_balance.mpc_abs_weight_leg);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "dx_odom_gap_max", &value) != 0U) {
+    vmc_balance.dx_odom_gap_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 5.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "leso_enable", &value) != 0U) {
     vmc_balance.leso_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
