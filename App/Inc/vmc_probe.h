@@ -1831,12 +1831,6 @@ typedef struct {
   double kf_wheel_right_raw;
   double kf_x;
   double kf_dx;
-  /* Translational states actually fed to the controller.  They come from
-   * wheel odometry, not from the fusion estimate: during braking the fusion
-   * reported up to 1.46 m/s more than the wheels were turning, and the LQR
-   * braked on that number until the current saturated. */
-  double odom_x;
-  double odom_dx;
   double kf_acc;
   double leg_length_avg;
 } vmc_motion_state_t;
