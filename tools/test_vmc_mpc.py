@@ -199,6 +199,20 @@ class LesoTest(unittest.TestCase):
 
 
 class FirmwareSolverTest(unittest.TestCase):
+    def test_leso_only_runs_while_the_controller_drives(self) -> None:
+        source = (ROOT / "App" / "Src" / "vmc_probe.c").read_text(
+            encoding="utf-8"
+        )
+        # The observer integrates its own state.  With the machine disabled the
+        # attitude measurements are stale, it saturates at the limits, and the
+        # first enabled cycle would then apply that saturated correction.
+        self.assertIn("const uint8_t leso_active =", source)
+        self.assertIn(
+            "(vmc_balance.leso_enable != 0U && vmc_control.enabled != 0U",
+            source,
+        )
+        self.assertIn("vmc_leso_set_enable(leso_active);", source)
+
     def test_forward_state_keeps_verified_kalman_fusion(self) -> None:
         source = (ROOT / "App" / "Src" / "vmc_probe.c").read_text(
             encoding="utf-8"

@@ -5623,8 +5623,17 @@ void vmc_balance_update(void)
    * measurement comes from wheel odometry, not from the fused estimate. */
   {
     float leso_disturbance[VMC_LESO_INPUT_COUNT] = {0.0f, 0.0f};
-    vmc_leso_set_enable(vmc_balance.leso_enable);
-    if (vmc_balance.leso_enable != 0U) {
+    /* Only run while the controller is actually driving.  With the machine
+     * disabled the attitude measurements are stale, the observer can only
+     * integrate the discrepancy and it saturates at the limits - and the first
+     * cycle after re-enabling would then apply that full correction. */
+    const uint8_t leso_active =
+        (vmc_balance.leso_enable != 0U && vmc_control.enabled != 0U &&
+         vmc_probe_state.feedback_timeout_active == 0U)
+            ? 1U
+            : 0U;
+    vmc_leso_set_enable(leso_active);
+    if (leso_active != 0U) {
       const float leso_measurement[VMC_LESO_PLANT_STATES] = {
           (float)motion->theta, (float)motion->d_theta,
           vmc_balance.odom_x, vmc_balance.odom_v,
