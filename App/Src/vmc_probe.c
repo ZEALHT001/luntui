@@ -4418,7 +4418,8 @@ void vmc_balance_init(void)
   vmc_balance.gimbal_follow_active = 0U;
   vmc_balance.gimbal_follow_front_valid = VMC_GIMBAL_FOLLOW_FRONT_VALID_DEFAULT;
   vmc_balance.yaw_target = 0.0f;
-  vmc_balance.yaw_hold_kp = VMC_YAW_HOLD_KP_DEFAULT;
+  vmc_balance.yaw_hold_kp_outer = VMC_YAW_HOLD_KP_OUTER_DEFAULT;
+  vmc_balance.yaw_hold_rate_max = VMC_YAW_HOLD_RATE_MAX_DEFAULT;
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
@@ -5117,9 +5118,14 @@ static int16_t vmc_update_yaw_hold_current(void)
 {
   double yaw_error_raw;
   double yaw_error;
+  double yaw_rate_cmd_outer;
+  double yaw_rate_ff;
+  double yaw_rate_cmd;
   double yaw_rate_error;
   double yaw_current;
   int16_t yaw_limit = vmc_balance.yaw_hold_current_limit;
+  const double yaw_rate_limit =
+      clamp_double(vmc_balance.yaw_hold_rate_max, 0.0, 20.0);
 
   if (yaw_limit < 0) {
     yaw_limit = (int16_t)-yaw_limit;
@@ -5137,6 +5143,9 @@ static int16_t vmc_update_yaw_hold_current(void)
     vmc_balance.yaw_error_raw = 0.0;
     vmc_balance.yaw_error = 0.0;
     vmc_balance.yaw_rate_error = 0.0;
+    vmc_balance.yaw_rate_cmd_outer = 0.0;
+    vmc_balance.yaw_rate_ff = 0.0;
+    vmc_balance.yaw_rate_cmd = 0.0;
     vmc_wheel_control.yaw_hold_current = 0;
     return 0;
   }
@@ -5151,16 +5160,51 @@ static int16_t vmc_update_yaw_hold_current(void)
   yaw_error_raw = (double)vmc_balance.yaw_target -
                   (double)vmc_probe_state.body.yaw;
   yaw_error = apply_soft_deadband(yaw_error_raw, vmc_balance.yaw_hold_deadband);
-  yaw_rate_error = -vmc_probe_state.body.wz;
+
+  /* Outer loop, angle error to rate command.  The clip is applied HERE, on
+   * the inner loop's reference, so the amount of yaw rate the controller is
+   * willing to ask for is bounded no matter how large the heading error
+   * grows.  A rate that the body already has (a slip, a lean, a kick that
+   * sets the chassis spinning) is not clipped, so the inner loop can still
+   * brake it. */
+  yaw_rate_cmd_outer = clamp_double(
+      (double)vmc_balance.yaw_hold_kp_outer * yaw_error,
+      -yaw_rate_limit, yaw_rate_limit);
+
+  /* Spin feedforward.  In spin mode yaw_target is a ramp advancing at
+   * yaw_spin_rate, so the commanded spin rate is already the rate the inner
+   * loop should be tracking; feeding it forward keeps the outer loop from
+   * having to chase a moving reference, which at 9 rad/s would mean an
+   * angle error large enough to sit on the clip forever (the old single loop
+   * instead put a kd * 9 rad/s bias on the current, 9000 raw of the 12000
+   * default limit, before any angle term).  With the feedforward the outer
+   * loop only corrects the residual phase error, and the clip above still
+   * bounds what it may add. */
+  yaw_rate_ff =
+      (vmc_balance.spin_mode_enabled != 0U)
+          ? clamp_double((double)vmc_balance.yaw_spin_rate,
+                         -(double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT,
+                         (double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT)
+          : 0.0;
+  yaw_rate_cmd = yaw_rate_cmd_outer + yaw_rate_ff;
+
+  /* Inner loop, rate error to differential current.  The feedback is the raw
+   * gyro rate: a filtered rate would buy noise rejection at the cost of the
+   * phase margin this loop needs to hold a spinning machine, and the clip
+   * already bounds the command so gyro noise cannot walk the current off to
+   * the limit. */
+  yaw_rate_error = yaw_rate_cmd - (double)vmc_probe_state.body.wz;
   yaw_current =
-      (double)VMC_YAW_HOLD_DIRECTION *
-      ((double)vmc_balance.yaw_hold_kp * yaw_error +
-       (double)vmc_balance.yaw_hold_kd * yaw_rate_error);
+      (double)VMC_YAW_HOLD_DIRECTION * (double)vmc_balance.yaw_hold_kd *
+      yaw_rate_error;
 
   yaw_current = clamp_double(yaw_current, (double)-yaw_limit, (double)yaw_limit);
   vmc_balance.yaw_error_raw = yaw_error_raw;
   vmc_balance.yaw_error = yaw_error;
   vmc_balance.yaw_rate_error = yaw_rate_error;
+  vmc_balance.yaw_rate_cmd_outer = yaw_rate_cmd_outer;
+  vmc_balance.yaw_rate_ff = yaw_rate_ff;
+  vmc_balance.yaw_rate_cmd = yaw_rate_cmd;
   vmc_wheel_control.yaw_hold_current = (int16_t)yaw_current;
   return vmc_wheel_control.yaw_hold_current;
 }
@@ -5301,6 +5345,9 @@ static void vmc_balance_apply_wheel_output(void)
     vmc_balance.yaw_error_raw = 0.0;
     vmc_balance.yaw_error = 0.0;
     vmc_balance.yaw_rate_error = 0.0;
+    vmc_balance.yaw_rate_cmd_outer = 0.0;
+    vmc_balance.yaw_rate_ff = 0.0;
+    vmc_balance.yaw_rate_cmd = 0.0;
     vmc_wheel_control.yaw_hold_current = 0;
     vmc_balance.gimbal_follow_active = 0U;
     vmc_balance.gimbal_follow_error_raw = 0.0;

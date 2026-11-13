@@ -939,12 +939,19 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.yaw_hold_enable = (value > 0.5f) ? 1U : 0U;
     applied = 1U;
   }
-  if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_kp", &value) != 0U) {
-    vmc_balance.yaw_hold_kp = vmc_lqr_rtt_clamp_float(value, -5000.0f, 5000.0f);
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_kp_outer", &value) != 0U) {
+    /* 1/s.  Keep it non-negative: a negative outer gain would turn the
+     * heading loop into positive feedback, and the clip would happily keep
+     * the resulting runaway inside the rate limit. */
+    vmc_balance.yaw_hold_kp_outer = vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_rate_max", &value) != 0U) {
+    vmc_balance.yaw_hold_rate_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_kd", &value) != 0U) {
-    vmc_balance.yaw_hold_kd = vmc_lqr_rtt_clamp_float(value, -5000.0f, 5000.0f);
+    vmc_balance.yaw_hold_kd = vmc_lqr_rtt_clamp_float(value, 0.0f, 20000.0f);
     applied = 1U;
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_deadband", &value) != 0U) {
@@ -953,6 +960,22 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
   }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_target", &value) != 0U) {
     vmc_balance.yaw_target = value;
+    vmc_balance.yaw_hold_active = 1U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_target_delta", &value) != 0U) {
+    /* Step-test hook.  yaw_target is an unwrapped absolute heading, so a
+     * script cannot write a step without first reading the current angle;
+     * a relative offset produces the same step from any starting pose.  The
+     * offset is bounded to one turn so a typo cannot demand a spin.
+     *
+     * If the loop is not already holding, the stale target would make the
+     * offset relative to the wrong pose, so re-anchor to the current heading
+     * first (the same latch the loop itself uses). */
+    if (vmc_balance.yaw_hold_active == 0U) {
+      vmc_balance.yaw_target = vmc_probe_state.body.yaw;
+    }
+    vmc_balance.yaw_target += vmc_lqr_rtt_clamp_float(value, -3.15f, 3.15f);
     vmc_balance.yaw_hold_active = 1U;
     applied = 1U;
   }
@@ -1839,8 +1862,22 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line), (double)remote_control.s[0]);
 
   /* VMCVOFA fields 177..186 are the reserved compatibility slots.  Four of
-   * them now carry the wheel odometry and the LESO estimates; the remaining
-   * six stay zero so the recorder layout and every later index hold. */
+   * them carry the wheel odometry and the LESO estimates, four now carry the
+   * yaw cascade, and the remaining two stay zero so the recorder layout and
+   * every later index hold.
+   *
+   * 181 yaw_rate_cmd  inner-loop rate reference actually handed to the rate
+   *                   loop (outer command plus spin feedforward), rad/s;
+   * 182 yaw_rate_cmd_outer  the outer P output after the w_limit clip; equal
+   *                   to +/-yaw_hold_rate_max means the clip is active and
+   *                   the outer loop has lost authority;
+   * 183 yaw_rate_ff   spin feedforward, rad/s (0 outside spin mode);
+   * 184 yaw_error     dead-banded heading error the outer loop saw, rad.
+   *
+   * These four are what a step-yaw recording needs: without them "the inner
+   * loop tracked the command" and "the clip held the command at 2.5 rad/s the
+   * whole time" look the same from body_yaw_rate and the wheel currents, and
+   * an overshoot cannot be separated from a step that was simply too large. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_balance.odom_x);
   offset = vmc_lqr_rtt_append_scaled(
@@ -1851,7 +1888,15 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line),
       (double)vmc_balance.leso_leg_disturbance);
-  for (uint8_t reserved = 0U; reserved < 6U; reserved++) {
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), vmc_balance.yaw_rate_cmd);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), vmc_balance.yaw_rate_cmd_outer);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), vmc_balance.yaw_rate_ff);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), vmc_balance.yaw_error);
+  for (uint8_t reserved = 0U; reserved < 2U; reserved++) {
     offset = vmc_lqr_rtt_append_scaled(
         line, offset, (int)sizeof(line), 0.0);
   }

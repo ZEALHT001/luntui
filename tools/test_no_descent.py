@@ -42,20 +42,25 @@ class DescentRemovalTest(unittest.TestCase):
                 self.assertNotIn(token, server)
 
     def test_telemetry_slots_keep_ten_fields_for_wire_compatibility(self) -> None:
-        # Slots 177..186 are a fixed ten-field block.  Four of them now carry
-        # the wheel odometry and the LESO estimates, the other six stay zero.
-        # What this guards is the wire layout: any change in the number or
-        # order of these values shifts every later field index.
+        # Slots 177..186 are a fixed ten-field block.  Four of them carry the
+        # wheel odometry and the LESO estimates, four carry the yaw cascade
+        # state, and the last two stay zero.  What this guards is the wire
+        # layout: any change in the number or order of these values shifts
+        # every later field index.
         rtt = RTT.read_text(encoding="utf-8")
         self.assertIn("fields 177..186 are the reserved compatibility slots", rtt)
-        self.assertIn("reserved < 6U", rtt)
+        self.assertIn("reserved < 2U", rtt)
         block_start = rtt.index("fields 177..186 are the reserved compatibility slots")
-        zero_fill = rtt.index("reserved < 6U", block_start)
+        zero_fill = rtt.index("reserved < 2U", block_start)
         for field in (
             "vmc_balance.odom_x",
             "vmc_balance.odom_v",
             "vmc_balance.leso_wheel_disturbance",
             "vmc_balance.leso_leg_disturbance",
+            "vmc_balance.yaw_rate_cmd",
+            "vmc_balance.yaw_rate_cmd_outer",
+            "vmc_balance.yaw_rate_ff",
+            "vmc_balance.yaw_error",
         ):
             with self.subTest(field=field):
                 self.assertLess(block_start, rtt.index(field, block_start))

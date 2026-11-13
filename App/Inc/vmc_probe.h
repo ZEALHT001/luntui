@@ -1152,7 +1152,26 @@ extern "C" {
 #define VMC_SPIN_PROJECTION_POWER_DEFAULT 5.0f
 #define VMC_SPIN_LINE_PATH_OFFSET_DEG_DEFAULT -75.0f
 #define VMC_YAW_HOLD_ENABLE_DEFAULT 1U
-#define VMC_YAW_HOLD_KP_DEFAULT 10000.0f
+/* The yaw loop is a cascade: angle error -> rate command -> rate error ->
+ * differential wheel current.
+ *
+ * The clip sits on the RATE COMMAND, which is the inner loop's reference,
+ * not on the measured rate and not on the torque.  That is where the
+ * reference puts w_limit: the command the inner loop is allowed to chase is
+ * bounded, so no angle error, however large, can turn into an unbounded
+ * yaw-torque demand, while a disturbance that is already spinning the body
+ * faster than the clip still gets the full braking authority of the inner
+ * loop.  Clipping only the output current instead would leave the rate
+ * command free to run away, and the inner loop would spend its authority
+ * cancelling its own demand rather than a disturbance.
+ *
+ * kp_outer is 1/s (rad/s of command per rad of error), kd is raw C620 counts
+ * per rad/s.  At the defaults the cascade is exactly the retired single loop:
+ * kp_outer * kd = 10 * 1000 = 10000 counts/rad, which was the old kp, and the
+ * old kd is unchanged.  So this change adds the clip and the spin
+ * feedforward without moving the small-signal gains. */
+#define VMC_YAW_HOLD_KP_OUTER_DEFAULT 10.0f
+#define VMC_YAW_HOLD_RATE_MAX_DEFAULT 2.5f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
 #define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
 #define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 12000
@@ -1471,7 +1490,8 @@ typedef struct {
   float disturbance_observer_neutral_time;
   uint8_t disturbance_observer_active;
   float yaw_target;
-  float yaw_hold_kp;
+  float yaw_hold_kp_outer;
+  float yaw_hold_rate_max;
   float yaw_hold_kd;
   float yaw_hold_deadband;
   float yaw_target_rate_max;
@@ -1603,6 +1623,9 @@ typedef struct {
   double yaw_error_raw;
   double yaw_error;
   double yaw_rate_error;
+  double yaw_rate_cmd_outer;
+  double yaw_rate_ff;
+  double yaw_rate_cmd;
   double gimbal_follow_error_raw;
   double gimbal_follow_error;
   double gimbal_follow_p_output;
