@@ -661,7 +661,6 @@ static void vmc_body_motion_kf_reset(void)
   body_motion_kf_initialized = 1U;
   vmc_probe_state.motion.kf_x = 0.0;
   vmc_probe_state.motion.kf_dx = 0.0;
-  vmc_probe_state.motion.odom_x = 0.0;
   vmc_probe_state.motion.kf_acc = 0.0;
   vmc_probe_state.motion.kf_wheel_measurement = 0.0;
   vmc_probe_state.motion.kf_accel_measurement = 0.0;
@@ -780,21 +779,6 @@ static void vmc_body_motion_kf_update(double measured_dx, double measured_acc,
   body_motion_kf_p[3] = p11;
 
   vmc_probe_state.motion.kf_dx = x0;
-  /* One-way bound against the measured wheel speed.  This is not a feedback of
-   * the wheel speed into the wheel torque - it only stops the estimate from
-   * running away, which it did by up to 1.46 m/s while braking. */
-  {
-    const float gap = vmc_balance.dx_odom_gap_max;
-    if (gap > 0.0f) {
-      const double low = (double)vmc_balance.odom_v - (double)gap;
-      const double high = (double)vmc_balance.odom_v + (double)gap;
-      if (vmc_probe_state.motion.kf_dx > high) {
-        vmc_probe_state.motion.kf_dx = high;
-      } else if (vmc_probe_state.motion.kf_dx < low) {
-        vmc_probe_state.motion.kf_dx = low;
-      }
-    }
-  }
   vmc_probe_state.motion.kf_acc = x1;
   vmc_probe_state.motion.kf_x = clamp_double(
       vmc_probe_state.motion.kf_x + x0 * dt,
@@ -4123,7 +4107,6 @@ static void vmc_update_motion_state(void)
     if (fabs(wheel_left_raw + wheel_right_raw) <= VMC_ODOM_SLIP_LIMIT) {
       vmc_balance.odom_x += vmc_balance.odom_v * (float)vmc_loop_dt();
     }
-    vmc_probe_state.motion.odom_x = (double)vmc_balance.odom_x;
 
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
                               vmc_probe_state.motion.dd_x,
@@ -4624,7 +4607,6 @@ void vmc_balance_init(void)
   vmc_balance.mpc_abs_weight_leg = vmc_mpc_abs_weight_default[1];
   vmc_balance.odom_x = 0.0f;
   vmc_balance.odom_v = 0.0f;
-  vmc_balance.dx_odom_gap_max = VMC_DX_ODOM_GAP_MAX_DEFAULT;
   vmc_balance.leso_enable = VMC_LESO_ENABLE_DEFAULT;
   vmc_balance.leso_compensation = VMC_LESO_COMPENSATION_DEFAULT;
   vmc_balance.leso_wheel_limit = VMC_LESO_WHEEL_LIMIT_DEFAULT;
@@ -4722,7 +4704,7 @@ void vmc_balance_update(void)
   if ((vmc_control.enabled != 0U &&
        vmc_balance_controller_was_enabled == 0U) ||
       (mpc_handoff_requested != 0U && vmc_mpc_handoff_was_active == 0U)) {
-    vmc_balance.x_offset = (float)motion->odom_x;
+    vmc_balance.x_offset = (float)motion->kf_x;
     vmc_balance.speed_stop_hold_active = 0U;
     vmc_mpc_x_integral = 0.0f;
     vmc_mpc_integral_low_speed_ms = 0U;
@@ -4900,13 +4882,13 @@ void vmc_balance_update(void)
     /* Cruise mode: keep the parking anchor at the current position and only
        feed velocity error into LQR, matching the MuJoCo controller. */
     vmc_balance.speed_stop_hold_active = 1U;
-    vmc_balance.x_offset = (float)motion->odom_x;
+    vmc_balance.x_offset = (float)motion->kf_x;
     x_error = 0.0f;
   } else {
     if (released_from_speed != 0U) {
       /* Capture the release position exactly once.  The next command will
          recapture it again, so reverse motion never inherits an old anchor. */
-      vmc_balance.x_offset = (float)motion->odom_x;
+      vmc_balance.x_offset = (float)motion->kf_x;
       vmc_balance.speed_target_ramped = 0.0f;
       vmc_balance.speed_pitch_offset = 0.0f;
       vmc_balance.speed_stop_hold_active = 0U;
@@ -4917,12 +4899,12 @@ void vmc_balance_update(void)
         clamp_float(vmc_balance.x_hold_max_stretch, 0.0f,
                     VMC_BODY_MOTION_X_LIMIT_DEFAULT);
     dx_feedback_target = 0.0f;
-    x_error = (float)motion->odom_x - vmc_balance.x_offset;
+    x_error = (float)motion->kf_x - vmc_balance.x_offset;
     if (x_error > x_hold_max_stretch) {
-      vmc_balance.x_offset = (float)(motion->odom_x - x_hold_max_stretch);
+      vmc_balance.x_offset = (float)(motion->kf_x - x_hold_max_stretch);
       x_error = x_hold_max_stretch;
     } else if (x_error < -x_hold_max_stretch) {
-      vmc_balance.x_offset = (float)(motion->odom_x + x_hold_max_stretch);
+      vmc_balance.x_offset = (float)(motion->kf_x + x_hold_max_stretch);
       x_error = -x_hold_max_stretch;
     }
     if (fabs(motion->kf_dx) <= stop_speed_threshold && fabs(dx_target) <= speed_deadband) {

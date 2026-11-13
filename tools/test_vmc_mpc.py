@@ -245,11 +245,7 @@ class FirmwareSolverTest(unittest.TestCase):
         self.assertIn("mpc_handoff_requested", source)
         self.assertIn("vmc_balance_controller_was_enabled", source)
         self.assertIn("vmc_mpc_handoff_was_active", source)
-        # The position loop follows wheel odometry; the velocity feedback keeps
-        # the fusion estimate because its signal is already rate-limited.
-        self.assertIn("vmc_balance.x_offset = (float)motion->odom_x;", source)
-        self.assertIn("x_error = (float)motion->odom_x - vmc_balance.x_offset;", source)
-        self.assertIn("? ((float)motion->kf_dx - dx_feedback_target) *", source)
+        self.assertIn("vmc_balance.x_offset = (float)motion->kf_x;", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_HIGH_SPEED", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_POSITION", source)
         self.assertIn("VMC_MPC_INTEGRAL_HOLD_SPEED_SETTLE", source)

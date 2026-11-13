@@ -1110,15 +1110,11 @@ extern "C" {
 /* Wheel odometry: freeze the integrator when the two sides disagree by more
  * than this (m/s), which is what a slipping wheel looks like. */
 #define VMC_ODOM_SLIP_LIMIT                  0.15f
-/* Bound how far the fusion velocity may run from the measured wheel speed.
- * 0 disables the bound.  While braking the fusion reported up to 1.46 m/s more
- * than the wheels turned, and the LQR braked on that number. */
-#define VMC_DX_ODOM_GAP_MAX_DEFAULT          0.0f
 /* LESO defaults: enabled, full depth, output capped in input units.  The
  * observer is on by default from 2026-11-12; its estimates are low-passed at
  * 5 Hz and limited per channel, so a wrong estimate degrades to a bounded
  * offset rather than a runaway. */
-#define VMC_LESO_ENABLE_DEFAULT              1U
+#define VMC_LESO_ENABLE_DEFAULT              0U
 #define VMC_LESO_COMPENSATION_DEFAULT        1.0f
 #define VMC_LESO_WHEEL_LIMIT_DEFAULT         3.0f
 #define VMC_LESO_LEG_LIMIT_DEFAULT           20.0f
@@ -1158,7 +1154,7 @@ extern "C" {
  * mm/s.  0.25 m holds position but walks the machine home after a kick.  0.10 m
  * measured -0.24 mm/s over the same test - an order of magnitude better than
  * 0.06 - while still capping the walk-back at 10 cm, so that is the default. */
-#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.10f
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.06f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
@@ -1603,7 +1599,6 @@ typedef struct {
    * the only ground truth available at low speed. */
   float odom_x;
   float odom_v;
-  float dx_odom_gap_max;
   /* LESO disturbance observer.  Default off so the behaviour is unchanged
    * until it has been validated on the machine. */
   uint8_t leso_enable;
@@ -1836,11 +1831,6 @@ typedef struct {
   double kf_wheel_right_raw;
   double kf_x;
   double kf_dx;
-  /* Position from wheel odometry.  Only the position loop uses it: it is a
-   * slow loop and the fusion estimate's position random-walks.  The velocity
-   * stays the fusion estimate - feeding the measured wheel speed into the
-   * wheel torque closes a fast local loop that oscillates immediately. */
-  double odom_x;
   double kf_acc;
   double leg_length_avg;
 } vmc_motion_state_t;
