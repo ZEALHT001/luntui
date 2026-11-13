@@ -1186,6 +1186,21 @@ extern "C" {
  * feedforward without moving the small-signal gains. */
 #define VMC_YAW_HOLD_KP_OUTER_DEFAULT 10.0f
 #define VMC_YAW_HOLD_RATE_MAX_DEFAULT 2.5f
+/* How far the heading target may run ahead of (or behind) the measured heading
+ * while the stick or the spin ramp advances it.
+ *
+ * The stick integrates the target at up to yaw_target_rate_max (1.8 rad/s by
+ * default), but the yaw axis cannot deliver that: on a grippy floor the
+ * differential current that a 2.5 rad/s command produces only turns the body at
+ * 0.4-0.9 rad/s, and below roughly 1 rad/s of command the torque does not even
+ * break tire scrub.  Without a cap the difference accumulates as heading debt:
+ * a 2 s stick deflection measured 3.1 rad of error, which then took 6 s of
+ * continued rotation to unwind AFTER the stick was released - what the operator
+ * sees as "it keeps turning when I let go".
+ *
+ * 0.35 rad (20 deg) bounds that debt to under a second of rotation, and it is
+ * also the band inside which the outer loop still has authority. */
+#define VMC_YAW_LEAD_MAX_DEFAULT 0.35f
 #define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
 #define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
 #define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 12000
@@ -1506,9 +1521,13 @@ typedef struct {
   float yaw_target;
   float yaw_hold_kp_outer;
   float yaw_hold_rate_max;
+  float yaw_lead_max;
   float yaw_hold_kd;
   float yaw_hold_deadband;
   float yaw_target_rate_max;
+  /* Stick rate feedforward, rad/s: turn_input * yaw_target_rate_max while the
+   * turn stick is deflected, 0 otherwise. */
+  float yaw_stick_rate;
   float yaw_spin_rate;
   float yaw_spin_rate_max;
   float spin_line_origin_yaw;

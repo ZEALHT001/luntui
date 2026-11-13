@@ -121,6 +121,7 @@ const balanceParamIds = [
   ["yawHoldEnable", "yaw_hold_enable"],
   ["yawHoldKpOuter", "yaw_hold_kp_outer"],
   ["yawHoldRateMax", "yaw_hold_rate_max"],
+  ["yawLeadMax", "yaw_lead_max"],
   ["yawHoldKd", "yaw_hold_kd"],
   ["yawHoldDeadband", "yaw_hold_deadband"],
   ["yawTargetRateMax", "yaw_target_rate_max"],

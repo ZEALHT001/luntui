@@ -106,8 +106,15 @@ class CascadeStructureTest(unittest.TestCase):
         clip = self.body.index("-yaw_rate_limit, yaw_rate_limit")
         sum_up = self.body.index("yaw_rate_cmd = yaw_rate_cmd_outer + yaw_rate_ff")
         self.assertLess(clip, sum_up)
-        # And the feedforward is off outside spin mode.
-        self.assertIn(": 0.0;", self.body)
+
+    def test_turn_stick_rate_is_fed_forward_outside_spin(self) -> None:
+        """Stick deflects -> the inner loop follows that RATE.
+
+        Without this the stick only integrated an angle target, so the machine
+        had to lag by a growing error before it turned; that lag is what kept
+        rotating after release.
+        """
+        self.assertIn("vmc_balance.yaw_stick_rate", self.body)
 
     def test_inner_loop_is_p_on_rate_error(self) -> None:
         self.assertIn(
@@ -155,6 +162,24 @@ class ParameterTest(unittest.TestCase):
         self.assertAlmostEqual(_macro("VMC_YAW_HOLD_RATE_MAX_DEFAULT"), 2.5)
         self.assertAlmostEqual(_macro("VMC_YAW_HOLD_DEADBAND_DEFAULT"), 0.01)
         self.assertAlmostEqual(_macro("VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT"), 12000)
+
+    def test_heading_debt_is_bounded_while_the_target_advances(self) -> None:
+        """The target may lead the measured heading by at most yaw_lead_max.
+
+        Measured on 2026-11-14: a 2 s stick deflection integrated 3.1 rad of
+        heading error while the yaw axis could only deliver ~0.43 rad/s, so the
+        machine kept rotating for 6 s after release.  The cap bounds that debt.
+        """
+        self.assertAlmostEqual(_macro("VMC_YAW_LEAD_MAX_DEFAULT"), 0.35)
+        source = SOURCE.read_text(encoding="utf-8")
+        body = _body(source, "vmc_yaw_target_advance")
+        self.assertIn("clamp_double(vmc_balance.yaw_lead_max, 0.0, 3.15)", body)
+        self.assertIn("yaw + lead_max", body)
+        self.assertIn("yaw - lead_max", body)
+        # Both integration sites must go through the clamped helper.
+        self.assertEqual(
+            source.count("vmc_yaw_target_advance("), 3
+        )  # definition, spin ramp, turn stick
 
     def test_the_retired_single_loop_gain_is_gone(self) -> None:
         header = HEADER.read_text(encoding="utf-8")
@@ -234,6 +259,7 @@ class ParameterTest(unittest.TestCase):
         for key, macro in (
             ("yaw_hold_kp_outer", "VMC_YAW_HOLD_KP_OUTER_DEFAULT"),
             ("yaw_hold_rate_max", "VMC_YAW_HOLD_RATE_MAX_DEFAULT"),
+            ("yaw_lead_max", "VMC_YAW_LEAD_MAX_DEFAULT"),
         ):
             with self.subTest(key=key):
                 self.assertIn(f'"{key}": ("{macro}"', server)
@@ -241,6 +267,7 @@ class ParameterTest(unittest.TestCase):
                 self.assertIn(f'"{key}"', main)
         self.assertIn('id="yawHoldKpOuter"', index)
         self.assertIn('id="yawHoldRateMax"', index)
+        self.assertIn('id="yawLeadMax"', index)
 
 
 if __name__ == "__main__":

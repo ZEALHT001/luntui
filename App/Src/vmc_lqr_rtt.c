@@ -950,6 +950,10 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.yaw_hold_rate_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 20.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "yaw_lead_max", &value) != 0U) {
+    vmc_balance.yaw_lead_max = vmc_lqr_rtt_clamp_float(value, 0.0f, 3.15f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "yaw_hold_kd", &value) != 0U) {
     vmc_balance.yaw_hold_kd = vmc_lqr_rtt_clamp_float(value, 0.0f, 20000.0f);
     applied = 1U;

@@ -3477,6 +3477,28 @@ static double vmc_spin_phase_lead_rad(double spin_rate)
   return lead_deg * (double)VMC_PI / 180.0;
 }
 
+static void vmc_yaw_target_advance(double rate, double dt)
+{
+  const double lead_max = clamp_double(vmc_balance.yaw_lead_max, 0.0, 3.15);
+  const double yaw = (double)vmc_probe_state.body.yaw;
+  double lead;
+
+  vmc_balance.yaw_target = (float)((double)vmc_balance.yaw_target + rate * dt);
+
+  /* Anti-windup.  The heading target is integrated from a rate the machine
+   * cannot necessarily achieve (measured: 0.4-0.9 rad/s against a 1.8 rad/s
+   * command on a grippy floor), so without this cap every stick deflection
+   * leaves heading debt that has to be unwound after release.  Bounding the
+   * lead means "let go" always stops within the cap instead of after seconds
+   * of continued rotation. */
+  lead = (double)vmc_balance.yaw_target - yaw;
+  if (lead > lead_max) {
+    vmc_balance.yaw_target = (float)(yaw + lead_max);
+  } else if (lead < -lead_max) {
+    vmc_balance.yaw_target = (float)(yaw - lead_max);
+  }
+}
+
 static double vmc_spin_projection_gain(double phase_error, double phase_lead,
                                        double power)
 {
@@ -3538,6 +3560,9 @@ static void vmc_update_remote_mode(void)
   vmc_wheel_control.manual_right_current = 0;
   vmc_wheel_control.manual_forward_current = 0;
   vmc_wheel_control.manual_turn_current = 0;
+  /* Recomputed below whenever the turn gates pass; zeroed here so a stale
+   * feedforward cannot survive a mode change. */
+  vmc_balance.yaw_stick_rate = 0.0f;
   manual_turn_current = 0;
   vmc_balance.spin_mode_enabled = spin_enabled;
   vmc_balance.spin_line_input_forward = spin_forward_input;
@@ -3742,13 +3767,14 @@ static void vmc_update_remote_mode(void)
           vmc_balance.yaw_spin_rate,
           (double)VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT,
           (double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT);
-      vmc_balance.yaw_target =
-          (float)((double)vmc_balance.yaw_target + spin_rate * dt);
+      vmc_yaw_target_advance(spin_rate, dt);
     } else {
       yaw_rate_max = clamp_double(vmc_balance.yaw_target_rate_max, 0.0, 10.0);
-      vmc_balance.yaw_target =
-          (float)((double)vmc_balance.yaw_target +
-                  turn_input * yaw_rate_max * dt);
+      /* Feed the same rate the target is integrated from to the inner loop, so
+       * a stick deflection commands a RATE the machine can follow instead of
+       * an angle the angle loop has to chase. */
+      vmc_balance.yaw_stick_rate = (float)(turn_input * yaw_rate_max);
+      vmc_yaw_target_advance(turn_input * yaw_rate_max, dt);
     }
   }
 
@@ -4441,9 +4467,11 @@ void vmc_balance_init(void)
   vmc_balance.yaw_target = 0.0f;
   vmc_balance.yaw_hold_kp_outer = VMC_YAW_HOLD_KP_OUTER_DEFAULT;
   vmc_balance.yaw_hold_rate_max = VMC_YAW_HOLD_RATE_MAX_DEFAULT;
+  vmc_balance.yaw_lead_max = VMC_YAW_LEAD_MAX_DEFAULT;
   vmc_balance.yaw_hold_kd = VMC_YAW_HOLD_KD_DEFAULT;
   vmc_balance.yaw_hold_deadband = VMC_YAW_HOLD_DEADBAND_DEFAULT;
   vmc_balance.yaw_target_rate_max = VMC_RC_YAW_TARGET_RATE_MAX_DEFAULT;
+  vmc_balance.yaw_stick_rate = 0.0f;
   vmc_balance.yaw_spin_rate = VMC_RC_YAW_SPIN_RATE_MIN_DEFAULT;
   vmc_balance.yaw_spin_rate_max = VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT;
   vmc_balance.spin_line_origin_yaw = 0.0f;
@@ -5201,12 +5229,16 @@ static int16_t vmc_update_yaw_hold_current(void)
    * default limit, before any angle term).  With the feedforward the outer
    * loop only corrects the residual phase error, and the clip above still
    * bounds what it may add. */
+  /* Two feedforward sources, same place.  In spin mode the ramp is the spin
+   * rate; otherwise it is the turn stick's requested rate.  Either way the
+   * inner loop tracks the operator's RATE, and the angle loop only corrects
+   * the residual (bounded by yaw_lead_max). */
   yaw_rate_ff =
       (vmc_balance.spin_mode_enabled != 0U)
           ? clamp_double((double)vmc_balance.yaw_spin_rate,
                          -(double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT,
                          (double)VMC_RC_YAW_SPIN_RATE_MAX_DEFAULT)
-          : 0.0;
+          : clamp_double((double)vmc_balance.yaw_stick_rate, -10.0, 10.0);
   yaw_rate_cmd = yaw_rate_cmd_outer + yaw_rate_ff;
 
   /* Inner loop, rate error to differential current.  The feedback is the raw

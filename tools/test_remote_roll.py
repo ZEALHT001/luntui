@@ -72,7 +72,8 @@ class RemoteRollTest(unittest.TestCase):
     def test_left_stick_still_drives_chassis_turn(self) -> None:
         body = _body(SOURCE.read_text(encoding="utf-8"), "vmc_update_remote_mode")
         self.assertIn("-remote_control_channel(RC_CHASSIS_X)", body)
-        self.assertIn("turn_input * yaw_rate_max * dt", body)
+        # The advance is rate-limited now, but the stick still drives it.
+        self.assertIn("vmc_yaw_target_advance(turn_input * yaw_rate_max, dt)", body)
 
 
 if __name__ == "__main__":

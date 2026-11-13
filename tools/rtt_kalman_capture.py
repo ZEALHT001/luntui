@@ -135,6 +135,11 @@ FORMAT_V2_PROFILE = Profile(
         "rc_source": 46,
         "rc_age_ms": 47,
         "state_age_ms": 48,
+        # Chassis turn (yaw) stick: firmware publishes ch[2] = -CHASSIS_X * 700,
+        # so turn_input = -turn_stick / 700.  Recorded because the yaw target
+        # integrates this value, and a residual beyond the +/-20 deadband keeps
+        # rotating the machine after the stick is released.
+        "turn_stick": 50,
         "airborne_active": 85,
         "airborne_candidate": 86,
         "airborne_wheel_speed": 87,
@@ -778,6 +783,9 @@ CSV_FIELDS = [
     "descent_contact_ms",
     "descent_trigger_count",
     "descent_abort_count",
+    # Appended after every legacy column: the chassis turn stick the yaw target
+    # integrates.  Written last so existing positional readers keep working.
+    "turn_stick",
 ]
 
 OPTIONAL_CHANNELS = [
@@ -865,6 +873,7 @@ class KalmanSample:
     slip_curr_applied_right: float = INVALID_VALUE
     kf_accel_update_count: float = INVALID_VALUE
     stick_forward: float = INVALID_VALUE
+    turn_stick: float = INVALID_VALUE
     speed_target: float = INVALID_VALUE
     speed_target_ramped: float = INVALID_VALUE
     dx_target: float = INVALID_VALUE
@@ -1272,6 +1281,7 @@ def parse_vmcvoa_line(
         slip_curr_applied_right=channel("slip_curr_applied_right"),
         kf_accel_update_count=channel("kf_accel_update_count"),
         stick_forward=channel("stick_forward"),
+        turn_stick=channel("turn_stick"),
         speed_target=channel("speed_target"),
         speed_target_ramped=channel("speed_target_ramped"),
         dx_target=channel("dx_target"),
