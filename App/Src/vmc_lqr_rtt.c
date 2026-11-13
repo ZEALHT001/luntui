@@ -1838,9 +1838,6 @@ void vmc_lqr_rtt_telemetry_update(void)
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)remote_control.s[0]);
 
-  /* VMCVOFA fields 177..186 are reserved compatibility slots.  The former
-   * automatic descent assist has been removed, but keeping ten zero values
-   * preserves the recorder layout and every field index after it. */
   /* VMCVOFA fields 177..186 are the reserved compatibility slots.  Four of
    * them now carry the wheel odometry and the LESO estimates; the remaining
    * six stay zero so the recorder layout and every later index hold. */
