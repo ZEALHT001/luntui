@@ -149,19 +149,30 @@ class CascadeStructureTest(unittest.TestCase):
 
 
 class ParameterTest(unittest.TestCase):
-    def test_defaults_reproduce_the_retired_single_loop(self) -> None:
-        """Small-signal equivalence: kp_outer * kd == the old kp.
+    def test_defaults_give_the_yaw_axis_current_headroom(self) -> None:
+        """The inner gain is set by measured torque need, not by the old loop.
 
-        The rewrite must not move the gains the machine was tuned with; it
-        adds the clip and the feedforward.  Anything else needs a hardware
-        run, not a refactor.
+        kp_outer * kd was 10000 when the cascade replaced the single loop, to
+        keep small-signal behaviour identical.  Measurement then showed the
+        yaw axis is torque-limited even though the applied current matches the
+        law (median ratio 1.000 on field 185): 2500 counts barely moved the
+        machine.  kd is now 2000, so the same error asks for twice the current.
+
+        The invariant that has to survive: the rate cap alone must not need
+        more current than the clamp allows, or the rate loop and the current
+        clamp would fight each other at the command ceiling.
         """
         outer = _macro("VMC_YAW_HOLD_KP_OUTER_DEFAULT")
         inner = _macro("VMC_YAW_HOLD_KD_DEFAULT")
-        self.assertAlmostEqual(outer * inner, 10000.0)
-        self.assertAlmostEqual(_macro("VMC_YAW_HOLD_RATE_MAX_DEFAULT"), 2.5)
+        rate_max = _macro("VMC_YAW_HOLD_RATE_MAX_DEFAULT")
+        current_limit = _macro("VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT")
+        self.assertAlmostEqual(inner, 2000.0)
+        # Twice the retired single loop's 10000 counts/rad, deliberately.
+        self.assertAlmostEqual(outer * inner, 20000.0)
+        self.assertAlmostEqual(rate_max, 2.5)
+        self.assertLessEqual(inner * rate_max, current_limit)
         self.assertAlmostEqual(_macro("VMC_YAW_HOLD_DEADBAND_DEFAULT"), 0.01)
-        self.assertAlmostEqual(_macro("VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT"), 12000)
+        self.assertAlmostEqual(current_limit, 12000)
 
     def test_heading_debt_is_bounded_while_the_target_advances(self) -> None:
         """The target may lead the measured heading by at most yaw_lead_max.

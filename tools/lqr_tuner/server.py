@@ -181,7 +181,7 @@ _BALANCE_PARAM_FALLBACK = {
     "yaw_hold_kp_outer": 10.0,
     "yaw_hold_rate_max": 2.5,
     "yaw_lead_max": 0.35,
-    "yaw_hold_kd": 1000.0,
+    "yaw_hold_kd": 2000.0,
     "yaw_hold_deadband": 0.01,
     "yaw_target_rate_max": 0.9,
     "yaw_hold_current_limit": 5000.0,

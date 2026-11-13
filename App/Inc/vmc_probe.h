@@ -1180,10 +1180,18 @@ extern "C" {
  * cancelling its own demand rather than a disturbance.
  *
  * kp_outer is 1/s (rad/s of command per rad of error), kd is raw C620 counts
- * per rad/s.  At the defaults the cascade is exactly the retired single loop:
- * kp_outer * kd = 10 * 1000 = 10000 counts/rad, which was the old kp, and the
- * old kd is unchanged.  So this change adds the clip and the spin
- * feedforward without moving the small-signal gains. */
+ * per rad/s, so kp_outer * kd is the small-signal gain in counts per rad.
+ *
+ * The cascade was first landed with kd = 1000, which reproduced the retired
+ * single loop exactly (10 * 1000 = the old kp 10000).  Measurement then showed
+ * the yaw axis is torque-limited, not code-limited: the applied current
+ * (telemetry 185) matched the law with a median ratio of 1.000, but a 2.5 rad/s
+ * command (2500 counts) could barely move the machine - below roughly 1 rad/s of
+ * command the torque does not even break tire scrub.  kd is therefore doubled to
+ * 2000: the same heading error now asks for twice the current, and the rate cap
+ * alone allows up to 2.5 * 2000 = 5000 counts, with stick or spin feedforward on
+ * top.  Small-signal gain is 20000 counts/rad, twice the retired loop - that is
+ * the point of the change, not an accident. */
 #define VMC_YAW_HOLD_KP_OUTER_DEFAULT 10.0f
 #define VMC_YAW_HOLD_RATE_MAX_DEFAULT 2.5f
 /* How far the heading target may run ahead of (or behind) the measured heading
@@ -1201,7 +1209,7 @@ extern "C" {
  * 0.35 rad (20 deg) bounds that debt to under a second of rotation, and it is
  * also the band inside which the outer loop still has authority. */
 #define VMC_YAW_LEAD_MAX_DEFAULT 0.35f
-#define VMC_YAW_HOLD_KD_DEFAULT 1000.0f
+#define VMC_YAW_HOLD_KD_DEFAULT 2000.0f
 #define VMC_YAW_HOLD_DEADBAND_DEFAULT 0.01f
 #define VMC_YAW_HOLD_CURRENT_LIMIT_DEFAULT 12000
 #define VMC_YAW_HOLD_DIRECTION 1.0f
