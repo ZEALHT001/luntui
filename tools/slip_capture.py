@@ -354,6 +354,20 @@ def disable_payload() -> str:
     return '{"type":"vmc_balance_params","fast_enable":0}'
 
 
+def yaw_step_payload(delta_rad: float) -> str:
+    """Relative heading step, the way a yaw-loop step test is commanded.
+
+    ``yaw_target`` is an unwrapped absolute heading, so writing it directly
+    needs the current angle and can silently ask for a half turn.
+    ``yaw_target_delta`` offsets the reference instead; the firmware re-anchors
+    it to the current heading first if the loop is not already holding.
+    """
+    return json.dumps(
+        {"type": "vmc_balance_params", "yaw_target_delta": float(delta_rad)},
+        separators=(",", ":"),
+    )
+
+
 def send_with_ack(
     reader: Any,
     payload: str,
@@ -700,6 +714,24 @@ def main() -> int:
         action="store_true",
         help="disable the single-key event marker controls",
     )
+    parser.add_argument(
+        "--yaw-step",
+        type=float,
+        default=None,
+        help=(
+            "heading step in radians, written to the firmware as "
+            "yaw_target_delta at --yaw-step-at.  This is how a yaw loop step "
+            "response is recorded while the capture owns the J-Link: the "
+            "tuner cannot send it concurrently, and yaw_target_delta is "
+            "relative so the command does not need the unwrapped heading"
+        ),
+    )
+    parser.add_argument(
+        "--yaw-step-at",
+        type=float,
+        default=10.0,
+        help="seconds into the capture at which --yaw-step is sent",
+    )
     args = parser.parse_args()
 
     if args.duration <= 0.0:
@@ -728,6 +760,13 @@ def main() -> int:
         0.0 <= args.slip_wheel_current_scale <= 1.0
     ):
         parser.error("--slip-wheel-current-scale must be in [0, 1]")
+    if args.yaw_step is not None:
+        if not (0.0 < abs(args.yaw_step) <= 3.15):
+            parser.error("--yaw-step must be in (0, 3.15] radians, either sign")
+        if args.yaw_step_at < 0.0:
+            parser.error("--yaw-step-at must be >= 0")
+        if args.yaw_step_at >= args.duration:
+            parser.error("--yaw-step-at must fall inside the capture")
     slip_lqr_enable = (
         None if args.slip_lqr is None else (args.slip_lqr == "on")
     )
@@ -853,6 +892,12 @@ def main() -> int:
             )
         if marker.enabled:
             print("markers: c=contact s=slip_start e=slip_end r=recover b=baseline q=stop")
+        yaw_step_sent = False
+        if args.yaw_step is not None:
+            print(
+                f"yaw step: {args.yaw_step:+.3f} rad at t={args.yaw_step_at:.1f}s "
+                "(enable S1 first: the loop only acts with the wheels enabled)"
+            )
         print(f"capturing {args.duration:.1f} s ...")
         time.sleep(0.2)
         # Drop any pre-capture handshake gap before counting link stalls, so a
@@ -939,6 +984,42 @@ def main() -> int:
                     row = _sample_to_row(sample)
                     row["host_time_s"] = elapsed
                     slow_writer.writerow(row)
+
+                if (
+                    args.yaw_step is not None
+                    and not yaw_step_sent
+                    and elapsed >= args.yaw_step_at
+                ):
+                    # Sent from inside the capture because no second host
+                    # process can attach to the same J-Link, and the tuner
+                    # therefore cannot command the step concurrently.
+                    yaw_step_sent = True
+                    payload = yaw_step_payload(args.yaw_step)
+                    acknowledged = send_with_ack(
+                        reader, payload, "VMC_BALANCE_PARAMS OK"
+                    )
+                    event = (
+                        f"yaw_step {args.yaw_step:+.3f} rad"
+                        if acknowledged
+                        else "yaw_step SEND FAILED"
+                    )
+                    entry = {
+                        "host_time_s": elapsed,
+                        "fast_t_ms": last_fast_t_ms,
+                        "slow_t_ms": last_slow_t_ms,
+                        "event": event,
+                    }
+                    events.append(entry)
+                    event_writer.writerow(entry)
+                    event_handle.flush()
+                    if acknowledged:
+                        print(f"{event} at host {elapsed:.3f}s")
+                    else:
+                        print(
+                            f"{event}: firmware did not acknowledge, the "
+                            "recording has no step despite the marker",
+                            file=sys.stderr,
+                        )
 
                 event, stop_requested = marker.read()
                 if event is not None:

@@ -32,6 +32,10 @@ static uint8_t vmc_yaw_unwrap_initialized;
 static uint32_t vmc_airborne_last_update_ms;
 static uint32_t vmc_jump_last_update_ms;
 static uint32_t vmc_jump_auto_hold_ms;
+/* How long the selected channel-6 mode has been unchanged, and the last mode
+ * seen.  Both jump paths are gated on this; see VMC_JUMP_MODE_STABLE_MS. */
+static uint32_t vmc_jump_mode_hold_ms;
+static uint8_t vmc_jump_mode_last;
 static uint8_t vmc_stair_auto_armed;
 static uint8_t vmc_stair_preimpact_armed;
 static double vmc_stair_preimpact_speed_ref;
@@ -1342,6 +1346,9 @@ static void vmc_jump_finish(uint8_t stage, uint8_t reason, uint32_t now)
   }
   vmc_control.jump_armed = 0U;
   vmc_jump_auto_hold_ms = 0U;
+  /* The mode has to prove itself again after every jump, so a switch that is
+   * still sitting in MANUAL cannot re-arm the instant the cooldown expires. */
+  vmc_jump_mode_hold_ms = 0U;
   vmc_control.jump_last_finish_ms = now;
   vmc_control.jump_land_contact_ms = 0U;
   /* Drop the airborne latch the jump itself asserted.
@@ -1492,17 +1499,31 @@ static void vmc_jump_update(void)
   }
   vmc_control.jump_target_length = (float)vmc_jump_stage_target_length();
 
+  /* Debounce the selected mode.  Without this a single corrupted SBUS frame,
+   * or the moment the switch spends crossing the middle AUTO band, can arm a
+   * jump: the manual path used to fire on the very first frame that read
+   * above the ON threshold. */
+  if (jump_mode != vmc_jump_mode_last) {
+    vmc_jump_mode_last = jump_mode;
+    vmc_jump_mode_hold_ms = 0U;
+  } else {
+    vmc_jump_mode_hold_ms =
+        clamp_u32(vmc_jump_mode_hold_ms + dt_ms, 0U, 60000U);
+  }
+  const uint8_t jump_mode_stable =
+      (vmc_jump_mode_hold_ms >= VMC_JUMP_MODE_STABLE_MS) ? 1U : 0U;
+
   if (vmc_control.jump_stage == VMC_JUMP_STAGE_IDLE) {
     const uint8_t cooled_down =
         ((now - vmc_control.jump_last_finish_ms) >= cooldown_ms) ? 1U : 0U;
     const uint8_t auto_now =
-        (cooled_down != 0U && jump_mode == RC_JUMP_AUTO &&
-         vmc_jump_auto_ready() != 0U)
+        (jump_mode_stable != 0U && cooled_down != 0U &&
+         jump_mode == RC_JUMP_AUTO && vmc_jump_auto_ready() != 0U)
             ? 1U
             : 0U;
     const uint8_t manual_now =
-        (cooled_down != 0U && jump_mode == RC_JUMP_MANUAL &&
-         vmc_jump_manual_latched == 0U)
+        (jump_mode_stable != 0U && cooled_down != 0U &&
+         jump_mode == RC_JUMP_MANUAL && vmc_jump_manual_latched == 0U)
             ? 1U
             : 0U;
 
@@ -5807,6 +5828,10 @@ void vmc_control_init(void)
   vmc_fall_prev_fully_fallen = 0U;
   vmc_jump_last_update_ms = 0U;
   vmc_jump_auto_hold_ms = 0U;
+  vmc_jump_mode_hold_ms = 0U;
+  /* 0xFF cannot equal any real mode, so the first update always restarts the
+   * debounce window instead of inheriting a stale "stable" state. */
+  vmc_jump_mode_last = 0xFFU;
   vmc_stair_auto_armed = 0U;
   vmc_control.ramp_active = 0U;
 }

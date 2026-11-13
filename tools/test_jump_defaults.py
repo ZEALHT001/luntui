@@ -95,6 +95,29 @@ class JumpDefaultsTest(unittest.TestCase):
         self.assertGreaterEqual(release, 100.0)
         self.assertGreater(release, confirm)
 
+    def test_both_jump_paths_require_a_stable_mode(self) -> None:
+        """SBUS has no checksum, so a corrupted payload can put any value on
+        the jump channel, and the switch spends time in the middle AUTO band
+        whenever it moves.  Neither may fire a jump: the selected mode has to
+        hold for the debounce window before it can arm anything.
+
+        Measured consequence of not having this: a jump launched at 0 m/s with
+        the laser offline (so the automatic gate could not be responsible),
+        which is only reachable through the single-frame manual path.
+        """
+        self.assertGreaterEqual(_macro("VMC_JUMP_MODE_STABLE_MS"), 100.0)
+        source = (ROOT / "App" / "Src" / "vmc_probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("vmc_jump_mode_hold_ms", source)
+        self.assertIn("vmc_jump_mode_last", source)
+        for name in ("auto_now", "manual_now"):
+            with self.subTest(path=name):
+                block = source.split(f"const uint8_t {name} =", 1)[1].split(
+                    "? 1U", 1
+                )[0]
+                self.assertIn("jump_mode_stable != 0U", block)
+
     def test_jump_can_lift_the_machine(self) -> None:
         """The jump force must exceed the machine's weight, with margin.
 

@@ -24,6 +24,7 @@ from tools.slip_capture import (
     enable_payload,
     parse_fast_frame,
     summarize_capture,
+    yaw_step_payload,
 )
 
 FIRMWARE = (
@@ -214,6 +215,16 @@ class PayloadTest(unittest.TestCase):
     def test_disable_payload(self) -> None:
         payload = json.loads(disable_payload())
         self.assertEqual(payload["fast_enable"], 0)
+
+    def test_yaw_step_payload_is_relative_and_uses_the_new_key(self) -> None:
+        # The step has to be relative: yaw_target is an unwrapped absolute
+        # heading, so the capture would otherwise need the current angle.
+        payload = json.loads(yaw_step_payload(0.6))
+        self.assertEqual(payload["type"], "vmc_balance_params")
+        self.assertEqual(payload["yaw_target_delta"], 0.6)
+        self.assertNotIn("yaw_target", payload)
+        negative = json.loads(yaw_step_payload(-0.35))
+        self.assertEqual(negative["yaw_target_delta"], -0.35)
 
     def test_fast_only_mode_disables_full_frame_context(self) -> None:
         payload = json.loads(_enable_payload("fast", 4, 20))

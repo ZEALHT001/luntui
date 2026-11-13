@@ -250,6 +250,20 @@ extern "C" {
 #define VMC_JUMP_AUTO_DIST_MIN_CM  90.0f  /* exclusive */
 #define VMC_JUMP_AUTO_DIST_MAX_CM  110.0f /* exclusive */
 #define VMC_JUMP_AUTO_CONFIRM_MS   20U
+/* A jump must never come from a single remote frame.
+ *
+ * SBUS carries no checksum, so a corrupted payload can put any value on the
+ * jump channel, and the switch necessarily passes through the middle AUTO
+ * band whenever it moves between MANUAL and OFF.  Before this window existed
+ * the manual path fired on the first frame that read above the ON threshold,
+ * so one bad frame could launch the machine - observed twice, and the second
+ * landing dislodged the battery.  The selected mode has to hold this long
+ * before EITHER path may arm.
+ *
+ * 300 ms is well above the 20 ms automatic-condition window and above the
+ * ~50-100 ms a switch spends in transit, so a genuine selection costs only a
+ * fraction of a second while a glitch has no way through. */
+#define VMC_JUMP_MODE_STABLE_MS    300U
 
 /* Automatic stair climb (one-shot switch-and-leg-response trigger).
  *
