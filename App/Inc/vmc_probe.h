@@ -1064,6 +1064,16 @@ extern "C" {
 #define VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT -1.0f
 #define VMC_BALANCE_X_FEEDBACK_LIMIT_DEFAULT 1.0f
 #define VMC_BALANCE_DX_FEEDBACK_LIMIT_DEFAULT 4.0f
+/* Standing hold: after this long with the stick released the velocity
+ * feedback gain ramps to the static value. */
+#define VMC_BALANCE_DX_GAIN_STATIC_DEFAULT   -2.0f
+#define VMC_BALANCE_DX_STATIC_DELAY_MS       1000.0f
+#define VMC_BALANCE_DX_STATIC_SPEED_LIMIT    0.10f
+/* Gain slew, per second, so the hand-off cannot step the leg target. */
+#define VMC_BALANCE_DX_GAIN_RAMP_RATE        4.0f
+/* Shedding the strong gain has to be quicker than adding it: a disturbance
+ * must fall back to the normal gain within a few control cycles. */
+#define VMC_BALANCE_DX_GAIN_RELEASE_RATE     20.0f
 #define VMC_BALANCE_SPEED_CONTROL_ENABLE_DEFAULT 1U
 #define VMC_BALANCE_SPEED_TARGET_MAX_DEFAULT 4.0f
 /* Scaled by 0.45 to preserve the tuned behaviour; see VMC_CONTROL_DT. */
@@ -1084,7 +1094,12 @@ extern "C" {
  * metres).  At 0.25 the loop commands several times the friction threshold and
  * the same test holds to a few centimetres.  Raising it further buys nothing -
  * the residual limit cycle is closed-loop dynamics, not authority. */
-#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.25f
+/* How far the position loop may pull back before the anchor is dragged along.
+ * This is also the furthest the controller will ever walk the machine back: at
+ * 0.25 m a hard kick was followed by a deliberate return to the original spot,
+ * which is not what the operator wants - the machine should settle where the
+ * disturbance left it and balance there. */
+#define VMC_BALANCE_X_HOLD_MAX_STRETCH_DEFAULT 0.06f
 #define VMC_BALANCE_DTHETA_LPF_ALPHA_DEFAULT 0.1f
 #define VMC_BALANCE_LQR_DTHETA_GAIN_DEFAULT 1.0f
 #define VMC_BALANCE_LQR_DTHETA_DEADBAND_DEFAULT 0.0f
@@ -1503,6 +1518,16 @@ typedef struct {
   float kalman_slip_yaw;
   uint32_t kalman_slip_hold_ms;
   uint32_t kalman_slip_confirm_ms;
+  /* Velocity-feedback gain used after the stick has been released for a
+   * while.  The standing limit cycle shrinks monotonically with more velocity
+   * feedback, but the same gain makes the machine leaden while driving. */
+  float dx_feedback_gain_static;
+  float dx_static_delay_ms;
+  /* The strong gain is only safe near zero speed: at 0.3 m/s and above the
+   * same gain turns the leg-target path into positive feedback and the machine
+   * rings instead of recovering. */
+  float dx_static_speed_limit;
+  /* Absolute command trajectories reconstructed from the incremental plan. */
   /* Slip LQR weight switching.  While one side's slip latch is set, that
    * side's leg-angle feedback is scaled up so the posture term dominates the
    * control output instead of the (unreliable) wheel/velocity terms.  See

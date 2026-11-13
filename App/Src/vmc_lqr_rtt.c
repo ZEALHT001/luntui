@@ -482,6 +482,23 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
     vmc_balance.x_feedback_gain = vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "dx_feedback_gain_static", &value) !=
+      0U) {
+    vmc_balance.dx_feedback_gain_static =
+        vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "dx_static_delay_ms", &value) != 0U) {
+    vmc_balance.dx_static_delay_ms =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "dx_static_speed_limit", &value) !=
+      0U) {
+    vmc_balance.dx_static_speed_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "dx_feedback_gain", &value) != 0U) {
     vmc_balance.dx_feedback_gain = vmc_lqr_rtt_clamp_float(value, -200.0f, 200.0f);
     applied = 1U;
