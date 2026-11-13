@@ -1841,7 +1841,20 @@ void vmc_lqr_rtt_telemetry_update(void)
   /* VMCVOFA fields 177..186 are reserved compatibility slots.  The former
    * automatic descent assist has been removed, but keeping ten zero values
    * preserves the recorder layout and every field index after it. */
-  for (uint8_t reserved = 0U; reserved < 10U; reserved++) {
+  /* VMCVOFA fields 177..186 are the reserved compatibility slots.  Four of
+   * them now carry the wheel odometry and the LESO estimates; the remaining
+   * six stay zero so the recorder layout and every later index hold. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_balance.odom_x);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line), (double)vmc_balance.odom_v);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.leso_wheel_disturbance);
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_balance.leso_leg_disturbance);
+  for (uint8_t reserved = 0U; reserved < 6U; reserved++) {
     offset = vmc_lqr_rtt_append_scaled(
         line, offset, (int)sizeof(line), 0.0);
   }
