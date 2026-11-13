@@ -248,7 +248,8 @@ class ParameterTest(unittest.TestCase):
             block.index("vmc_balance.yaw_rate_cmd_outer)"),
             block.index("vmc_balance.yaw_rate_ff)"),
             block.index("vmc_balance.yaw_error)"),
-            block.index("reserved < 2U"),
+            block.index("vmc_wheel_control.yaw_hold_current)"),
+            block.index("reserved < 1U"),
         ]
         self.assertEqual(order, sorted(order))
 

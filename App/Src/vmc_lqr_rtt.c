@@ -1866,9 +1866,9 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line), (double)remote_control.s[0]);
 
   /* VMCVOFA fields 177..186 are the reserved compatibility slots.  Four of
-   * them carry the wheel odometry and the LESO estimates, four now carry the
-   * yaw cascade, and the remaining two stay zero so the recorder layout and
-   * every later index hold.
+   * them carry the wheel odometry and the LESO estimates, five now carry the
+   * yaw cascade, and the last one stays zero so the recorder layout and every
+   * later index hold.
    *
    * 181 yaw_rate_cmd  inner-loop rate reference actually handed to the rate
    *                   loop (outer command plus spin feedforward), rad/s;
@@ -1876,12 +1876,16 @@ void vmc_lqr_rtt_telemetry_update(void)
    *                   to +/-yaw_hold_rate_max means the clip is active and
    *                   the outer loop has lost authority;
    * 183 yaw_rate_ff   spin feedforward, rad/s (0 outside spin mode);
-   * 184 yaw_error     dead-banded heading error the outer loop saw, rad.
+   * 184 yaw_error     dead-banded heading error the outer loop saw, rad;
+   * 185 yaw_hold_current  differential current the yaw loop applied, counts.
    *
-   * These four are what a step-yaw recording needs: without them "the inner
+   * These five are what a step-yaw recording needs: without them "the inner
    * loop tracked the command" and "the clip held the command at 2.5 rad/s the
    * whole time" look the same from body_yaw_rate and the wheel currents, and
-   * an overshoot cannot be separated from a step that was simply too large. */
+   * an overshoot cannot be separated from a step that was simply too large.
+   * 185 closes the last gap: whether a computed yaw current reached the
+   * wheels, which the balance-only slow fields and the 250 Hz fast outputs
+   * cannot show. */
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), (double)vmc_balance.odom_x);
   offset = vmc_lqr_rtt_append_scaled(
@@ -1900,7 +1904,21 @@ void vmc_lqr_rtt_telemetry_update(void)
       line, offset, (int)sizeof(line), vmc_balance.yaw_rate_ff);
   offset = vmc_lqr_rtt_append_scaled(
       line, offset, (int)sizeof(line), vmc_balance.yaw_error);
-  for (uint8_t reserved = 0U; reserved < 2U; reserved++) {
+  /* 185 yaw_hold_current: the differential current the yaw loop actually
+   * asked the wheels for, in C620 counts, after the current clamp.
+   *
+   * The slow stream's wheel-current fields (60/61) are the BALANCE loop's
+   * demand - they are filled in vmc_balance_update before the yaw term is
+   * folded in - and the fast stream's outputs are the final values but only
+   * at 250 Hz against a 450 Hz loop.  Neither can answer "did the yaw loop
+   * actually apply the current it computed", which is the question the
+   * 2026-11-14 capture left open: commanding 1.6 rad/s for 80 s with no
+   * rotation looks the same whether the loop applied ~1600 counts into tire
+   * scrub or applied nothing at all. */
+  offset = vmc_lqr_rtt_append_scaled(
+      line, offset, (int)sizeof(line),
+      (double)vmc_wheel_control.yaw_hold_current);
+  for (uint8_t reserved = 0U; reserved < 1U; reserved++) {
     offset = vmc_lqr_rtt_append_scaled(
         line, offset, (int)sizeof(line), 0.0);
   }
