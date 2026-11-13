@@ -53,6 +53,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/tf02_pro.c
     App/Src/vmc_lqr.c
     App/Src/vmc_lqr_rtt.c
+    App/Src/vmc_leso.c
+    App/Src/vmc_leso_model.c
     Drivers/RTT/SEGGER_RTT.c
 )
 

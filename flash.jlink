@@ -1,0 +1,10 @@
+device STM32F427II
+si SWD
+speed 4000
+connect
+r
+h
+loadfile /Users/zhouzhanen/chuantui/aboard-base-28777b3/build/Release/2026OmniChassis_A_board.elf
+r
+g
+qc

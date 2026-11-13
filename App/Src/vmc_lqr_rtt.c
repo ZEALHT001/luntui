@@ -493,6 +493,25 @@ static uint8_t vmc_lqr_rtt_apply_balance_params(char *line)
         vmc_lqr_rtt_clamp_float(value, 0.0f, 10000.0f);
     applied = 1U;
   }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_enable", &value) != 0U) {
+    vmc_balance.leso_enable = (value > 0.5f) ? 1U : 0U;
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_compensation", &value) != 0U) {
+    vmc_balance.leso_compensation =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 1.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_wheel_limit", &value) != 0U) {
+    vmc_balance.leso_wheel_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 10.0f);
+    applied = 1U;
+  }
+  if (vmc_lqr_rtt_parse_named_float(line, "leso_leg_limit", &value) != 0U) {
+    vmc_balance.leso_leg_limit =
+        vmc_lqr_rtt_clamp_float(value, 0.0f, 100.0f);
+    applied = 1U;
+  }
   if (vmc_lqr_rtt_parse_named_float(line, "dx_static_speed_limit", &value) !=
       0U) {
     vmc_balance.dx_static_speed_limit =

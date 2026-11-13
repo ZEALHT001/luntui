@@ -1069,6 +1069,14 @@ extern "C" {
 #define VMC_BALANCE_DX_GAIN_STATIC_DEFAULT   -2.0f
 #define VMC_BALANCE_DX_STATIC_DELAY_MS       1000.0f
 #define VMC_BALANCE_DX_STATIC_SPEED_LIMIT    0.10f
+/* Wheel odometry: freeze the integrator when the two sides disagree by more
+ * than this (m/s), which is what a slipping wheel looks like. */
+#define VMC_ODOM_SLIP_LIMIT                  0.15f
+/* LESO defaults: off until measured, full depth when enabled. */
+#define VMC_LESO_ENABLE_DEFAULT              0U
+#define VMC_LESO_COMPENSATION_DEFAULT        1.0f
+#define VMC_LESO_WHEEL_LIMIT_DEFAULT         3.0f
+#define VMC_LESO_LEG_LIMIT_DEFAULT           20.0f
 /* Gain slew, per second, so the hand-off cannot step the leg target. */
 #define VMC_BALANCE_DX_GAIN_RAMP_RATE        4.0f
 /* Shedding the strong gain has to be quicker than adding it: a disturbance
@@ -1527,6 +1535,17 @@ typedef struct {
    * same gain turns the leg-target path into positive feedback and the machine
    * rings instead of recovering. */
   float dx_static_speed_limit;
+  /* Wheel-odometry position and velocity plus the LESO disturbance estimates.
+   * The position is integrated from the two mirrored wheel channels and the
+   * velocity is their half-difference. */
+  float odom_x;
+  float odom_v;
+  uint8_t leso_enable;
+  float leso_compensation;
+  float leso_wheel_limit;
+  float leso_leg_limit;
+  float leso_wheel_disturbance;
+  float leso_leg_disturbance;
   /* Absolute command trajectories reconstructed from the incremental plan. */
   /* Slip LQR weight switching.  While one side's slip latch is set, that
    * side's leg-angle feedback is scaled up so the posture term dominates the

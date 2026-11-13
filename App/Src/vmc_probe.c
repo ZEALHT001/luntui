@@ -1,4 +1,5 @@
 #include "vmc_probe.h"
+#include "vmc_leso.h"
 
 #include "board_comm.h"
 #include "hi12_imu.h"
@@ -4007,6 +4008,15 @@ static void vmc_update_motion_state(void)
         (body_motion_kf_slip_right != 0U) ? 1.0 : 0.0;
     vmc_probe_state.motion.kf_wheel_left_raw = wheel_left_raw;
     vmc_probe_state.motion.kf_wheel_right_raw = wheel_right_raw;
+    /* Wheel odometry.  The two channels are in motor convention and are
+     * mirrored, so the body speed is half their difference (calibrated by hand
+     * push: 20 cm read 345-385 mm before the factor of two).  The sum is the
+     * side-to-side disagreement: while it is large a wheel is slipping and the
+     * integrator is frozen instead of integrating spinning wheels. */
+    vmc_balance.odom_v = (float)(0.5 * (wheel_right_raw - wheel_left_raw));
+    if (fabs(wheel_left_raw + wheel_right_raw) <= VMC_ODOM_SLIP_LIMIT) {
+      vmc_balance.odom_x += vmc_balance.odom_v * (float)vmc_loop_dt();
+    }
 
     vmc_body_motion_kf_update(vmc_probe_state.motion.d_x_raw,
                               vmc_probe_state.motion.dd_x,
@@ -4339,6 +4349,17 @@ void vmc_balance_init(void)
   vmc_balance.x_limit = VMC_BODY_MOTION_X_LIMIT_DEFAULT;
   vmc_balance.x_feedback_gain = VMC_BALANCE_X_FEEDBACK_GAIN_DEFAULT;
   vmc_balance.dx_feedback_gain = VMC_BALANCE_DX_FEEDBACK_GAIN_DEFAULT;
+  vmc_balance.odom_x = 0.0f;
+  vmc_balance.odom_v = 0.0f;
+  vmc_balance.leso_enable = VMC_LESO_ENABLE_DEFAULT;
+  vmc_balance.leso_compensation = VMC_LESO_COMPENSATION_DEFAULT;
+  vmc_balance.leso_wheel_limit = VMC_LESO_WHEEL_LIMIT_DEFAULT;
+  vmc_balance.leso_leg_limit = VMC_LESO_LEG_LIMIT_DEFAULT;
+  vmc_balance.leso_wheel_disturbance = 0.0f;
+  vmc_balance.leso_leg_disturbance = 0.0f;
+  vmc_leso_reset();
+  vmc_leso_set_enable(0U);
+  vmc_leso_set_limit(VMC_LESO_WHEEL_LIMIT_DEFAULT, VMC_LESO_LEG_LIMIT_DEFAULT);
   vmc_balance.dx_feedback_gain_static =
       VMC_BALANCE_DX_GAIN_STATIC_DEFAULT;
   vmc_balance.dx_static_delay_ms = VMC_BALANCE_DX_STATIC_DELAY_MS;
@@ -4842,14 +4863,14 @@ void vmc_balance_update(void)
   const double right_wheel_dx_term = vmc_probe_state.lqr.right_k[6] * dx_error;
   const double right_wheel_phi_term = vmc_probe_state.lqr.right_k[8] * phi_error;
   const double right_wheel_dphi_term = vmc_probe_state.lqr.right_k[10] * dpitch_lpf;
-  const double left_wheel_raw =
+  double left_wheel_raw =
       left_wheel_theta_term +
       left_wheel_dtheta_term +
       left_wheel_x_term +
       left_wheel_dx_term +
       left_wheel_phi_term +
       left_wheel_dphi_term;
-  const double right_wheel_raw =
+  double right_wheel_raw =
       right_wheel_theta_term +
       right_wheel_dtheta_term +
       right_wheel_x_term +
@@ -4946,20 +4967,56 @@ void vmc_balance_update(void)
                          -leg_sync_limit,
                          leg_sync_limit)
           : 0.0;
-  const double left_tp_raw =
+  double left_tp_raw =
       -(left_tp_theta_term +
         left_tp_dtheta_term +
         left_tp_x_term +
         left_tp_dx_term +
         left_tp_phi_term +
         left_tp_dphi_term);
-  const double right_tp_raw =
+  double right_tp_raw =
       -(right_tp_theta_term +
         right_tp_dtheta_term +
         right_tp_x_term +
         right_tp_dx_term +
         right_tp_phi_term +
         right_tp_dphi_term);
+  /* LESO disturbance rejection.  One symmetric observer serves the pair: a
+   * slope, a load or a model bias hits both sides together, which is exactly
+   * what the disturbance states estimate.  The translational pair of the
+   * measurement comes from wheel odometry.  It only runs while the controller
+   * is actually driving: with the machine disabled the attitude measurements
+   * are stale, the observer can only integrate the discrepancy and it
+   * saturates, and the first enabled cycle would then apply that full
+   * correction. */
+  {
+    float leso_disturbance[VMC_LESO_INPUT_COUNT] = {0.0f, 0.0f};
+    const uint8_t leso_active =
+        (vmc_balance.leso_enable != 0U && vmc_control.enabled != 0U &&
+         vmc_probe_state.feedback_timeout_active == 0U)
+            ? 1U
+            : 0U;
+    vmc_leso_set_enable(leso_active);
+    if (leso_active != 0U) {
+      const float leso_measurement[VMC_LESO_PLANT_STATES] = {
+          (float)motion->theta, (float)motion->d_theta,
+          vmc_balance.odom_x, vmc_balance.odom_v,
+          (float)motion->phi, (float)motion->d_phi};
+      const float leso_input[VMC_LESO_INPUT_COUNT] = {
+          left_wheel_raw, -left_tp_raw};
+      vmc_leso_set_compensation(vmc_balance.leso_compensation);
+      vmc_leso_set_limit(vmc_balance.leso_wheel_limit,
+                         vmc_balance.leso_leg_limit);
+      vmc_leso_update((float)vmc_probe_state.motion.leg_length_avg,
+                      leso_measurement, leso_input, leso_disturbance);
+      left_wheel_raw -= leso_disturbance[0];
+      right_wheel_raw -= leso_disturbance[0];
+      left_tp_raw += leso_disturbance[1];
+      right_tp_raw += leso_disturbance[1];
+    }
+    vmc_balance.leso_wheel_disturbance = leso_disturbance[0];
+    vmc_balance.leso_leg_disturbance = leso_disturbance[1];
+  }
   int16_t wheel_limit = vmc_balance.wheel_current_limit;
   /* LQR T and its limit are motor-shaft torque.  The model already reflects
    * the drivetrain relationship, so do not apply another ratio here. */
